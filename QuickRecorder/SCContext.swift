@@ -12,7 +12,6 @@ import ScreenCaptureKit
 import UserNotifications
 import SwiftLAME
 import SwiftUI
-import AECAudioStream
 
 class SCContext {
     static var trimingList = [URL]()
@@ -29,11 +28,21 @@ class SCContext {
     static var isPaused = false
     static var isResume = false
     static var isSkipFrame = false
+    /// The one queue all stream outputs are delivered on. The writer inputs and the timing state below are only used on it while capturing.
+    static let sampleQueue = DispatchQueue(label: "QuickRecorder.samples")
+    static var isCapturing = false
+    /// Latest end time seen on any output, on the writer's timeline
     static var lastPTS: CMTime?
-    static var timeOffset = CMTimeMake(value: 0, timescale: 0)
+    /// Total paused time, subtracted from every buffer's timestamps
+    static var timeOffset = CMTime.zero
+    /// End of the system audio appended so far
+    static var audioEndPTS: CMTime?
+    /// Whether the current recording has a microphone track. Decided when the recording starts, unlike the "recordMic" setting.
+    static var recordsMic = false
+    /// The device ScreenCaptureKit captures, nil for the system default input
+    static var micCaptureDeviceID: String?
+    static var micConverter: MicConverter?
     static var screenArea: NSRect?
-    static let audioEngine = AVAudioEngine()
-    static let AECEngine = AECAudioStream(sampleRate: 48000)
     static var backgroundColor: CGColor = CGColor.black
     static var filePath: String!
     static var filePath1: String!
@@ -183,10 +192,9 @@ class SCContext {
         return ud.string(forKey: "saveDirectory")! + (capture ? "/Capturing at ".local : "/Recording at ".local) + dateFormatter.string(from: Date())
     }
     
-    static func updateAudioSettings(format: String = ud.string(forKey: "audioFormat") ?? "", rate: Int = 48000) -> [String : Any] {
-        var audioSettings: [String : Any] = [AVSampleRateKey : rate, AVNumberOfChannelsKey : 2] // reset audioSettings
-        var bitRate = ud.integer(forKey: "audioQuality") * 1000
-        if rate < 44100 { bitRate = min(64000, bitRate / 2) }
+    static func updateAudioSettings(format: String = ud.string(forKey: "audioFormat") ?? "") -> [String : Any] {
+        var audioSettings: [String : Any] = [AVSampleRateKey : 48000, AVNumberOfChannelsKey : 2] // reset audioSettings
+        let bitRate = ud.integer(forKey: "audioQuality") * 1000
         switch format {
         case AudioFormat.mp3.rawValue: fallthrough
         case AudioFormat.aac.rawValue:
@@ -318,10 +326,12 @@ class SCContext {
     }
     
     static func pauseRecording() {
-        isPaused.toggle()
+        sampleQueue.sync {
+            isPaused.toggle()
+            if !isPaused { isResume = true }
+        }
         PopoverState.shared.isPaused = isPaused
         if !isPaused {
-            isResume = true
             startTime = Date.now.addingTimeInterval(-1) - SCContext.timePassed
         }
     }
@@ -341,26 +351,28 @@ class SCContext {
         
         if stream != nil { stream.stopCapture() }
         stream = nil
-        if ud.bool(forKey: "recordMic") {
-            micInput.markAsFinished()
-            AudioRecorder.shared.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-            audioEngine.stop()
-            //DispatchQueue.global().async { try? audioEngine.inputNode.setVoiceProcessingEnabled(false) }
-            if ud.bool(forKey: "enableAEC") { try? AECEngine.stopAudioUnit() }
+        let hadMic = recordsMic
+        // Buffers are appended on sampleQueue. Finishing the inputs there means no append runs alongside or after it.
+        sampleQueue.sync {
+            isCapturing = false
+            if hadMic { micInput?.markAsFinished() }
+            if streamType != .systemaudio {
+                vwInput.markAsFinished()
+                awInput.markAsFinished()
+            }
         }
+        micConverter = nil
+        recordsMic = false
         if streamType != .systemaudio {
             let dispatchGroup = DispatchGroup()
             dispatchGroup.enter()
-            vwInput.markAsFinished()
-            if #available(macOS 13, *) { awInput.markAsFinished() }
             vW.finishWriting {
                 if vW.status != .completed {
                     print("Video writing failed with status: \(vW.status), error: \(String(describing: vW.error))")
                     let err = vW.error?.localizedDescription ?? "Unknow Error"
                     showNotification(title: "Failed to save file".local, body: "\(err)", id: "quickrecorder.error.\(UUID().uuidString)")
                 } else {
-                    if ud.bool(forKey: "recordMic") && ud.bool(forKey: "recordWinSound") && ud.bool(forKey: "remuxAudio") {
+                    if hadMic && ud.bool(forKey: "recordWinSound") && ud.bool(forKey: "remuxAudio") {
                         mixAudioTracks(videoURL: filePath.url) { result in
                             switch result {
                             case .success(let url):
@@ -385,7 +397,7 @@ class SCContext {
             }
             dispatchGroup.wait()
         } else {
-            if ud.bool(forKey: "recordMic") { vW.finishWriting {} }
+            if hadMic { vW.finishWriting {} }
         }
         
         DispatchQueue.main.async {
@@ -401,7 +413,7 @@ class SCContext {
         audioFile = nil // close audio file
         audioFile2 = nil // close audio file2
         if streamType == .systemaudio {
-            if ud.string(forKey: "audioFormat") == AudioFormat.mp3.rawValue && !ud.bool(forKey: "recordMic") {
+            if ud.string(forKey: "audioFormat") == AudioFormat.mp3.rawValue && !hadMic {
                 Task {
                     let outPutUrl = (String(filePath.dropLast(4)) + ".mp3").url
                     do {
@@ -420,7 +432,7 @@ class SCContext {
                     }
                 }
             } else {
-                if ud.bool(forKey: "remuxAudio") && ud.bool(forKey: "recordMic") {
+                if ud.bool(forKey: "remuxAudio") && hadMic {
                     let fileURL = filePath.url
                     let document = try? qmaPackageHandle.load(from: fileURL)
                     if let document = document {
@@ -454,7 +466,7 @@ class SCContext {
         AppDelegate.shared.presenterType = "OFF"
         updateStatusBar()
         
-        if !(ud.bool(forKey: "recordMic") && ud.bool(forKey: "recordWinSound") && ud.bool(forKey: "remuxAudio")) && streamType != .systemaudio {
+        if !(hadMic && ud.bool(forKey: "recordWinSound") && ud.bool(forKey: "remuxAudio")) && streamType != .systemaudio {
             if let vW = vW {
                 if vW.status != .completed {
                     streamType = nil
@@ -519,13 +531,49 @@ class SCContext {
     }
     
     static func getMicrophone() -> [AVCaptureDevice] {
-        var discoverySession: AVCaptureDevice.DiscoverySession
-        if #available(macOS 15.0, *) {
-            discoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInMicrophone, .microphone], mediaType: .audio, position: .unspecified)
-        } else {
-            discoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInMicrophone, .externalUnknown], mediaType: .audio, position: .unspecified)
-        }
+        let discoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInMicrophone, .microphone], mediaType: .audio, position: .unspecified)
         return discoverySession.devices.filter({ !$0.localizedName.contains("CADefaultDeviceAggregate") })
+    }
+    
+    /// The chosen microphone: an AVCaptureDevice uniqueID, or "default" to follow the system default input.
+    /// A selection is kept while its device is not connected.
+    ///
+    /// Earlier versions stored the device's name under "micDevice". That is converted the first time this is read;
+    /// if the device is absent then, its name stands in for the ID until the device is seen again.
+    static func selectedMicID() -> String {
+        let mics = getMicrophone()
+        if let id = ud.string(forKey: "micDeviceID") {
+            if id != "default", !mics.contains(where: { $0.uniqueID == id }), let device = mics.first(where: { $0.localizedName == id }) {
+                ud.set(device.uniqueID, forKey: "micDeviceID")
+                return device.uniqueID
+            }
+            return id
+        }
+        let name = ud.string(forKey: "micDevice") ?? "default"
+        let id = name == "default" ? name : (mics.first(where: { $0.localizedName == name })?.uniqueID ?? name)
+        ud.set(id, forKey: "micDeviceID")
+        return id
+    }
+    
+    /// Name of the chosen microphone for display, kept under "micDevice" so that it is known while the device is absent
+    static func selectedMicName() -> String {
+        let id = selectedMicID()
+        if let device = getMicrophone().first(where: { $0.uniqueID == id }) { return device.localizedName }
+        let name = ud.string(forKey: "micDevice") ?? "default"
+        return name == "default" ? id : name
+    }
+    
+    /// Selects a microphone by name, or the system default for "default". Returns false when there is no such device.
+    static func selectMic(named name: String) -> Bool {
+        if name == "default" {
+            ud.set("default", forKey: "micDeviceID")
+        } else if let device = getMicrophone().first(where: { $0.localizedName == name }) {
+            ud.set(device.uniqueID, forKey: "micDeviceID")
+        } else {
+            return false
+        }
+        ud.set(name, forKey: "micDevice")
+        return true
     }
     
     static func getiDevice() -> [AVCaptureDevice] {
@@ -533,170 +581,16 @@ class SCContext {
         return discoverySession.devices
     }
     
-    static func getCurrentMic() -> AVCaptureDevice? {
-        let deviceName = ud.string(forKey: "micDevice")
-        return getMicrophone().first(where: { $0.localizedName == deviceName })
-    }
-    
-    /*static func getChannelCount() -> Int? {
-        if let device = getCurrentMic() {
-            if let channels = device.formats.first?.formatDescription.audioChannelLayout?.numberOfChannels {
-                return channels
-            }
-            
-            let activeFormat = device.activeFormat
-            let description = activeFormat.formatDescription
-            if let audioStreamBasicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee {
-                let channelCount = audioStreamBasicDescription.mChannelsPerFrame
-                return max(2, Int(channelCount))
-            }
+    /// Returns the buffer with `offset` subtracted from its timestamps, or the buffer itself when there is nothing to shift
+    static func retime(_ sample: CMSampleBuffer, by offset: CMTime) -> CMSampleBuffer? {
+        guard offset.isValid else { return nil }
+        if offset.value == 0 { return sample }
+        guard var timing = try? sample.sampleTimingInfos(), !timing.isEmpty else { return nil }
+        for i in timing.indices {
+            timing[i].presentationTimeStamp = CMTimeSubtract(timing[i].presentationTimeStamp, offset)
+            if timing[i].decodeTimeStamp.isValid { timing[i].decodeTimeStamp = CMTimeSubtract(timing[i].decodeTimeStamp, offset) }
         }
-        return getDefaultChannelCount()
-    }
-    
-    static func getDefaultChannelCount() -> Int? {
-        var deviceID = AudioObjectID(0)
-        var propertySize = UInt32(MemoryLayout.size(ofValue: deviceID))
-        
-        // 获取默认音频输入设备
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &propertySize,
-            &deviceID
-        )
-        
-        guard status == noErr else {
-            print("Failed to get default audio input device")
-            return nil
-        }
-        
-        // 获取通道数
-        address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: kAudioDevicePropertyScopeInput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        // 查询流配置信息
-        var streamConfig: UnsafeMutableAudioBufferListPointer?
-        propertySize = 0
-        
-        // 先获取属性大小
-        let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &propertySize)
-        guard sizeStatus == noErr else {
-            print("Failed to get size for stream configuration")
-            return nil
-        }
-        
-        // 分配内存以存储音频流配置
-        let bufferList = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(propertySize))
-        defer { bufferList.deallocate() }
-        
-        let configStatus = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &propertySize, bufferList)
-        guard configStatus == noErr else {
-            print("Failed to get stream configuration")
-            return nil
-        }
-        
-        streamConfig = UnsafeMutableAudioBufferListPointer(bufferList)
-        
-        // 计算通道总数
-        var totalChannels = 0
-        for buffer in streamConfig! {
-            totalChannels += Int(buffer.mNumberChannels)
-        }
-        return max(2, totalChannels)
-    }*/
-    
-    static func getSampleRate() -> Int? {
-        if let device = getCurrentMic() {
-            let activeFormat = device.activeFormat
-            let description = activeFormat.formatDescription
-            
-            if let audioStreamBasicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee {
-                let sampleRate = audioStreamBasicDescription.mSampleRate
-                return Int(sampleRate)
-            }
-        }
-        return getDefaultSampleRate()
-    }
-    
-    static func getDefaultSampleRate() -> Int? {
-        var deviceID = AudioObjectID(0)
-        var propertySize = UInt32(MemoryLayout.size(ofValue: deviceID))
-        
-        // 获取默认音频输入设备
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &propertySize,
-            &deviceID
-        )
-        
-        guard status == noErr else {
-            print("Failed to get default audio input device")
-            return nil
-        }
-        
-        // 获取采样率
-        var sampleRate: Double = 0
-        propertySize = UInt32(MemoryLayout.size(ofValue: sampleRate))
-        
-        address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyNominalSampleRate,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        let sampleRateStatus = AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &propertySize,
-            &sampleRate
-        )
-        
-        guard sampleRateStatus == noErr else {
-            print("Failed to get sample rate for the default input device")
-            return nil
-        }
-        
-        return Int(sampleRate)
-    }
-    
-    static func adjustTime(sample: CMSampleBuffer, by offset: CMTime) -> CMSampleBuffer? {
-        guard CMSampleBufferGetFormatDescription(sample) != nil else { return nil }
-        
-        var timingInfo = [CMSampleTimingInfo](repeating: CMSampleTimingInfo(), count: Int(CMSampleBufferGetNumSamples(sample)))
-        CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: timingInfo.count, arrayToFill: &timingInfo, entriesNeededOut: nil)
-        
-        for i in 0..<timingInfo.count {
-            timingInfo[i].decodeTimeStamp = CMTimeSubtract(timingInfo[i].decodeTimeStamp, offset)
-            timingInfo[i].presentationTimeStamp = CMTimeSubtract(timingInfo[i].presentationTimeStamp, offset)
-        }
-        
-        var outSampleBuffer: CMSampleBuffer?
-        CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: sample, sampleTimingEntryCount: timingInfo.count, sampleTimingArray: &timingInfo, sampleBufferOut: &outSampleBuffer)
-        
-        return outSampleBuffer
+        return try? CMSampleBuffer(copying: sample, withNewTiming: timing)
     }
     
     static func showNotification(title: String, body: String, id: String) {

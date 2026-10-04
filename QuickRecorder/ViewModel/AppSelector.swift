@@ -213,8 +213,6 @@ struct OptionsView: View {
     @AppStorage("background")     private var background: BackgroundType = .wallpaper
     @AppStorage("highRes")        private var highRes: Int = 2
     @AppStorage("recordHDR")      private var recordHDR: Bool = false
-    @AppStorage("micDevice")      private var micDevice: String = "default"
-    @AppStorage("enableAEC")      private var enableAEC: Bool = false
     
     var body: some View {
         VStack(spacing: 6) {
@@ -327,36 +325,44 @@ struct OptionsView: View {
                         .onChange(of: recordMic) { _ in
                             Task { await SCContext.performMicCheck() }
                         }
-                        .onAppear{ if micList.isEmpty { recordMic = false } }
                         .disabled(micList.isEmpty)
-                        Picker("", selection: $micDevice) {
-                            Text("Default".local).tag("default")
-                            ForEach(micList, id: \.self) { device in
-                                Text(device.localizedName).tag(device.localizedName)
-                            }
-                        }
-                        .disabled(!recordMic)
-                        .scaleEffect(isMacOS12 ? 1 : 0.8)
-                        .padding(.leading, isMacOS12 ? -7 : -16)
-                        .frame(width: 90, height: isMacOS12 ? 20 :12)
-                        .onAppear{
-                            let list = micList.map({ $0.localizedName })
-                            if !list.contains(micDevice) { micDevice = "default" }
-                        }
+                        MicPicker(micList: micList)
+                            .disabled(!recordMic)
+                            .scaleEffect(0.8)
+                            .padding(.leading, -16)
+                            .frame(width: 90, height: 12)
                         Spacer().frame(width: 5)
-                        if micDevice != "default" && enableAEC{
-                            Button("⚠️", action: {
-                                let alert = createAlert(
-                                    title: "Compatibility Warning".local,
-                                    message: "The \"Acoustic Echo Cancellation\" is enabled, but it won't work on now.\n\nIf you need to use a specific input with AEC, set it to \"Default\" and select the device you want in System Preferences.\n\nOr you can start recording without AEC.".local,
-                                    button1: "OK".local, button2: "System Preferences".local)
-                                if alert.runModal() == .alertSecondButtonReturn {
-                                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.sound?input")!)
-                                }
-                            }).buttonStyle(.plain).fixedSize()
-                        }
                     }
                 }.padding(.trailing, isMacOS12 ? 0 : -17)
+            }
+        }
+    }
+}
+
+/// Microphone menu shared by the panels. The selection is the device's uniqueID, or "default" for the system default input.
+/// A selected device that is not connected stays selected and is listed as unavailable.
+struct MicPicker: View {
+    let micList: [AVCaptureDevice]
+    @AppStorage("micDeviceID") private var micDeviceID: String = "default"
+    @AppStorage("micDevice")   private var micName: String = "default"
+    
+    var body: some View {
+        Picker("", selection: $micDeviceID) {
+            Text("Default".local).tag("default")
+            ForEach(micList, id: \.uniqueID) { device in
+                Text(device.localizedName).tag(device.uniqueID)
+            }
+            if micDeviceID != "default" && !micList.contains(where: { $0.uniqueID == micDeviceID }) {
+                Text(String(format: "%@ (unavailable)".local, micName == "default" ? micDeviceID : micName)).tag(micDeviceID)
+            }
+        }
+        .onAppear { micDeviceID = SCContext.selectedMicID() }
+        .onChange(of: micDeviceID) { id in
+            // The name is stored next to the ID so that the device can still be named while it is absent
+            if id == "default" {
+                micName = "default"
+            } else if let device = micList.first(where: { $0.uniqueID == id }) {
+                micName = device.localizedName
             }
         }
     }

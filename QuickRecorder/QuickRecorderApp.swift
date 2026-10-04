@@ -95,15 +95,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     
     @AppStorage("showOnDock")       var showOnDock: Bool = true
     @AppStorage("showMenubar")      var showMenubar: Bool = false
-    @AppStorage("enableAEC")        var enableAEC: Bool = false
     @AppStorage("recordMic")        var recordMic: Bool = false
-    @AppStorage("micDevice")        var micDevice: String = "default"
     @AppStorage("remuxAudio")       var remuxAudio: Bool = true
     @AppStorage("recordWinSound")   var recordWinSound: Bool = true
     @AppStorage("recordHDR")        var recordHDR: Bool = false
     @AppStorage("encoder")          var encoder: Encoder = .h265
     @AppStorage("highRes")          var highRes: Int = 2
-    @AppStorage("AECLevel")         var AECLevel: String = "mid"
     @AppStorage("withAlpha")        var withAlpha: Bool = false
     @AppStorage("saveDirectory")    var saveDirectory: String?
     @AppStorage("countdown")        var countdown: Int = 0
@@ -224,7 +221,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
                 "trimAfterRecord": false,
                 "showOnDock": true,
                 "showMenubar": false,
-                "enableAEC": false,
                 "recordHDR": false,
                 "preventSleep": true,
                 "showPreview": true,

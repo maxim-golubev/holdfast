@@ -2,15 +2,6 @@
   "originHash" : "a89f15c8917c69baa61d735aebe94d657281ac2cd56f20025c83a6956b56bdb3",
   "pins" : [
     {
-      "identity" : "aecaudiostream",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lihaoyun6/AECAudioStream.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "0eab971c1dd0420ee84646c71172dd66fa59117c"
-      }
-    },
-    {
       "identity" : "keyboardshortcuts",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sindresorhus/KeyboardShortcuts.git",

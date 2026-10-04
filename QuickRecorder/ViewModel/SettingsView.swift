@@ -160,8 +160,6 @@ struct OutputView: View {
     @AppStorage("pixelFormat")      private var pixelFormat: PixFormat = .delault
     @AppStorage("background")       private var background: BackgroundType = .wallpaper
     @AppStorage("remuxAudio")       private var remuxAudio: Bool = true
-    @AppStorage("enableAEC")        private var enableAEC: Bool = false
-    @AppStorage("AECLevel")         private var AECLevel: String = "mid"
     @AppStorage("withAlpha")        private var withAlpha: Bool = false
     @AppStorage("saveDirectory")    private var saveDirectory: String?
 
@@ -186,19 +184,7 @@ struct OutputView: View {
                     Text("Opus").tag(AudioFormat.opus)
                 }
                 SDivider()
-                if #available(macOS 13, *) {
-                    SToggle("Record Microphone to Main Track", isOn: $remuxAudio)
-                    SDivider()
-                }
-                SToggle("Enable Acoustic Echo Cancellation", isOn: $enableAEC)
-                if #available(macOS 14, *) {
-                    SDivider()
-                    SPicker("Audio Ducking Level", selection: $AECLevel) {
-                        Text("Min").tag("min")
-                        Text("Mid").tag("mid")
-                        Text("Max").tag("max")
-                    }.disabled(!enableAEC)
-                }
+                SToggle("Record Microphone to Main Track", isOn: $remuxAudio)
             }
             SGroupBox(label: "Video") {
                 SPicker("Format", selection: $videoFormat) {

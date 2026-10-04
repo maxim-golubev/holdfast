@@ -242,11 +242,7 @@ class setPreferences: NSScriptCommand {
                 }
             }
         }
-        if let micname = self.evaluatedArguments!["micname"] as? String {
-            if SCContext.getMicrophone().map({$0.localizedName}).contains(micname) || micname == "default" {
-                UserDefaults.standard.set(micname, forKey: "micDevice")
-            }
-        }
+        if let micname = self.evaluatedArguments!["micname"] as? String { _ = SCContext.selectMic(named: micname) }
         if let hdr = self.evaluatedArguments!["hdr"] as? Bool { UserDefaults.standard.set(hdr, forKey: "recordHDR") }
         return nil
     }
