@@ -198,13 +198,28 @@ class recordAudio: NSScriptCommand {
     }
 }
 
+class stopRecording: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        // Same action as the status-bar Stop button; does nothing when no recording is running
+        DispatchQueue.main.async {
+            if SCContext.streamType == .idevice {
+                AVOutputClass.shared.stopRecording()
+            } else if SCContext.stream != nil {
+                SCContext.stopRecording()
+            }
+        }
+        return nil
+    }
+}
+
 class setPreferences: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         if SCContext.stream != nil {
             createAlert(title: "Error".local, message: "Already recording!".local, button1: "OK".local).runModal()
             return nil
         }
-        if let hires = self.evaluatedArguments!["hires"] as? Bool { UserDefaults.standard.set(hires, forKey: "highRes") }
+        // highRes is an Int setting: 2 = Retina resolution, 1 = normal
+        if let hires = self.evaluatedArguments!["hires"] as? Bool { UserDefaults.standard.set(hires ? 2 : 1, forKey: "highRes") }
         if let fps = self.evaluatedArguments!["fps"] as? Int { UserDefaults.standard.set(fps, forKey: "frameRate") }
         if let cursor = self.evaluatedArguments!["cursor"] as? Bool { UserDefaults.standard.set(cursor, forKey: "showMouse") }
         if let sound = self.evaluatedArguments!["sound"] as? Bool { UserDefaults.standard.set(sound, forKey: "recordWinSound") }
@@ -223,11 +238,7 @@ class setPreferences: NSScriptCommand {
                 UserDefaults.standard.set(micname, forKey: "micDevice")
             }
         }
-        if let hdr = self.evaluatedArguments!["hdr"] as? Bool {
-            if #available(macOS 15.0, *) {
-                UserDefaults.standard.set(hdr, forKey: "recordHDR")
-            }
-        }
+        if let hdr = self.evaluatedArguments!["hdr"] as? Bool { UserDefaults.standard.set(hdr, forKey: "recordHDR") }
         return nil
     }
 }

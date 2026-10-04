@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import Sparkle
 import ServiceManagement
 import KeyboardShortcuts
 import MatrixColorSelector
@@ -71,9 +70,7 @@ struct GeneralView: View {
                 SToggle("Show QuickRecorder on Menu Bar", isOn: $showMenubar)
                     //.disabled(!showOnDock)
             }
-            SGroupBox(label: "Update") { UpdaterSettingsView(updater: updaterController.updater) }
             VStack(spacing: 8) {
-                CheckForUpdatesView(updater: updaterController.updater)
                 if let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
                     Text("QuickRecorder v\(appVersion)")
                         .font(.subheadline)

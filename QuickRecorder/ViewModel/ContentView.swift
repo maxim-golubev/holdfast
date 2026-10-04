@@ -35,15 +35,6 @@ struct ContentView: View {
                             .background(.ultraThinMaterial)
                             .environment(\.controlActiveState, .active)
                     }
-                    ZStack {
-                        if isTodayChristmas() && isAllowChristmas() {
-                            let images = ["snowflake1", "snowflake2", "snowflake3", "christmasTree1", "christmasTree2"]
-                            SurpriseView(snowflakes: images, width: (!showOnDock && !showMenubar) ? 1055 : 930, height: 100)
-                        } else if isChineseNewYear() && isAllowChineseNewYear() {
-                            let images = ["fuzi1", "fuzi2", "fuzi3", "hongbao1", "hongbao3"]
-                            SurpriseView(snowflakes: images, width: (!showOnDock && !showMenubar) ? 1055 : 930, height: 100)
-                        }
-                    }.opacity(0.5)
                 }.cornerRadius(14)
                 HStack {
                     if !fromStatusBar { Spacer() }

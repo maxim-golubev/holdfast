@@ -37,6 +37,10 @@
             </parameter>
         </command>
         
+        <command name="stop recording" code="QKrdSTop" description="Stop the current recording (does nothing if not recording)">
+            <cocoa class="QuickRecorder.stopRecording"/>
+        </command>
+        
         <command name="configure" code="QKrdSEtt" description="Modify recording settings">
             <cocoa class="QuickRecorder.setPreferences"/>
             <parameter name="hires" code="REsl" type="boolean" description="Recording in Retina resolution" optional="yes">
@@ -60,7 +64,7 @@
             <parameter name="mic device" code="MCNa" type="text" description="The name of the audio input device (default is 'default')" optional="yes">
                 <cocoa key="micname"/>
             </parameter>
-            <parameter name="hdr" code="HDri" type="boolean" description="Whether to record in HDR mode (macOS 15 or later only)" optional="yes">
+            <parameter name="hdr" code="HDri" type="boolean" description="Whether to record in HDR mode" optional="yes">
                 <cocoa key="hdr"/>
             </parameter>
         </command>
