@@ -42,6 +42,9 @@ class SCContext {
     /// The device ScreenCaptureKit captures, nil for the system default input
     static var micCaptureDeviceID: String?
     static var micConverter: MicConverter?
+    /// Set while the microphone track is behind the recording by more than `micStallSeconds` and is being filled with silence
+    static var micStalled = false
+    static let micStallSeconds: Double = 5
     static var screenArea: NSRect?
     static var backgroundColor: CGColor = CGColor.black
     static var filePath: String!
@@ -339,7 +342,6 @@ class SCContext {
     static func stopRecording() {
         if ud.bool(forKey: "preventSleep") { SleepPreventer.shared.allowSleep() }
         autoStop = 0
-        lastPTS = nil
         recordCam = ""
         recordDevice = ""
         isMagnifierEnabled = false
@@ -352,28 +354,47 @@ class SCContext {
         if stream != nil { stream.stopCapture() }
         stream = nil
         let hadMic = recordsMic
+        // Captured here: the completion handlers below run after these statics may have changed
+        let writer: AVAssetWriter? = vW
+        let writtenPath: String = filePath ?? ""
+        let audioOnly = streamType == .systemaudio
         // Buffers are appended on sampleQueue. Finishing the inputs there means no append runs alongside or after it.
         sampleQueue.sync {
             isCapturing = false
-            if hadMic { micInput?.markAsFinished() }
-            if streamType != .systemaudio {
-                vwInput.markAsFinished()
-                awInput.markAsFinished()
+            if hadMic, let input = micInput {
+                // Bring the microphone track to the length of the recording, whatever the microphone delivered
+                if let end = lastPTS, writer?.status == .writing {
+                    micConverter?.fill(upTo: end) { buffer in
+                        var waited = 0
+                        while !input.isReadyForMoreMediaData && waited < 200 {
+                            usleep(5000)
+                            waited += 1
+                        }
+                        return input.isReadyForMoreMediaData && input.append(buffer)
+                    }
+                }
+                input.markAsFinished()
             }
+            if !audioOnly {
+                vwInput?.markAsFinished()
+                awInput?.markAsFinished()
+            }
+            lastPTS = nil
+            micConverter = nil
+            micStalled = false
+            recordsMic = false
         }
-        micConverter = nil
-        recordsMic = false
-        if streamType != .systemaudio {
+        if !audioOnly, let writer = writer {
             let dispatchGroup = DispatchGroup()
             dispatchGroup.enter()
-            vW.finishWriting {
-                if vW.status != .completed {
-                    print("Video writing failed with status: \(vW.status), error: \(String(describing: vW.error))")
-                    let err = vW.error?.localizedDescription ?? "Unknow Error"
+            writer.finishWriting {
+                if writer.status != .completed {
+                    print("Video writing failed with status: \(writer.status), error: \(String(describing: writer.error))")
+                    let err = writer.error?.localizedDescription ?? "Unknow Error"
                     showNotification(title: "Failed to save file".local, body: "\(err)", id: "quickrecorder.error.\(UUID().uuidString)")
                 } else {
                     if hadMic && ud.bool(forKey: "recordWinSound") && ud.bool(forKey: "remuxAudio") {
-                        mixAudioTracks(videoURL: filePath.url) { result in
+                        mixAudioTracks(videoURL: writtenPath.url) { result in
                             switch result {
                             case .success(let url):
                                 print("Exported video to \(String(describing: url.path))")
@@ -389,6 +410,10 @@ class SCContext {
                                 }
                             case .failure(let error):
                                 print("Failed to export video: \(error.localizedDescription)")
+                                let keptPath = keepUnmixedRecording(at: writtenPath)
+                                let body = String(format: "%@ The recording was kept with separate audio tracks: %@".local, error.localizedDescription, keptPath)
+                                showNotification(title: "Audio Mix Failed".local, body: body, id: "quickrecorder.error.\(UUID().uuidString)")
+                                DispatchQueue.main.async { showPreview(path: keptPath) }
                             }
                         }
                     }
@@ -396,8 +421,8 @@ class SCContext {
                 dispatchGroup.leave()
             }
             dispatchGroup.wait()
-        } else {
-            if hadMic { vW.finishWriting {} }
+        } else if audioOnly {
+            if hadMic { writer?.finishWriting {} }
         }
         
         DispatchQueue.main.async {
@@ -486,6 +511,24 @@ class SCContext {
         
         streamType = nil
         firstFrame = nil
+    }
+    
+    /// After a failed audio mix: removes what the mix left behind and gives the recording, which was written as
+    /// "name.ext.ext.ext" for the mix, its final name. Returns the path the recording is at afterwards.
+    static func keepUnmixedRecording(at path: String) -> String {
+        let written = path.url
+        let partialMix = written.deletingPathExtension()
+        let final = partialMix.deletingPathExtension()
+        guard !final.pathExtension.isEmpty else { return path }
+        try? fd.removeItem(at: partialMix)
+        try? fd.removeItem(at: final)
+        do {
+            try fd.moveItem(at: written, to: final)
+            return final.path
+        } catch {
+            print("Failed to rename the unmixed recording: \(error.localizedDescription)")
+            return path
+        }
     }
     
     static func showPreview(path: String, image: NSImage? = nil) {
@@ -710,7 +753,7 @@ class SCContext {
                     switch exportSession.status {
                     case .completed:
                         let  fileManager = fd
-                        try? fileManager.removeItem(atPath: filePath)
+                        try? fileManager.removeItem(atPath: videoURL.path)
                         try? fileManager.removeItem(atPath: audioOutputURL.path)
                         completion(.success(outputURL))
                     case .failed:

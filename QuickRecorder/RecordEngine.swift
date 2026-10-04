@@ -89,7 +89,7 @@ extension AppDelegate {
                     if highlightMouse { includ += mouseWindow }
                     if background.rawValue == BackgroundType.wallpaper.rawValue { if dockApp != nil { includ += wallpaper }}
                     SCContext.filter = SCContentFilter(display: screen, including: includ + camLayer)
-                    if #available(macOS 14.2, *) { SCContext.filter?.includeMenuBar = includeMenuBar }
+                    SCContext.filter?.includeMenuBar = includeMenuBar
                 } else {
                     SCContext.streamType = .window
                     SCContext.filter = SCContentFilter(desktopIndependentWindow: includ[0])
@@ -114,7 +114,7 @@ extension AppDelegate {
                 }}
                 if hideDesktopFiles { except += desktopFiles }
                 SCContext.filter = SCContentFilter(display: screen, excludingApplications: excluded, exceptingWindows: except)
-                if #available(macOS 14.2, *) { SCContext.filter?.includeMenuBar = ((SCContext.streamType == .screen || SCContext.streamType == .screenarea) && includeMenuBar) }
+                SCContext.filter?.includeMenuBar = includeMenuBar
             }
             if SCContext.streamType == .application {
                 var includ = SCContext.application!
@@ -126,7 +126,7 @@ extension AppDelegate {
                 //if ud.bool(forKey: "highlightMouse") { if let qrSelf = qrSelf { includ.append(qrSelf) }}
                 if background.rawValue == BackgroundType.wallpaper.rawValue { if let dock = dockApp { includ.append(dock); except += dockWindow}}
                 SCContext.filter = SCContentFilter(display: screen, including: includ, exceptingWindows: except)
-                if #available(macOS 14.2, *) { SCContext.filter?.includeMenuBar = includeMenuBar }
+                SCContext.filter?.includeMenuBar = includeMenuBar
             }
         }
         prepareMicCapture()
@@ -142,6 +142,7 @@ extension AppDelegate {
         SCContext.recordsMic = false
         SCContext.micCaptureDeviceID = nil
         SCContext.micConverter = nil
+        SCContext.micStalled = false
         guard recordMic else { return }
         let id = "quickrecorder.microphone.\(UUID().uuidString)"
         let access = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -166,56 +167,25 @@ extension AppDelegate {
     }
 
     func record(filter: SCContentFilter, fastStart: Bool = true) async {
-        SCContext.timeOffset = .zero
-        SCContext.lastPTS = nil
-        SCContext.audioEndPTS = nil
-        SCContext.isPaused = false
-        SCContext.isResume = false
+        SCContext.sampleQueue.sync {
+            SCContext.timeOffset = .zero
+            SCContext.lastPTS = nil
+            SCContext.audioEndPTS = nil
+            SCContext.isPaused = false
+            SCContext.isResume = false
+            SCContext.micStalled = false
+        }
         
         let audioOnly = SCContext.streamType == .systemaudio
         
-        let conf: SCStreamConfiguration
-#if compiler(>=6.0)
-        if recordHDR {
-            if #available(macOS 15, *) {
-                // TODO change here. https://developer.apple.com/videos/play/wwdc2024/10088/?time=191
-                // For canonical display, it means you are capturing HDR content that is optimized for sharing with other HDR devices.
-                // hdrLocalDisplay or hdrCanonicalDisplay
-
-
-                conf = SCStreamConfiguration(preset: .captureHDRStreamLocalDisplay)
-            } else { conf = SCStreamConfiguration() }
-        } else { conf = SCStreamConfiguration() }
-#else
-        conf = SCStreamConfiguration()
-#endif
+        // HDR uses the local display preset; see https://developer.apple.com/videos/play/wwdc2024/10088/?time=191 for the canonical display alternative
+        let conf = recordHDR ? SCStreamConfiguration(preset: .captureHDRStreamLocalDisplay) : SCStreamConfiguration()
         conf.width = 2
         conf.height = 2
         
         if !audioOnly {
-            if #available(macOS 14.0, *) {
-                conf.width = Int(filter.contentRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
-                conf.height = Int(filter.contentRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
-            } else {
-                guard let pointPixelScaleOld = (SCContext.screen ?? SCContext.getSCDisplayWithMouse()!).nsScreen?.backingScaleFactor else { return }
-                if SCContext.streamType == .application || SCContext.streamType == .windows || SCContext.streamType == .screen {
-                    let frame = (SCContext.screen ?? SCContext.getSCDisplayWithMouse()!).frame
-                    conf.width = Int(frame.width)
-                    conf.height = Int(frame.height)
-                }
-                if SCContext.streamType == .window {
-                    let frame = SCContext.window![0].frame
-                    conf.width = Int(frame.width)
-                    conf.height = Int(frame.height)
-                }
-                if SCContext.streamType == .screenarea {
-                    let frame = SCContext.screenArea!
-                    conf.width = Int(frame.width)
-                    conf.height = Int(frame.height)
-                }
-                conf.width = conf.width * (highRes == 2 ? Int(pointPixelScaleOld) : 1)
-                conf.height = conf.height * (highRes == 2 ? Int(pointPixelScaleOld) : 1)
-            }
+            conf.width = Int(filter.contentRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+            conf.height = Int(filter.contentRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
             
             if fastStart{
                 conf.showsCursor = false
@@ -274,14 +244,8 @@ extension AppDelegate {
             if let nsRect = SCContext.screenArea {
                 let newY = SCContext.screen!.frame.height - nsRect.size.height - nsRect.origin.y
                 conf.sourceRect = CGRect(x: nsRect.origin.x, y: newY, width: nsRect.size.width, height: nsRect.size.height)
-                if #available(macOS 14.0, *) {
-                    conf.width = Int(conf.sourceRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
-                    conf.height = Int(conf.sourceRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
-                } else {
-                    guard let pointPixelScaleOld = (SCContext.screen ?? SCContext.getSCDisplayWithMouse()!).nsScreen?.backingScaleFactor else { return }
-                    conf.width = Int(conf.sourceRect.width) * (highRes == 2 ? Int(pointPixelScaleOld) : 1)
-                    conf.height = Int(conf.sourceRect.height) * (highRes == 2 ? Int(pointPixelScaleOld) : 1)
-                }
+                conf.width = Int(conf.sourceRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                conf.height = Int(conf.sourceRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
             }
         }
         
@@ -511,20 +475,11 @@ extension AppDelegate {
                     //                                       colorSpace:colorSpace,
                     //                                       options: [
                     //     kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0
-                    if #available(macOS 14.0, *) {
-                        try context.writePNGRepresentation(of:ciImage,
-                                                           to:url,
-                                                           format: .RGB10,
-                                                           colorSpace:colorSpace
-                        )
-                    } else {
-                        // Fallback on earlier versions
-                        print("RGB10 PNG not supported on this macOS version")
-                        try context.writePNGRepresentation(of:ciImage,
-                                                           to:url,
-                                                           format: .RGBA8,
-                                                           colorSpace:colorSpace)
-                    }
+                    try context.writePNGRepresentation(of:ciImage,
+                                                       to:url,
+                                                       format: .RGB10,
+                                                       colorSpace:colorSpace
+                    )
                     //        try context.writePNGRepresentation(of:outImage, to:outURL, format: .RGBA16,colorSpace:colorSpace,options:[:])
                 } catch let error {
                     // Handle the error case
@@ -563,6 +518,7 @@ extension AppDelegate {
         } else {
             SCContext.lastPTS = endPTS
         }
+        if outputType != .microphone { checkMicrophone(at: pts) }
         switch outputType {
         case .screen:
             if (SCContext.screen == nil && SCContext.window == nil && SCContext.application == nil) || SCContext.streamType == .systemaudio { break }
@@ -580,21 +536,15 @@ extension AppDelegate {
             guard let frame = SCContext.retime(sampleBuffer, by: SCContext.timeOffset) else { return }
             if frameQueue.getArray().contains(where: { $0 >= endPTS }) { print("Skip this frame"); return } else { frameQueue.append(endPTS) }
             if SCContext.vwInput.isReadyForMoreMediaData {
-                if #available(macOS 14.2, *) {
-                    if let rect = attachments[.presenterOverlayContentRect] as? [String: Any]{
-                        var type = "np"
-                        let off = (rect["X"] as! CGFloat == .infinity)
-                        let small = (rect["X"] as! CGFloat == 0.0)
-                        let big = (!off && !small)
-                        if off { type = "OFF" } else if small { type = "Small" } else if big { type = "Big" }
-                        if type != presenterType {
-                            print("Presenter Overlay set to \"\(type)\"!")
-                            isCameraReady = false
-                            DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(poSafeDelay)) {
-                                self.isCameraReady = true
-                            }
-                            presenterType = type
+                if let rect = attachments[.presenterOverlayContentRect] as? [String: Any], let x = rect["X"] as? CGFloat {
+                    let type = x == .infinity ? "OFF" : (x == 0.0 ? "Small" : "Big")
+                    if type != presenterType {
+                        print("Presenter Overlay set to \"\(type)\"!")
+                        isCameraReady = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(poSafeDelay)) {
+                            self.isCameraReady = true
                         }
+                        presenterType = type
                     }
                 }
                 if isPresenterON && !isCameraReady { break }
@@ -630,11 +580,33 @@ extension AppDelegate {
             }
         case .microphone:
             guard SCContext.recordsMic, SCContext.startTime != nil, let micInput = SCContext.micInput else { return }
-            SCContext.micConverter?.convert(sampleBuffer, at: pts) { buffer in
+            let written = SCContext.micConverter?.convert(sampleBuffer, at: pts) { buffer in
                 micInput.isReadyForMoreMediaData && micInput.append(buffer)
+            } ?? false
+            if written && SCContext.micStalled {
+                SCContext.micStalled = false
+                SCContext.showNotification(title: "Microphone Is Back".local, body: "Microphone audio is being recorded again.".local, id: "quickrecorder.microphone.\(UUID().uuidString)")
             }
         @unknown default:
             assertionFailure("unknown stream type".local)
+        }
+    }
+
+    /// Runs on every screen and system audio buffer, which keep coming when the microphone does not.
+    /// When the microphone track falls behind the recording, says so once and keeps the track going with silence,
+    /// so that it stays in sync and the microphone can come back later.
+    private func checkMicrophone(at pts: CMTime) {
+        guard SCContext.recordsMic, SCContext.startTime != nil, let converter = SCContext.micConverter, let micInput = SCContext.micInput else { return }
+        guard converter.lag(behind: pts) > SCContext.micStallSeconds else { return }
+        if !SCContext.micStalled {
+            SCContext.micStalled = true
+            let body = String(format: "No microphone audio has arrived for %d seconds. The recording continues without your voice until the microphone comes back.".local, Int(SCContext.micStallSeconds))
+            SCContext.showNotification(title: "Microphone Stopped".local, body: body, id: "quickrecorder.microphone.\(UUID().uuidString)")
+        }
+        // Stay behind the recording by the same margin, so microphone buffers that are merely late still fit
+        let end = CMTimeSubtract(pts, CMTime(seconds: SCContext.micStallSeconds, preferredTimescale: MicConverter.sampleRate))
+        converter.fill(upTo: end, atLeast: Int64(MicConverter.sampleRate)) { buffer in
+            micInput.isReadyForMoreMediaData && micInput.append(buffer)
         }
     }
 

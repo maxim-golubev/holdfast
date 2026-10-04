@@ -35,36 +35,58 @@ final class MicConverter {
         if !nextPTS.isValid { nextPTS = CMTimeConvertScale(pts, timescale: MicConverter.sampleRate, method: .default) }
     }
 
+    /// How far the track is behind `pts`, in seconds. Zero before the timeline has started.
+    func lag(behind pts: CMTime) -> Double {
+        guard nextPTS.isValid, pts.isValid else { return 0 }
+        return CMTimeGetSeconds(CMTimeSubtract(pts, nextPTS))
+    }
+
     /// Converts one microphone buffer whose (pause adjusted) start time is `pts` and hands the result to `append`,
-    /// which returns false when the writer did not take the buffer.
+    /// which returns false when the writer did not take the buffer. Returns true when the buffer's audio was written.
     ///
     /// The writer plays audio buffers back to back whatever their timestamps say, so missing samples (a device
     /// switch, a buffer the writer was not ready for) are written as silence to keep the track in sync.
-    func convert(_ sampleBuffer: CMSampleBuffer, at pts: CMTime, append: (CMSampleBuffer) -> Bool) {
+    @discardableResult
+    func convert(_ sampleBuffer: CMSampleBuffer, at pts: CMTime, append: (CMSampleBuffer) -> Bool) -> Bool {
         let start = CMTimeConvertScale(pts, timescale: MicConverter.sampleRate, method: .default)
-        guard start.isValid else { return }
+        guard start.isValid else { return false }
         if nextPTS.isValid {
-            var missing = CMTimeSubtract(start, nextPTS).value
+            let missing = CMTimeSubtract(start, nextPTS).value
             if missing > tolerance {
-                var filled: Int64 = 0
-                while missing > 0 && filled < longestFill {
-                    let count = min(missing, silenceChunk)
-                    guard let silent = silence(frames: count), append(silent) else { return }
-                    advance(by: count)
-                    missing -= count
-                    filled += count
-                }
+                guard writeSilence(frames: min(missing, longestFill), append: append) else { return false }
                 // Still behind after a long hole: keep filling on the next buffers before audio is written again
-                if missing > 0 { return }
+                if missing > longestFill { return false }
             } else if missing < -tolerance {
                 // The device delivered more samples than time has passed: drop until the timeline catches up
-                return
+                return false
             }
         } else {
             nextPTS = start
         }
-        guard let converted = resample(sampleBuffer), let buffer = makeSampleBuffer(from: converted), append(buffer) else { return }
+        guard let converted = resample(sampleBuffer), let buffer = makeSampleBuffer(from: converted), append(buffer) else { return false }
         advance(by: Int64(converted.frameLength))
+        return true
+    }
+
+    /// Writes silence from the end of the track up to `pts`, when at least `frames` are missing.
+    /// Used while the microphone delivers nothing and to bring the track to full length when the recording stops.
+    func fill(upTo pts: CMTime, atLeast frames: Int64 = 1, append: (CMSampleBuffer) -> Bool) {
+        let end = CMTimeConvertScale(pts, timescale: MicConverter.sampleRate, method: .default)
+        guard nextPTS.isValid, end.isValid else { return }
+        let missing = CMTimeSubtract(end, nextPTS).value
+        if missing >= max(frames, 1) { _ = writeSilence(frames: missing, append: append) }
+    }
+
+    /// Returns false when the writer stopped taking buffers before all of it was written
+    private func writeSilence(frames: Int64, append: (CMSampleBuffer) -> Bool) -> Bool {
+        var left = frames
+        while left > 0 {
+            let count = min(left, silenceChunk)
+            guard let silent = silence(frames: count), append(silent) else { return false }
+            advance(by: count)
+            left -= count
+        }
+        return true
     }
 
     private func advance(by frames: Int64) {
