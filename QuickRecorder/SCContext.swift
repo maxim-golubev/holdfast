@@ -13,6 +13,101 @@ import UserNotifications
 import SwiftLAME
 import SwiftUI
 
+/// Everything about one recording that must not change while it runs or while it is being finished: where it is
+/// written and the settings it was started with. Built once in `prepRecord`. `stopRecording()` and what follows it
+/// (audio mix, preview, notifications) work from their own copy, so changing a setting or starting the next
+/// recording in the meantime cannot redirect them to another file.
+struct RecordingContext {
+    let audioOnly: Bool
+    /// Whether this recording has a microphone track, which the "recordMic" setting alone does not decide
+    let recordMic: Bool
+    let recordWinSound: Bool
+    let remuxAudio: Bool
+    let preventSleep: Bool
+    let showPreview: Bool
+    let trimAfterRecord: Bool
+    let videoFormat: VideoFormat
+    let audioFormat: AudioFormat
+    let saveDirectory: String
+    /// MP3 bitrate in kbit/s
+    let audioQuality: Int
+    /// What is written while recording: the video file, the audio file, or the .qma package for audio with a microphone
+    let rawURL: URL
+    /// Intermediate file of the audio mix after a video recording, nil when the audio tracks are not mixed
+    let mixURL: URL?
+    /// What the user ends up with
+    let finalURL: URL
+    /// Audio-only recordings: the system audio file, and the microphone file when there is one
+    let systemAudioURL: URL?
+    let micAudioURL: URL?
+    
+    var mixesAudio: Bool { mixURL != nil }
+    var fileType: AVFileType { videoFormat == .mov ? .mov : .mp4 }
+    var audioFileType: AVFileType { audioFormat == .flac || audioFormat == .opus ? .caf : .m4a }
+    var audioFileEnding: String { RecordingContext.fileEnding(for: audioFormat) }
+    /// MP3 is recorded as AAC and converted afterwards
+    var audioEncoder: String { audioFormat == .mp3 ? AudioFormat.aac.rawValue : audioFormat.rawValue }
+    
+    private static func fileEnding(for format: AudioFormat) -> String {
+        switch format {
+        case .mp3, .aac, .alac: return "m4a"
+        case .flac: return "flac"
+        case .opus: return "ogg"
+        }
+    }
+    
+    init(audioOnly: Bool, recordMic: Bool, saveDirectory: String) {
+        let recordWinSound = ud.bool(forKey: "recordWinSound")
+        let remuxAudio = ud.bool(forKey: "remuxAudio")
+        let videoFormat = VideoFormat(rawValue: ud.string(forKey: "videoFormat") ?? "") ?? .mp4
+        let audioFormat = AudioFormat(rawValue: ud.string(forKey: "audioFormat") ?? "") ?? .aac
+        self.audioOnly = audioOnly
+        self.recordMic = recordMic
+        self.recordWinSound = recordWinSound
+        self.remuxAudio = remuxAudio
+        self.preventSleep = ud.bool(forKey: "preventSleep")
+        self.showPreview = ud.bool(forKey: "showPreview")
+        self.trimAfterRecord = ud.bool(forKey: "trimAfterRecord")
+        self.videoFormat = videoFormat
+        self.audioFormat = audioFormat
+        self.saveDirectory = saveDirectory
+        self.audioQuality = ud.integer(forKey: "audioQuality")
+        
+        let base = SCContext.getFilePath(directory: saveDirectory)
+        if audioOnly {
+            let ending = RecordingContext.fileEnding(for: audioFormat)
+            let exported = audioFormat == .mp3 ? "mp3" : ending
+            mixURL = nil
+            if recordMic {
+                let package = "\(base).qma".url
+                rawURL = package
+                systemAudioURL = package.appendingPathComponent("sys.\(ending)")
+                micAudioURL = package.appendingPathComponent("mic.\(ending)")
+                finalURL = remuxAudio ? "\(base).\(exported)".url : package
+            } else {
+                let file = "\(base).\(ending)".url
+                rawURL = file
+                systemAudioURL = file
+                micAudioURL = nil
+                finalURL = audioFormat == .mp3 ? "\(base).mp3".url : file
+            }
+        } else {
+            let ending = videoFormat.rawValue
+            finalURL = "\(base).\(ending)".url
+            systemAudioURL = nil
+            micAudioURL = nil
+            if remuxAudio && recordMic && recordWinSound {
+                // Written under a temporary name; the mix produces the final file
+                mixURL = "\(base).\(ending).\(ending)".url
+                rawURL = "\(base).\(ending).\(ending).\(ending)".url
+            } else {
+                mixURL = nil
+                rawURL = finalURL
+            }
+        }
+    }
+}
+
 class SCContext {
     static var trimingList = [URL]()
     static var firstFrame: CMSampleBuffer?
@@ -47,11 +142,9 @@ class SCContext {
     static let micStallSeconds: Double = 5
     static var screenArea: NSRect?
     static var backgroundColor: CGColor = CGColor.black
-    static var filePath: String!
-    static var filePath1: String!
-    static var filePath2: String!
+    /// The recording in progress, set when it starts and taken by `stopRecording()`. Only assigned inside `sampleQueue.sync`.
+    static var recording: RecordingContext?
     static var audioFile: AVAudioFile?
-    static var audioFile2: AVAudioFile?
     static var vW: AVAssetWriter!
     static var vwInput, awInput, micInput: AVAssetWriterInput!
     static var startTime: Date?
@@ -189,10 +282,13 @@ class SCContext {
         return nil
     }
     
-    static func getFilePath(capture: Bool = false) -> String {
+    /// Path without extension for a new file. `directory` is the save directory a running recording was started with;
+    /// without it the current setting is used.
+    static func getFilePath(capture: Bool = false, directory: String? = nil) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "y-MM-dd HH.mm.ss"
-        return ud.string(forKey: "saveDirectory")! + (capture ? "/Capturing at ".local : "/Recording at ".local) + dateFormatter.string(from: Date())
+        let directory = directory ?? ud.string(forKey: "saveDirectory") ?? (NSHomeDirectory() + "/Desktop")
+        return directory + (capture ? "/Capturing at ".local : "/Recording at ".local) + dateFormatter.string(from: Date())
     }
     
     static func updateAudioSettings(format: String = ud.string(forKey: "audioFormat") ?? "") -> [String : Any] {
@@ -297,19 +393,6 @@ class SCContext {
         return nil
     }
     
-    static func getRecordingSize() -> String {
-        do {
-            let fileAttr = try fd.attributesOfItem(atPath: filePath)
-            let byteFormat = ByteCountFormatter()
-            byteFormat.allowedUnits = [.useMB]
-            byteFormat.countStyle = .file
-            return byteFormat.string(fromByteCount: fileAttr[FileAttributeKey.size] as! Int64)
-        } catch {
-            print(String(format: "failed to fetch file for size indicator: %@".local, error.localizedDescription))
-        }
-        return "Unknown".local
-    }
-    
     static func getRecordingLength() -> String {
         let formatter = DateComponentsFormatter()
         formatter.allowedUnits = [.minute, .second]
@@ -340,7 +423,19 @@ class SCContext {
     }
     
     static func stopRecording() {
-        if ud.bool(forKey: "preventSleep") { SleepPreventer.shared.allowSleep() }
+        // The recording being stopped. Everything below, the completion handlers included, works from this copy and
+        // the locals captured here: by the time they run, the statics and the settings may belong to the next recording.
+        let stopped = sampleQueue.sync { () -> RecordingContext? in
+            let current = SCContext.recording
+            SCContext.recording = nil
+            return current
+        }
+        guard let recording = stopped else {
+            // Nothing is being recorded, or this recording is already being stopped
+            SleepPreventer.shared.allowSleep()
+            return
+        }
+        if recording.preventSleep { SleepPreventer.shared.allowSleep() }
         autoStop = 0
         recordCam = ""
         recordDevice = ""
@@ -353,11 +448,11 @@ class SCContext {
         
         if stream != nil { stream.stopCapture() }
         stream = nil
-        let hadMic = recordsMic
-        // Captured here: the completion handlers below run after these statics may have changed
-        let writer: AVAssetWriter? = vW
-        let writtenPath: String = filePath ?? ""
-        let audioOnly = streamType == .systemaudio
+        let hadMic = recording.recordMic
+        let audioOnly = recording.audioOnly
+        // An audio recording without a microphone has no writer; `vW` would be the one of an earlier recording
+        let writer: AVAssetWriter? = (audioOnly && !hadMic) ? nil : vW
+        var frame: CMSampleBuffer?
         // Buffers are appended on sampleQueue. Finishing the inputs there means no append runs alongside or after it.
         sampleQueue.sync {
             isCapturing = false
@@ -379,50 +474,37 @@ class SCContext {
                 vwInput?.markAsFinished()
                 awInput?.markAsFinished()
             }
+            audioFile = nil // close audio file
+            frame = firstFrame
+            firstFrame = nil
             lastPTS = nil
             micConverter = nil
             micStalled = false
             recordsMic = false
         }
-        if !audioOnly, let writer = writer {
-            let dispatchGroup = DispatchGroup()
-            dispatchGroup.enter()
-            writer.finishWriting {
-                if writer.status != .completed {
-                    print("Video writing failed with status: \(writer.status), error: \(String(describing: writer.error))")
-                    let err = writer.error?.localizedDescription ?? "Unknow Error"
-                    showNotification(title: "Failed to save file".local, body: "\(err)", id: "quickrecorder.error.\(UUID().uuidString)")
-                } else {
-                    if hadMic && ud.bool(forKey: "recordWinSound") && ud.bool(forKey: "remuxAudio") {
-                        mixAudioTracks(videoURL: writtenPath.url) { result in
-                            switch result {
-                            case .success(let url):
-                                print("Exported video to \(String(describing: url.path))")
-                                if !ud.bool(forKey: "showPreview") {
-                                    showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, url.path), id: "quickrecorder.completed.\(UUID().uuidString)")
-                                }
-                                DispatchQueue.main.async {
-                                    if ud.bool(forKey: "trimAfterRecord") {
-                                        AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, only: false)
-                                    } else {
-                                        showPreview(path: url.path)
-                                    }
-                                }
-                            case .failure(let error):
-                                print("Failed to export video: \(error.localizedDescription)")
-                                let keptPath = keepUnmixedRecording(at: writtenPath)
-                                let body = String(format: "%@ The recording was kept with separate audio tracks: %@".local, error.localizedDescription, keptPath)
-                                showNotification(title: "Audio Mix Failed".local, body: body, id: "quickrecorder.error.\(UUID().uuidString)")
-                                DispatchQueue.main.async { showPreview(path: keptPath) }
-                            }
-                        }
-                    }
-                }
-                dispatchGroup.leave()
+        var videoSaved = false
+        if !audioOnly {
+            if let writer = writer {
+                let dispatchGroup = DispatchGroup()
+                dispatchGroup.enter()
+                writer.finishWriting { dispatchGroup.leave() }
+                dispatchGroup.wait()
+                videoSaved = writer.status == .completed
             }
-            dispatchGroup.wait()
-        } else if audioOnly {
-            if hadMic { writer?.finishWriting {} }
+            if !videoSaved {
+                print("Video writing failed with status: \(String(describing: writer?.status)), error: \(String(describing: writer?.error))")
+                let err = writer?.error?.localizedDescription ?? "Unknow Error"
+                showNotification(title: "Failed to save file".local, body: "\(err)", id: "quickrecorder.error.\(UUID().uuidString)")
+            } else if recording.mixesAudio {
+                DispatchQueue.global(qos: .userInitiated).async { mixRecording(recording, frame: frame) }
+            }
+        } else if hadMic, let writer = writer {
+            // The package is only read once the microphone file is complete
+            writer.finishWriting {
+                DispatchQueue.main.async { finishAudioRecording(recording) }
+            }
+        } else {
+            finishAudioRecording(recording)
         }
         
         DispatchQueue.main.async {
@@ -435,54 +517,6 @@ class SCContext {
             }
         }
         
-        audioFile = nil // close audio file
-        audioFile2 = nil // close audio file2
-        if streamType == .systemaudio {
-            if ud.string(forKey: "audioFormat") == AudioFormat.mp3.rawValue && !hadMic {
-                Task {
-                    let outPutUrl = (String(filePath.dropLast(4)) + ".mp3").url
-                    do {
-                        try await m4a2mp3(inputUrl: filePath1.url, outputUrl: outPutUrl)
-                        try? fd.removeItem(atPath: filePath1)
-                        if !ud.bool(forKey: "showPreview") {
-                            let title = "Recording Completed".local
-                            let body = String(format: "File saved to: %@".local, outPutUrl.path.removingPercentEncoding!)
-                            let id = "quickrecorder.completed.\(UUID().uuidString)"
-                            showNotification(title: title, body: body, id: id)
-                        } else {
-                            DispatchQueue.main.async { showPreview(path: outPutUrl.path, image: NSImage(named: "audioIcon")) }
-                        }
-                    } catch {
-                        showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
-                    }
-                }
-            } else {
-                if ud.bool(forKey: "remuxAudio") && hadMic {
-                    let fileURL = filePath.url
-                    let document = try? qmaPackageHandle.load(from: fileURL)
-                    if let document = document {
-                        let audioPlayerManager = AudioPlayerManager()
-                        audioPlayerManager.loadAudioFiles(format: document.info.format, package: fileURL, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
-                        audioPlayerManager.sysVol = document.info.sysVol
-                        audioPlayerManager.micVol = document.info.micVol
-                        let exportMP3 = document.info.exportMP3
-                        let format = exportMP3 ? "mp3" : document.info.format
-                        let saveURL = fileURL.deletingPathExtension().appendingPathExtension(format)
-                        audioPlayerManager.saveFile(saveURL, saveAsMP3: exportMP3)
-                    }
-                } else {
-                    if !ud.bool(forKey: "showPreview") {
-                        let title = "Recording Completed".local
-                        let body = String(format: "File saved to: %@".local, filePath)
-                        let id = "quickrecorder.completed.\(UUID().uuidString)"
-                        showNotification(title: title, body: body, id: id)
-                    } else {
-                        showPreview(path: filePath, image: NSImage(named: "qmaIcon"))
-                    }
-                }
-            }
-        }
-        
         isPaused = false
         hideMousePointer = false
         window = nil
@@ -491,51 +525,112 @@ class SCContext {
         AppDelegate.shared.presenterType = "OFF"
         updateStatusBar()
         
-        if !(hadMic && ud.bool(forKey: "recordWinSound") && ud.bool(forKey: "remuxAudio")) && streamType != .systemaudio {
-            if let vW = vW {
-                if vW.status != .completed {
-                    streamType = nil
-                    return
-                }
-            }
-            if !ud.bool(forKey: "showPreview") {
+        if videoSaved && !recording.mixesAudio {
+            let url = recording.finalURL
+            if !recording.showPreview {
                 let title = "Recording Completed".local
-                let body = String(format: "File saved to: %@".local, filePath)
+                let body = String(format: "File saved to: %@".local, url.path)
                 let id = "quickrecorder.completed.\(UUID().uuidString)"
                 showNotification(title: title, body: body, id: id)
             } else {
-                showPreview(path: filePath)
+                showPreview(path: url.path, frame: frame)
             }
-            trimVideo()
+            if recording.trimAfterRecord {
+                AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, only: false)
+            }
         }
         
         streamType = nil
-        firstFrame = nil
     }
     
-    /// After a failed audio mix: removes what the mix left behind and gives the recording, which was written as
-    /// "name.ext.ext.ext" for the mix, its final name. Returns the path the recording is at afterwards.
-    static func keepUnmixedRecording(at path: String) -> String {
-        let written = path.url
-        let partialMix = written.deletingPathExtension()
-        let final = partialMix.deletingPathExtension()
-        guard !final.pathExtension.isEmpty else { return path }
+    /// Mixes the audio tracks of a finished video recording and presents the result
+    private static func mixRecording(_ recording: RecordingContext, frame: CMSampleBuffer?) {
+        guard let mixURL = recording.mixURL else { return }
+        mixAudioTracks(videoURL: recording.rawURL, audioURL: mixURL, outputURL: recording.finalURL, fileType: recording.fileType) { result in
+            switch result {
+            case .success(let url):
+                print("Exported video to \(String(describing: url.path))")
+                if !recording.showPreview {
+                    showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, url.path), id: "quickrecorder.completed.\(UUID().uuidString)")
+                }
+                DispatchQueue.main.async {
+                    if recording.trimAfterRecord {
+                        AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, only: false)
+                    } else if recording.showPreview {
+                        showPreview(path: url.path, frame: frame)
+                    }
+                }
+            case .failure(let error):
+                print("Failed to export video: \(error.localizedDescription)")
+                let kept = keepUnmixedRecording(written: recording.rawURL, partialMix: mixURL, final: recording.finalURL)
+                let body = String(format: "%@ The recording was kept with separate audio tracks: %@".local, error.localizedDescription, kept.path)
+                showNotification(title: "Audio Mix Failed".local, body: body, id: "quickrecorder.error.\(UUID().uuidString)")
+                if recording.showPreview {
+                    DispatchQueue.main.async { showPreview(path: kept.path, frame: frame) }
+                }
+            }
+        }
+    }
+    
+    /// What follows an audio-only recording once its files are closed: MP3 conversion, the mix of a .qma package, or just the report
+    private static func finishAudioRecording(_ recording: RecordingContext) {
+        if recording.audioFormat == .mp3 && !recording.recordMic {
+            guard let source = recording.systemAudioURL else { return }
+            let output = recording.finalURL
+            Task {
+                do {
+                    try await m4a2mp3(inputUrl: source, outputUrl: output, bitrate: recording.audioQuality)
+                    try? fd.removeItem(at: source)
+                    if !recording.showPreview {
+                        let title = "Recording Completed".local
+                        let body = String(format: "File saved to: %@".local, output.path)
+                        let id = "quickrecorder.completed.\(UUID().uuidString)"
+                        showNotification(title: title, body: body, id: id)
+                    } else {
+                        DispatchQueue.main.async { showPreview(path: output.path, image: NSImage(named: "audioIcon")) }
+                    }
+                } catch {
+                    showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
+                }
+            }
+        } else if recording.remuxAudio && recording.recordMic {
+            let package = recording.rawURL
+            if let document = try? qmaPackageHandle.load(from: package) {
+                let audioPlayerManager = AudioPlayerManager()
+                audioPlayerManager.loadAudioFiles(format: document.info.format, package: package, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
+                audioPlayerManager.sysVol = document.info.sysVol
+                audioPlayerManager.micVol = document.info.micVol
+                audioPlayerManager.saveFile(recording.finalURL, saveAsMP3: document.info.exportMP3)
+            }
+        } else if !recording.showPreview {
+            let title = "Recording Completed".local
+            let body = String(format: "File saved to: %@".local, recording.rawURL.path)
+            let id = "quickrecorder.completed.\(UUID().uuidString)"
+            showNotification(title: title, body: body, id: id)
+        } else {
+            showPreview(path: recording.rawURL.path, image: NSImage(named: "qmaIcon"))
+        }
+    }
+    
+    /// After a failed audio mix: removes what the mix left behind and gives the recording, which was written under a
+    /// temporary name for the mix, its final name. Only the three given files are touched. Returns where the recording is afterwards.
+    static func keepUnmixedRecording(written: URL, partialMix: URL, final: URL) -> URL {
         try? fd.removeItem(at: partialMix)
         try? fd.removeItem(at: final)
         do {
             try fd.moveItem(at: written, to: final)
-            return final.path
+            return final
         } catch {
             print("Failed to rename the unmixed recording: \(error.localizedDescription)")
-            return path
+            return written
         }
     }
     
-    static func showPreview(path: String, image: NSImage? = nil) {
-        if !ud.bool(forKey: "showPreview") { return }
+    /// Shows the floating preview for a finished recording. `frame` is that recording's first video frame, `image` an icon to show instead.
+    static func showPreview(path: String, frame: CMSampleBuffer? = nil, image: NSImage? = nil) {
         var previewImage: NSImage?
         let previewURL = fd.temporaryDirectory.appendingPathComponent("qr-preview.jpg")
-        if image == nil { firstFrame?.nsImage?.saveToFile(previewURL, type: .jpeg) }
+        if image == nil { frame?.nsImage?.saveToFile(previewURL, type: .jpeg) }
         
         if let i = image { previewImage = i } else { previewImage = NSImage(contentsOf: previewURL) }
         if let previewImage = previewImage, let screen = getScreenWithMouse() {
@@ -546,26 +641,19 @@ class SCContext {
         }
     }
     
-    static func m4a2mp3(inputUrl: URL, outputUrl: URL) async throws {
+    static func m4a2mp3(inputUrl: URL, outputUrl: URL, bitrate: Int = ud.integer(forKey: "audioQuality")) async throws {
         let progress = Progress()
         let lameEncoder = try SwiftLameEncoder(
             sourceUrl: inputUrl,
             configuration: .init(
                 sampleRate: .custom(48000),
-                bitrateMode: .constant(Int32(ud.integer(forKey: "audioQuality"))),
+                bitrateMode: .constant(Int32(bitrate)),
                 quality: .nearBest
             ),
             destinationUrl: outputUrl,
             progress: progress // optional
         )
         try await lameEncoder.encode(priority: .userInitiated)
-    }
-    
-    static func trimVideo() {
-        if ud.bool(forKey: "trimAfterRecord") {
-            let fileURL = filePath.url
-            AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: fileURL), title: fileURL.lastPathComponent, only: false)
-        }
     }
     
     static func getCameras() -> [AVCaptureDevice] {
@@ -648,21 +736,14 @@ class SCContext {
         }
     }
     
-    static func mixAudioTracks(videoURL: URL, completion: @escaping (Result<URL, Error>) -> Void) {
+    /// Mixes the audio tracks of `videoURL` into one and writes the result to `outputURL`, using `audioURL` for the
+    /// intermediate audio file. On success `videoURL` and `audioURL` are removed. It touches no other files and reads
+    /// no settings, so a recording started while this runs is not affected.
+    static func mixAudioTracks(videoURL: URL, audioURL audioOutputURL: URL, outputURL: URL, fileType: AVFileType, completion: @escaping (Result<URL, Error>) -> Void) {
         showNotification(title: "Still Processing".local, body: "Mixing audio track...".local, id: "quickrecorder.processing.\(UUID().uuidString)")
         
         let asset = AVAsset(url: videoURL)
-        let audioOutputURL = videoURL.deletingPathExtension()
-        let outputURL = audioOutputURL.deletingPathExtension()
         let audioOnlyComposition = AVMutableComposition()
-        
-        let fileEnding = ud.string(forKey: "videoFormat") ?? ""
-        var fileType: AVFileType?
-        switch fileEnding {
-        case VideoFormat.mov.rawValue: fileType = AVFileType.mov
-        case VideoFormat.mp4.rawValue: fileType = AVFileType.mp4
-        default: assertionFailure("loaded unknown video format".local)
-        }
         
         let audioTracks = asset.tracks(withMediaType: .audio)
         guard audioTracks.count > 1 else {
@@ -693,7 +774,7 @@ class SCContext {
             return
         }
         audioExportSession.outputURL = audioOutputURL
-        audioExportSession.outputFileType = fileType ?? .mp4
+        audioExportSession.outputFileType = fileType
         audioExportSession.audioMix = audioMix
         
         audioExportSession.exportAsynchronously {
@@ -746,15 +827,15 @@ class SCContext {
                 }
                 
                 exportSession.outputURL = outputURL
-                exportSession.outputFileType = fileType ?? .mp4
+                exportSession.outputFileType = fileType
                 exportSession.audioMix = audioMix
                 
                 exportSession.exportAsynchronously {
                     switch exportSession.status {
                     case .completed:
-                        let  fileManager = fd
-                        try? fileManager.removeItem(atPath: videoURL.path)
-                        try? fileManager.removeItem(atPath: audioOutputURL.path)
+                        // Only the files this call was given are removed
+                        try? fd.removeItem(at: videoURL)
+                        try? fd.removeItem(at: audioOutputURL)
                         completion(.success(outputURL))
                     case .failed:
                         completion(.failure(exportSession.error ?? NSError(domain: "ExportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export failed for an unknown reason."])))

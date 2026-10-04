@@ -13,7 +13,8 @@ import AVFAudio
 import VideoToolbox
 
 extension AppDelegate {
-    @objc func prepRecord(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false) {
+    /// `recordMic` overrides the "recordMic" setting for this recording only
+    func prepRecord(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil) {
         switch type {
         case "window":  SCContext.streamType = .window
         case "windows":  SCContext.streamType = .windows
@@ -129,21 +130,28 @@ extension AppDelegate {
                 SCContext.filter?.includeMenuBar = includeMenuBar
             }
         }
-        prepareMicCapture()
-        if SCContext.streamType == .systemaudio {
+        prepareMicCapture(wanted: micOverride ?? recordMic)
+        // The output files and the settings this recording keeps until it is finished, whatever changes meanwhile
+        let recording = RecordingContext(audioOnly: SCContext.streamType == .systemaudio, recordMic: SCContext.recordsMic, saveDirectory: outputPath)
+        SCContext.sampleQueue.sync { SCContext.recording = recording }
+        if recording.audioOnly {
             SCContext.filter = SCContentFilter(display: screen, excludingApplications: [], exceptingWindows: [])
-            prepareAudioRecording()
+            if !prepareAudioRecording(recording) {
+                SCContext.sampleQueue.sync { SCContext.recording = nil }
+                SCContext.streamType = nil
+                return
+            }
         }
-        Task { await record(filter: SCContext.filter!, fastStart: fastStart) }
+        Task { await record(filter: SCContext.filter!, fastStart: fastStart, recording: recording) }
     }
 
     /// Decides whether this recording gets a microphone track and which device ScreenCaptureKit captures it from
-    func prepareMicCapture() {
+    func prepareMicCapture(wanted: Bool) {
         SCContext.recordsMic = false
         SCContext.micCaptureDeviceID = nil
         SCContext.micConverter = nil
         SCContext.micStalled = false
-        guard recordMic else { return }
+        guard wanted else { return }
         let id = "quickrecorder.microphone.\(UUID().uuidString)"
         let access = AVCaptureDevice.authorizationStatus(for: .audio)
         if access == .denied || access == .restricted {
@@ -166,7 +174,7 @@ extension AppDelegate {
         }
     }
 
-    func record(filter: SCContentFilter, fastStart: Bool = true) async {
+    func record(filter: SCContentFilter, fastStart: Bool = true, recording: RecordingContext) async {
         SCContext.sampleQueue.sync {
             SCContext.timeOffset = .zero
             SCContext.lastPTS = nil
@@ -176,7 +184,7 @@ extension AppDelegate {
             SCContext.micStalled = false
         }
         
-        let audioOnly = SCContext.streamType == .systemaudio
+        let audioOnly = recording.audioOnly
         
         // HDR uses the local display preset; see https://developer.apple.com/videos/play/wwdc2024/10088/?time=191 for the canonical display alternative
         let conf = recordHDR ? SCStreamConfiguration(preset: .captureHDRStreamLocalDisplay) : SCStreamConfiguration()
@@ -213,11 +221,11 @@ extension AppDelegate {
             }
         }
         
-        conf.capturesAudio = recordWinSound || fastStart || audioOnly
+        conf.capturesAudio = recording.recordWinSound || fastStart || audioOnly
         conf.sampleRate = 48000
         conf.channelCount = 2
         // The microphone is captured by ScreenCaptureKit as well. A nil device ID means the system default input.
-        conf.captureMicrophone = SCContext.recordsMic
+        conf.captureMicrophone = recording.recordMic
         conf.microphoneCaptureDeviceID = SCContext.micCaptureDeviceID
         
 
@@ -277,60 +285,57 @@ extension AppDelegate {
             }
         }
         
-        SCContext.stream = SCStream(filter: filter, configuration: conf, delegate: self)
+        let stream = SCStream(filter: filter, configuration: conf, delegate: self)
+        SCContext.stream = stream
         do {
             // Every output is handled on the same serial queue, so the writer inputs and the timing state are never used concurrently
-            try SCContext.stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: SCContext.sampleQueue)
-            try SCContext.stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: SCContext.sampleQueue)
-            if SCContext.recordsMic { try SCContext.stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: SCContext.sampleQueue) }
-            if !audioOnly { initVideo(conf: conf) }
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: SCContext.sampleQueue)
+            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: SCContext.sampleQueue)
+            if recording.recordMic { try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: SCContext.sampleQueue) }
+            if !audioOnly { initVideo(conf: conf, recording: recording) }
             SCContext.isCapturing = true
-            try await SCContext.stream.startCapture()
+            try await stream.startCapture()
         } catch {
             SCContext.showNotification(title: "Failed to Record".local, body: error.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
             assertionFailure("capture failed".local)
             return
         }
         if !audioOnly { registerGlobalMouseMonitor() }
-        DispatchQueue.main.async { updateStatusBar() }
-        if preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
+        DispatchQueue.main.async {
+            updateStatusBar()
+            // Recordings are stopped on the main thread. If this one was stopped while the capture was starting,
+            // nothing would release the assertion any more, so it is not taken.
+            if recording.preventSleep && SCContext.stream === stream {
+                SleepPreventer.shared.preventSleep(reason: "Screen recording in progress")
+            }
+        }
     }
 
-    func prepareAudioRecording() {
-        var fileEnding = audioFormat.rawValue
-        var fileType = AVFileType.m4a
-        let encorder = fileEnding == AudioFormat.mp3.rawValue ? "aac" : fileEnding
-        switch fileEnding { // todo: I'd like to store format info differently
-            case AudioFormat.mp3.rawValue: fallthrough
-            case AudioFormat.aac.rawValue: fallthrough
-            case AudioFormat.alac.rawValue: fileEnding = "m4a"
-            case AudioFormat.flac.rawValue: fileEnding = "flac"; fileType = .caf
-            case AudioFormat.opus.rawValue: fileEnding = "ogg"; fileType = .caf
-            default: assertionFailure("loaded unknown audio format: ".local + fileEnding)
-        }
-        let path = SCContext.getFilePath()
-        if SCContext.recordsMic {
-            SCContext.filePath = "\(path).qma"
-            SCContext.filePath1 = "\(path).qma/sys.\(fileEnding)"
-            SCContext.filePath2 = "\(path).qma/mic.\(fileEnding)"
-            let infoJsonURL = "\(path).qma/info.json".url
-            let jsonString = "{\"format\": \"\(fileEnding)\", \"encoder\": \"\(encorder)\", \"exportMP3\": \(audioFormat.rawValue == AudioFormat.mp3.rawValue), \"sysVol\": 1.0, \"micVol\": 1.0}"
-            try? fd.createDirectory(at: SCContext.filePath.url, withIntermediateDirectories: true, attributes: nil)
-            try? jsonString.write(to: infoJsonURL, atomically: true, encoding: .utf8)
-            
-            SCContext.audioFile = try! AVAudioFile(forWriting: SCContext.filePath1.url, settings: SCContext.updateAudioSettings(), commonFormat: .pcmFormatFloat32, interleaved: false)
+    /// Creates the files of an audio-only recording. Returns false, after saying why, when they cannot be created.
+    func prepareAudioRecording(_ recording: RecordingContext) -> Bool {
+        guard let systemAudioURL = recording.systemAudioURL else { return false }
+        let settings = SCContext.updateAudioSettings(format: recording.audioFormat.rawValue)
+        do {
+            if let micAudioURL = recording.micAudioURL {
+                let exportMP3 = recording.audioFormat == .mp3
+                let jsonString = "{\"format\": \"\(recording.audioFileEnding)\", \"encoder\": \"\(recording.audioEncoder)\", \"exportMP3\": \(exportMP3), \"sysVol\": 1.0, \"micVol\": 1.0}"
+                try fd.createDirectory(at: recording.rawURL, withIntermediateDirectories: true, attributes: nil)
+                try jsonString.write(to: recording.rawURL.appendingPathComponent("info.json"), atomically: true, encoding: .utf8)
 
-            // MicConverter delivers 48 kHz stereo whatever the device's own format is
-            SCContext.vW = try? AVAssetWriter.init(outputURL: SCContext.filePath2.url, fileType: fileType)
-            SCContext.micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: SCContext.updateAudioSettings())
-            SCContext.micInput.expectsMediaDataInRealTime = true
-            if SCContext.vW.canAdd(SCContext.micInput) { SCContext.vW.add(SCContext.micInput) }
-            SCContext.vW.startWriting()
-            //SCContext.audioFile2 = try! AVAudioFile(forWriting: SCContext.filePath2.url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
-        } else {
-            SCContext.filePath = "\(path).\(fileEnding)"
-            SCContext.filePath1 = SCContext.filePath
-            SCContext.audioFile = try! AVAudioFile(forWriting: SCContext.filePath.url, settings: SCContext.updateAudioSettings(), commonFormat: .pcmFormatFloat32, interleaved: false)
+                // MicConverter delivers 48 kHz stereo whatever the device's own format is
+                let writer = try AVAssetWriter(outputURL: micAudioURL, fileType: recording.audioFileType)
+                let micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: settings)
+                micInput.expectsMediaDataInRealTime = true
+                if writer.canAdd(micInput) { writer.add(micInput) }
+                writer.startWriting()
+                SCContext.vW = writer
+                SCContext.micInput = micInput
+            }
+            SCContext.audioFile = try AVAudioFile(forWriting: systemAudioURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            return true
+        } catch {
+            SCContext.showNotification(title: "Failed to Record".local, body: error.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
+            return false
         }
     }
 }
@@ -352,23 +357,10 @@ extension SCDisplay {
 }
 
 extension AppDelegate {
-    func initVideo(conf: SCStreamConfiguration) {
+    func initVideo(conf: SCStreamConfiguration, recording: RecordingContext) {
         SCContext.startTime = nil
 
-        let fileEnding = videoFormat.rawValue
-        var fileType: AVFileType?
-        switch fileEnding {
-            case VideoFormat.mov.rawValue: fileType = AVFileType.mov
-            case VideoFormat.mp4.rawValue: fileType = AVFileType.mp4
-            default: assertionFailure("loaded unknown video format".local)
-        }
-
-        if remuxAudio && SCContext.recordsMic && recordWinSound {
-            SCContext.filePath = "\(SCContext.getFilePath()).\(fileEnding).\(fileEnding).\(fileEnding)"
-        } else {
-            SCContext.filePath = "\(SCContext.getFilePath()).\(fileEnding)"
-        }
-        SCContext.vW = try? AVAssetWriter.init(outputURL: SCContext.filePath.url, fileType: fileType!)
+        SCContext.vW = try? AVAssetWriter.init(outputURL: recording.rawURL, fileType: recording.fileType)
         let encoderIsH265 = (encoder.rawValue == Encoder.h265.rawValue) || recordHDR
         let fpsMultiplier: Double = Double(frameRate)/8
         let encoderMultiplier: Double = encoderIsH265 ? 0.5 : 0.9
@@ -414,7 +406,7 @@ extension AppDelegate {
         SCContext.awInput.expectsMediaDataInRealTime = true
         if SCContext.vW.canAdd(SCContext.awInput) { SCContext.vW.add(SCContext.awInput) }
 
-        if SCContext.recordsMic {
+        if recording.recordMic {
             // MicConverter delivers 48 kHz stereo whatever the device's own format is
             SCContext.micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: SCContext.updateAudioSettings())
             SCContext.micInput.expectsMediaDataInRealTime = true
@@ -447,7 +439,8 @@ extension AppDelegate {
             SCContext.saveFrame = false
             
             var ciImage = CIImage(cvPixelBuffer: imageBuffer)
-            let url = "\(SCContext.getFilePath(capture: true)).png".url
+            // On the sample queue, where SCContext.recording is assigned
+            let url = "\(SCContext.getFilePath(capture: true, directory: SCContext.recording?.saveDirectory)).png".url
             if !recordHDR {
                 sampleBuffer.nsImage?.saveToFile(url)
             } else {
@@ -614,6 +607,8 @@ extension AppDelegate {
         print("closing stream with error:\n".local, error,
               "\nthis might be due to the window closing or the user stopping from the sonoma ui".local)
         DispatchQueue.main.async {
+            // A stream that was already stopped must not stop the recording that was started after it
+            guard SCContext.stream === stream else { return }
             SCContext.stream = nil
             SCContext.stopRecording()
         }
