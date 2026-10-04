@@ -19,6 +19,8 @@ final class RecordingHealth: ObservableObject {
     @Published var saving = false
     /// From 0 to 1 while the audio tracks of a stopped recording are being mixed, nil otherwise
     @Published var mixProgress: Double?
+    /// From 0 to 1 while a recording left by an earlier run is being mixed at launch, nil otherwise
+    @Published var recoveryProgress: Double?
 }
 
 /// Runs twice a second on `SCContext.sampleQueue` while a recording is capturing, whether or not any buffer arrives.
@@ -41,6 +43,9 @@ enum RecordingMonitor {
 
     private static var timer: DispatchSourceTimer?
     private static var lastTick: UInt64 = 0
+    /// When the monitor was started, which is when the capture began to run
+    private static var started: UInt64 = 0
+    private static var startWarning: String?
     private static var skippedLateTick = false
     /// A resumed recording continues at the first buffer that arrives. Only when none has arrived a whole tick later
     /// does the monitor continue it.
@@ -63,6 +68,7 @@ enum RecordingMonitor {
         source.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(50))
         source.setEventHandler { tick(id) }
         timer = source
+        started = DispatchTime.now().uptimeNanoseconds
         source.resume()
     }
 
@@ -70,6 +76,8 @@ enum RecordingMonitor {
         timer?.cancel()
         timer = nil
         lastTick = 0
+        started = 0
+        startWarning = nil
         skippedLateTick = false
         resumeWaited = false
         micHeard = nil
@@ -99,8 +107,28 @@ enum RecordingMonitor {
         let uptime = DispatchTime.now().uptimeNanoseconds
         let sinceLastTick = lastTick == 0 ? 0 : Double(uptime &- lastTick) / 1_000_000_000
         lastTick = uptime
-        guard SCContext.isCapturing, !SCContext.isPaused, SCContext.recording?.id == id,
-              let sessionStart = SCContext.sessionStart, let anchor = SCContext.clockAnchor, uptime >= anchor.uptime else { return }
+        guard SCContext.isCapturing, !SCContext.isPaused, let recording = SCContext.recording, recording.id == id else { return }
+        let startTitle = "Nothing is being recorded yet".local
+        guard let sessionStart = SCContext.sessionStart else {
+            // The file starts with the first complete picture (the first system audio of an audio-only recording),
+            // and all audio that arrives before it is left out. When that takes this long it may never come, a
+            // window that is minimized or a display that is asleep for example, and the user must know.
+            var problem: String?
+            if started != 0, uptime >= started, Double(uptime - started) / 1_000_000_000 > silentSeconds {
+                problem = recording.audioOnly
+                    ? "No system audio has arrived since the recording was started, so nothing has been recorded so far.".local
+                    : "No picture has arrived from the screen or window since the recording was started, so nothing has been recorded so far, audio included. Check that the window is visible and the display is awake.".local
+            }
+            report(problem, was: startWarning, title: startTitle, backTitle: "", backBody: "")
+            startWarning = problem
+            if problem != nil { show(warning: startTitle, level: nil) }
+            return
+        }
+        if startWarning != nil {
+            report(nil, was: startWarning, title: startTitle, backTitle: "Recording Started".local, backBody: "The recording has started now. What came before is not in it.".local)
+            startWarning = nil
+        }
+        guard let anchor = SCContext.clockAnchor, uptime >= anchor.uptime else { return }
         // After the process was held up, the buffers that piled up may still be waiting behind this tick. Judging the
         // sources now would take them for stalled, put silence where their audio belongs and warn about nothing.
         // Only one tick in a row is passed over: by the next one those buffers have been handled, and a timer that

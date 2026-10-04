@@ -61,7 +61,7 @@
             <parameter name="microphone" code="MIce" type="boolean" description="Whether to record the microphone" optional="yes">
                 <cocoa key="microphone"/>
             </parameter>
-            <parameter name="mic device" code="MCNa" type="text" description="The name of the audio input device (default is 'default')" optional="yes">
+            <parameter name="mic device" code="MCNa" type="text" description="The name of the audio input device (default is 'default'). The device must be connected; otherwise the command returns an error and the selection is not changed" optional="yes">
                 <cocoa key="micname"/>
             </parameter>
             <parameter name="hdr" code="HDri" type="boolean" description="Whether to record in HDR mode" optional="yes">

@@ -150,9 +150,20 @@ extension AppDelegate {
                 SCContext.filter?.includeMenuBar = includeMenuBar
             }
         }
-        prepareMicCapture(wanted: micOverride ?? recordMic)
+        if let problem = prepareMicCapture(wanted: micOverride ?? recordMic) {
+            // A recording that was asked to have the microphone never starts without it unnoticed: a microphone
+            // that turns up later cannot be added to it. Cancel is the default button.
+            NSApp.activate(ignoringOtherApps: true)
+            let message = problem + " " + "A recording started now has no microphone track, and one cannot be added while it runs. Cancel, connect the microphone and start again, or record without it.".local
+            let answer = createAlert(level: .critical, title: "Microphone Not Available".local, message: message, button1: "Cancel", button2: "Record Without Microphone").runModal()
+            if answer != .alertSecondButtonReturn {
+                SCContext.closeAreaOverlay()
+                SCContext.endFailedStart()
+                return
+            }
+        }
         // The output files and the settings this recording keeps until it is finished, whatever changes meanwhile
-        let recording = RecordingContext(audioOnly: SCContext.streamType == .systemaudio, recordMic: SCContext.recordsMic, saveDirectory: outputPath)
+        let recording = RecordingContext(audioOnly: SCContext.streamType == .systemaudio, recordMic: SCContext.recordsMic, fastStart: fastStart, saveDirectory: outputPath)
         SCContext.sampleQueue.sync {
             SCContext.recording = recording
             // A writer still here belongs to an earlier recording and must not be taken for this one's
@@ -177,7 +188,7 @@ extension AppDelegate {
             failStart(recording, error: RecordingError("There is nothing to record.".local))
             return
         }
-        Task { await record(filter: filter, fastStart: fastStart, recording: recording) }
+        Task { await record(filter: filter, recording: recording) }
     }
     
     /// A recording that was set up but could not be started: everything created for it is removed, the state goes
@@ -188,23 +199,21 @@ extension AppDelegate {
         SCContext.showAlertLater(title: "Failed to Record".local, message: error.localizedDescription)
     }
 
-    /// Decides whether this recording gets a microphone track and which device ScreenCaptureKit captures it from
-    func prepareMicCapture(wanted: Bool) {
+    /// Decides whether this recording gets a microphone track and which device ScreenCaptureKit captures it from.
+    /// Returns why not when the microphone is wanted and cannot be recorded, nil otherwise.
+    func prepareMicCapture(wanted: Bool) -> String? {
         SCContext.recordsMic = false
         SCContext.micCaptureDeviceID = nil
         SCContext.micConverter = nil
         SCContext.micSelection = "default"
         SCContext.micActiveDeviceID = nil
-        guard wanted else { return }
-        let id = "quickrecorder.microphone.\(UUID().uuidString)"
+        guard wanted else { return nil }
         let access = AVCaptureDevice.authorizationStatus(for: .audio)
         if access == .denied || access == .restricted {
-            SCContext.showNotification(title: "Recording Without Microphone".local, body: "QuickRecorder has no permission to use the microphone.".local, id: id)
-            return
+            return "QuickRecorder has no permission to use the microphone (System Settings, Privacy & Security, Microphone).".local
         }
         guard let defaultMic = AVCaptureDevice.default(for: .audio), let converter = MicConverter() else {
-            SCContext.showNotification(title: "Recording Without Microphone".local, body: "No microphone was found.".local, id: id)
-            return
+            return "No microphone was found.".local
         }
         SCContext.recordsMic = true
         SCContext.micConverter = converter
@@ -213,17 +222,18 @@ extension AppDelegate {
         // device when it returns
         SCContext.micSelection = selected
         SCContext.micActiveDeviceID = MicDevices.defaultInputUID() ?? defaultMic.uniqueID
-        if selected == "default" { return }
+        if selected == "default" { return nil }
         if SCContext.getMicrophone().contains(where: { $0.uniqueID == selected }) {
             SCContext.micCaptureDeviceID = selected
             SCContext.micActiveDeviceID = selected
         } else {
             let body = String(format: "\"%@\" is not connected. Recording with the default microphone \"%@\" instead.".local, SCContext.selectedMicName(), defaultMic.localizedName)
-            SCContext.showNotification(title: "Microphone Unavailable".local, body: body, id: id)
+            SCContext.showNotification(title: "Microphone Unavailable".local, body: body, id: "quickrecorder.microphone.\(UUID().uuidString)")
         }
+        return nil
     }
 
-    func record(filter: SCContentFilter, fastStart: Bool = true, recording: RecordingContext) async {
+    func record(filter: SCContentFilter, recording: RecordingContext) async {
         SCContext.sampleQueue.sync {
             SCContext.timeOffset = .zero
             SCContext.lastPTS = nil
@@ -270,7 +280,7 @@ extension AppDelegate {
             }
         }
         
-        conf.capturesAudio = recording.recordWinSound || fastStart || audioOnly
+        conf.capturesAudio = recording.systemAudio
         conf.sampleRate = 48000
         conf.channelCount = 2
         // The microphone is captured by ScreenCaptureKit as well. A nil device ID means the system default input.
@@ -450,7 +460,7 @@ extension AppDelegate {
         // Only tracks that are fed: the writer puts a fragment on disk once every track has data for it, so a single
         // track that never gets any would leave the whole file unreadable until it is closed
         var audioInput: AVAssetWriterInput?
-        if conf.capturesAudio {
+        if recording.systemAudio {
             let input = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
             input.expectsMediaDataInRealTime = true
             guard writer.canAdd(input) else { throw RecordingError("The audio settings are not supported by this file format.".local) }

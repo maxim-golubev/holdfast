@@ -53,6 +53,24 @@ class AVOutputClass: NSObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVi
     static let shared = AVOutputClass()
     var output: AVCaptureMovieFileOutput!
     var dataOutput: AVCaptureVideoDataOutput!
+    /// Main thread. True from the start of an iDevice recording until its file has been closed (`didFinishRecordingTo`).
+    private(set) var isWritingFile = false
+    private var closedHandlers = [() -> Void]()
+    
+    /// Main thread. Runs `handler` once the movie file of an iDevice recording has been closed; at once when none
+    /// is being written. Quitting waits for it. A file output that does not report back is given 10 seconds.
+    func whenFileClosed(_ handler: @escaping () -> Void) {
+        guard isWritingFile else { return handler() }
+        closedHandlers.append(handler)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { self.fileClosed() }
+    }
+    
+    private func fileClosed() {
+        isWritingFile = false
+        let handlers = closedHandlers
+        closedHandlers = []
+        handlers.forEach { $0() }
+    }
     //var captureSession: AVCaptureSession!
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -105,6 +123,7 @@ class AVOutputClass: NSObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVi
             let fileURL = "\(SCContext.getFilePath()).\(fileEnding)".url
             SCContext.captureSession.startRunning()
             output.startRecording(to: fileURL, recordingDelegate: self)
+            isWritingFile = true
             SCContext.streamType = StreamType.idevice
             SCContext.startTime = Date.now
         }
@@ -141,14 +160,22 @@ class AVOutputClass: NSObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVi
     }
 
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
-        let content = UNMutableNotificationContent()
-        content.title = "Recording Completed".local
-        content.body = String(format: "File saved to: %@".local, outputFileURL.path)
-        content.sound = UNNotificationSound.default
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
-        let request = UNNotificationRequest(identifier: "quickrecorder.completed.\(UUID().uuidString)", content: content, trigger: trigger)
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error { print("Notification failed to send：\(error.localizedDescription)") }
+        let path = outputFileURL.path
+        DispatchQueue.main.async {
+            if let error = error as NSError? {
+                // The recording ended on its own, for example because the device was unplugged. AVFoundation says
+                // whether the file was closed all the same.
+                let saved = (error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool) == true && fd.fileExists(atPath: path)
+                let rest = saved ? String(format: "The recording up to that point is saved as: %@".local, path)
+                                 : String(format: "The file is incomplete and may not open: %@".local, path)
+                print("Device recording ended with an error: \(error)")
+                // Takes down the session and the controls when the recording was not stopped by the user
+                if SCContext.streamType == .idevice { SCContext.stopRecording() }
+                SCContext.reportFailure(title: "Recording Stopped Early".local, message: error.localizedDescription + " " + rest)
+            } else {
+                SCContext.showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, path), id: "quickrecorder.completed.\(UUID().uuidString)")
+            }
+            self.fileClosed()
         }
     }
 }

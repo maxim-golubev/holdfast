@@ -9,12 +9,18 @@ import Foundation
 import AppKit
 import ScreenCaptureKit
 
+/// Whether a recording can be started now (`SCContext.canStart`, as the hotkeys ask). When not, the script gets an
+/// error instead of a start that is refused later without a word. Script commands run on the main thread.
+private func scriptCanStart(_ command: NSScriptCommand) -> Bool {
+    if SCContext.canStart() { return true }
+    command.scriptErrorNumber = errOSAGeneralError
+    command.scriptErrorString = SCContext.isSaving ? "The previous recording is still being saved." : "Already recording!"
+    return false
+}
+
 class selectScreen: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
-        if SCContext.stream != nil {
-            createAlert(title: "Error".local, message: "Already recording!".local, button1: "OK".local).runModal()
-            return nil
-        }
+        guard scriptCanStart(self) else { return nil }
         SCContext.updateAvailableContent {
             DispatchQueue.main.async {
                 closeAllWindow()
@@ -43,10 +49,7 @@ class selectScreen: NSScriptCommand {
 
 class selectArea: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
-        if SCContext.stream != nil {
-            createAlert(title: "Error".local, message: "Already recording!".local, button1: "OK".local).runModal()
-            return nil
-        }
+        guard scriptCanStart(self) else { return nil }
         SCContext.updateAvailableContent {
             DispatchQueue.main.async {
                 closeAllWindow()
@@ -70,10 +73,7 @@ class selectArea: NSScriptCommand {
 
 class selectApps: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
-        if SCContext.stream != nil {
-            createAlert(title: "Error".local, message: "Already recording!".local, button1: "OK".local).runModal()
-            return nil
-        }
+        guard scriptCanStart(self) else { return nil }
         SCContext.updateAvailableContent {
             DispatchQueue.main.async {
                 closeAllWindow()
@@ -121,10 +121,7 @@ class selectApps: NSScriptCommand {
 
 class selectWindows: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
-        if SCContext.stream != nil {
-            createAlert(title: "Error".local, message: "Already recording!".local, button1: "OK".local).runModal()
-            return nil
-        }
+        guard scriptCanStart(self) else { return nil }
         SCContext.updateAvailableContent {
             DispatchQueue.main.async {
                 closeAllWindow()
@@ -179,10 +176,7 @@ class selectWindows: NSScriptCommand {
 
 class recordAudio: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
-        if SCContext.stream != nil {
-            createAlert(title: "Error".local, message: "Already recording!".local, button1: "OK".local).runModal()
-            return nil
-        }
+        guard scriptCanStart(self) else { return nil }
         SCContext.updateAvailableContent {
             DispatchQueue.main.async {
                 // The "mic" argument applies to this recording only; the "recordMic" setting is left alone
@@ -210,8 +204,10 @@ class stopRecording: NSScriptCommand {
 
 class setPreferences: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
-        if SCContext.stream != nil {
-            createAlert(title: "Error".local, message: "Already recording!".local, button1: "OK".local).runModal()
+        // Settings are read while a recording starts and runs. One that is only being saved has its own copy.
+        if SCContext.state == .starting || SCContext.state == .recording || SCContext.streamType == .idevice {
+            scriptErrorNumber = errOSAGeneralError
+            scriptErrorString = "Settings cannot be changed while recording."
             return nil
         }
         // highRes is an Int setting: 2 = Retina resolution, 1 = normal
@@ -229,7 +225,11 @@ class setPreferences: NSScriptCommand {
                 }
             }
         }
-        if let micname = self.evaluatedArguments!["micname"] as? String { _ = SCContext.selectMic(named: micname) }
+        if let micname = self.evaluatedArguments?["micname"] as? String, !SCContext.selectMic(named: micname) {
+            // The other settings above were applied; the microphone selection stays as it was
+            scriptErrorNumber = errOSAGeneralError
+            scriptErrorString = "No connected audio input device is named \"\(micname)\". The microphone selection was not changed."
+        }
         if let hdr = self.evaluatedArguments!["hdr"] as? Bool { UserDefaults.standard.set(hdr, forKey: "recordHDR") }
         return nil
     }

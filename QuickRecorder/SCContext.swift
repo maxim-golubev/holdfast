@@ -23,7 +23,9 @@ struct RecordingContext {
     let audioOnly: Bool
     /// Whether this recording has a microphone track, which the "recordMic" setting alone does not decide
     let recordMic: Bool
-    let recordWinSound: Bool
+    /// Whether this recording captures system audio. The "recordWinSound" setting alone does not decide that
+    /// either: a hotkey start and an audio-only recording always do.
+    let systemAudio: Bool
     let remuxAudio: Bool
     let preventSleep: Bool
     let showPreview: Bool
@@ -63,14 +65,14 @@ struct RecordingContext {
         }
     }
     
-    init(audioOnly: Bool, recordMic: Bool, saveDirectory: String) {
-        let recordWinSound = ud.bool(forKey: "recordWinSound")
+    init(audioOnly: Bool, recordMic: Bool, fastStart: Bool, saveDirectory: String) {
+        let systemAudio = ud.bool(forKey: "recordWinSound") || fastStart || audioOnly
         let remuxAudio = ud.bool(forKey: "remuxAudio")
         let videoFormat = VideoFormat(rawValue: ud.string(forKey: "videoFormat") ?? "") ?? .mp4
         let audioFormat = AudioFormat(rawValue: ud.string(forKey: "audioFormat") ?? "") ?? .aac
         self.audioOnly = audioOnly
         self.recordMic = recordMic
-        self.recordWinSound = recordWinSound
+        self.systemAudio = systemAudio
         self.remuxAudio = remuxAudio
         self.preventSleep = ud.bool(forKey: "preventSleep")
         self.showPreview = ud.bool(forKey: "showPreview")
@@ -105,7 +107,7 @@ struct RecordingContext {
             finalURL = "\(base).\(ending)".url
             systemAudioURL = nil
             micAudioURL = nil
-            if remuxAudio && recordMic && recordWinSound {
+            if remuxAudio && recordMic && systemAudio {
                 // Written under a temporary name, and so is the mix, which becomes the final file once it is
                 // complete and checked. See RecordingMixer for the names.
                 rawURL = RecordingMixer.temporaryURL(base: base, marker: RecordingMixer.rawMarker, ending: ending)
@@ -206,6 +208,8 @@ class SCContext {
             if state != .finalizing { RecordingHealth.shared.mixProgress = nil }
             updateStatusBar()
             guard state == .idle else { return }
+            // The floating controller stayed open to show "Saving…" where the menu bar is not visible
+            controlPanel.close()
             let handlers = idleHandlers
             idleHandlers = []
             handlers.forEach { $0() }
@@ -215,6 +219,8 @@ class SCContext {
     static var isSaving: Bool { state == .stopping || state == .finalizing }
     /// A stop that was asked for while the capture was still starting
     private static var pendingStop: (id: UUID?, reason: String?)?
+    /// When the capture began to run (`enterRecording`). A stop right after it that recorded nothing is a cancelled start, not a failure.
+    private static var enteredRecording: Date?
     private static var idleHandlers = [() -> Void]()
     static var audioFile: AVAudioFile?
     static var vW: AVAssetWriter?
@@ -414,7 +420,7 @@ class SCContext {
         if await AVCaptureDevice.requestAccess(for: .audio) { return }
 
         ud.setValue(false, forKey: "recordMic")
-        DispatchQueue.main.async {
+        onMainRunLoop {
             let alert = createAlert(title: "Permission Required",
                                                        message: "QuickRecorder needs permission to record your microphone.",
                                                        button1: "Open Settings",
@@ -453,7 +459,7 @@ class SCContext {
     }
     
     private static func requestPermissions() {
-        DispatchQueue.main.async {
+        onMainRunLoop {
             let alert = createAlert(title: "Permission Required",
                                                        message: "QuickRecorder needs screen recording permissions, even if you only intend on recording audio.",
                                                        button1: "Open Settings",
@@ -471,7 +477,7 @@ class SCContext {
         case .authorized, .restricted, .notDetermined:
             break
         case .denied:
-            DispatchQueue.main.async {
+            onMainRunLoop {
                 let alert = createAlert(title: "Permission Required",
                                                            message: "QuickRecorder needs this permission to record your camera or mobile device.",
                                                            button1: "Open Settings",
@@ -524,6 +530,8 @@ class SCContext {
             if !isPaused { isResume = true }
             // Nothing arrives to replace the last frame while paused, however long that is
             if isPaused { detachLastVideoFrame() }
+            // The timeline is put together anew at the first buffer after the pause
+            micConverter?.realign()
             RecordingMonitor.resumeWaited = false
         }
         PopoverState.shared.isPaused = isPaused
@@ -638,9 +646,10 @@ class SCContext {
         for w in NSApp.windows where w.title == "Area Overlayer".local { w.close() }
     }
     
-    /// Main thread. The control panel and the camera overlays that accompany a recording.
-    private static func closeRecordingWindows() {
-        controlPanel.close()
+    /// Main thread. The camera overlays that accompany a recording, and the floating controller unless it is to
+    /// stay for the "Saving…" pill (it is closed when the state is idle again).
+    private static func closeRecordingWindows(controller: Bool = true) {
+        if controller { controlPanel.close() }
         if isCameraRunning() {
             if camWindow.isVisible { camWindow.close() }
             if deviceWindow.isVisible { deviceWindow.close() }
@@ -649,15 +658,43 @@ class SCContext {
         }
     }
     
-    /// A modal alert on the main thread that does not hold up the caller
+    /// Runs `block` on the main thread as a run loop block. For everything that shows a modal alert: a modal alert
+    /// inside a `DispatchQueue.main.async` block holds up every block queued behind it for as long as it is open,
+    /// which includes the work that stops and finishes a recording. Any thread.
+    static func onMainRunLoop(_ block: @escaping @MainActor () -> Void) {
+        RunLoop.main.perform(inModes: [.common]) { MainActor.assumeIsolated(block) }
+        CFRunLoopWakeUp(CFRunLoopGetMain())
+    }
+    
+    private static let alertLock = NSLock()
+    private static var alertsWaiting = 0
+    private static var alertHandlers = [() -> Void]()
+    
+    /// A modal alert on the main thread that does not hold up the caller. Any thread.
     static func showAlertLater(title: String, message: String) {
-        // Not DispatchQueue.main.async: a modal alert inside a main queue block holds up every block queued behind it,
-        // which includes the work that finishes a recording
-        RunLoop.main.perform(inModes: [.common]) {
+        alertLock.lock()
+        alertsWaiting += 1
+        alertLock.unlock()
+        onMainRunLoop {
             NSApp.activate(ignoringOtherApps: true)
             _ = createAlert(level: .critical, title: title, message: message, button1: "OK").runModal()
+            alertLock.lock()
+            alertsWaiting -= 1
+            let handlers = alertsWaiting == 0 ? alertHandlers : []
+            if alertsWaiting == 0 { alertHandlers = [] }
+            alertLock.unlock()
+            handlers.forEach { $0() }
         }
-        CFRunLoopWakeUp(CFRunLoopGetMain())
+    }
+    
+    /// Main thread. Runs `handler` once every alert asked for with `showAlertLater` has been shown and dismissed;
+    /// at once when none is waiting. Quitting waits for it, so that the report of a failure is seen.
+    static func whenAlertsDismissed(_ handler: @escaping () -> Void) {
+        alertLock.lock()
+        let waiting = alertsWaiting > 0
+        if waiting { alertHandlers.append(handler) }
+        alertLock.unlock()
+        if !waiting { handler() }
     }
     
     /// For a failure that must not be missed: a notification, and an alert because notifications may be off or silenced
@@ -707,6 +744,7 @@ class SCContext {
     /// Main thread. starting → recording, once the capture runs. A stop that was asked for in the meantime is carried out now.
     static func enterRecording() {
         guard state == .starting else { return }
+        enteredRecording = Date.now
         state = .recording
         if let stop = pendingStop {
             pendingStop = nil
@@ -747,6 +785,8 @@ class SCContext {
             state = .idle
             return
         }
+        // Stopped by the user within moments of the start: when nothing was recorded by then, that is a cancelled start
+        let cancelled = earlyReason == nil && Date.now.timeIntervalSince(enteredRecording ?? .distantPast) < 3
         state = .stopping
         DiskSpace.stopMonitoring()
         autoStop = 0
@@ -758,7 +798,7 @@ class SCContext {
         AppDelegate.shared.stopGlobalMouseMonitor()
         AppDelegate.shared.stopRecordingMouseMonitor()
         closeAreaOverlay()
-        closeRecordingWindows()
+        closeRecordingWindows(controller: false)
         hideMousePointer = false
         PopoverState.shared.isPaused = false
         window = nil
@@ -774,7 +814,7 @@ class SCContext {
         Task { @MainActor in
             // Buffers that arrive while the capture is being stopped are still recorded
             if let stream = stream { await stopCapture(stream) }
-            await finish(recording, earlyReason: earlyReason)
+            await finish(recording, earlyReason: earlyReason, cancelled: cancelled)
         }
     }
     
@@ -869,7 +909,7 @@ class SCContext {
     /// then it is post-processed (audio mix, MP3 conversion), and only then is the state idle again. Nothing here
     /// blocks the main thread. It works from `recording` and what `takeWriter` handed over, not from statics or settings.
     @MainActor
-    private static func finish(_ recording: RecordingContext, earlyReason: String?) async {
+    private static func finish(_ recording: RecordingContext, earlyReason: String?, cancelled: Bool) async {
         let taken = await withCheckedContinuation { (continuation: CheckedContinuation<TakenWriter, Never>) in
             sampleQueue.async { continuation.resume(returning: takeWriter()) }
         }
@@ -891,7 +931,11 @@ class SCContext {
         }
         let failureTitle = earlyReason == nil ? "Failed to save file".local : "Recording Stopped Early".local
         let savedSoFar = String(format: "The recording up to that point is saved as: %@".local, recording.finalURL.path)
-        if !recording.audioOnly {
+        if !taken.sessionStarted && cancelled {
+            // Stopped before the first frame or the first audio arrived. Nothing was lost, so nothing is reported as failed.
+            try? fd.removeItem(at: recording.rawURL)
+            showNotification(title: "Recording Cancelled".local, body: "The recording was stopped before anything was recorded.".local, id: "quickrecorder.cancelled.\(UUID().uuidString)")
+        } else if !recording.audioOnly {
             if !closed {
                 print("Video writing failed with status: \(String(describing: writer?.status)), error: \(String(describing: writer?.error))")
                 var body = earlyReason ?? ""
@@ -902,6 +946,8 @@ class SCContext {
                     // It leaves its temporary name; no mix is attempted on it.
                     let kept = recording.unmixedURL.map { keepUnmixedRecording(written: recording.rawURL, as: $0) } ?? recording.rawURL
                     body += " " + String(format: "The file could not be closed. What was written before that was kept as: %@".local, kept.path)
+                } else if writer != nil {
+                    body += " " + movedNote(for: recording.rawURL)
                 }
                 reportFailure(title: failureTitle, message: body)
             } else {
@@ -980,6 +1026,11 @@ class SCContext {
             // What the mix wrote is incomplete or not to be trusted, and the recording has everything
             try? fd.removeItem(at: mixURL)
             let kept = keepUnmixedRecording(written: raw, as: unmixedURL)
+            guard fd.fileExists(atPath: kept.path) else {
+                // Not a place to claim the recording is: the writer kept writing through its open file, wherever that went
+                reportFailure(title: "Audio Mix Failed".local, message: early + String(format: "Mixing the audio failed: %@".local, failure) + " " + movedNote(for: raw))
+                return
+            }
             let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept with system audio and microphone as two separate audio tracks in: %@".local, failure, kept.path)
             reportFailure(title: "Audio Mix Failed".local, message: body)
             if recording.showPreview { showPreview(path: kept.path, image: frame) }
@@ -1068,6 +1119,12 @@ class SCContext {
         }
     }
     
+    /// What to tell the user when a recording is not where it was written to: the save folder was renamed or moved
+    /// (or its volume went away) while recording. The file still has the name it was written under.
+    private static func movedNote(for written: URL) -> String {
+        return String(format: "The recording is no longer at %@: the folder was moved or renamed, or its disk was removed, while recording. Look for the file \"%@\" where the folder is now; it holds everything that was recorded.".local, written.deletingLastPathComponent().path, written.lastPathComponent)
+    }
+    
     /// Gives a recording that was written under its temporary name the name it is kept under. Nothing is deleted
     /// or replaced: when the name is taken or the rename fails, the recording stays where it is. Returns where it is afterwards.
     static func keepUnmixedRecording(written: URL, as kept: URL) -> URL {
@@ -1084,6 +1141,12 @@ class SCContext {
     static let recordingNamePrefix = "Recording at "
     /// Whether leftovers of an earlier run are still being dealt with. Main thread only.
     private(set) static var isRecovering = false
+    /// Main thread. Set when the app was asked to quit and is waiting for its files to be final.
+    static var quitRequested = false
+    /// Whether the status item shows the "Recovering…" pill: always while quitting waits for the recovery, so the
+    /// app does not look hung, and otherwise only where it does not take the place of the menu bar icon, from which
+    /// a recording can be started meanwhile.
+    static var showsRecovery: Bool { isRecovering && (quitRequested || !ud.bool(forKey: "showMenubar")) }
     private static var recoveredHandlers = [() -> Void]()
     
     /// Main thread. Runs `handler` once launch recovery is over; at once when it is not running.
@@ -1105,15 +1168,14 @@ class SCContext {
         // The settings such a recording was started with are not known any more, so the mix uses the current ones
         let settings = Dictionary(found.map { ($0.ending, updateAudioSettings(videoFormat: $0.ending.lowercased())) }, uniquingKeysWith: { first, _ in first })
         isRecovering = true
+        updateStatusBar()
         // A token of its own: the sleep assertion of SleepPreventer belongs to the recording that may run meanwhile
         let activity = ProcessInfo.processInfo.beginActivity(options: .idleSystemSleepDisabled, reason: "Finishing a recording from an earlier run")
         Task.detached {
             var lines = [String]()
-            // What an interrupted mix wrote goes out of the way first. That it exists says that the recording
-            // it was made from had been closed.
-            var interrupted = Set<String>()
+            // What an interrupted mix wrote goes out of the way first. It says nothing about the recording it was
+            // made from: the mix of a recording that was never closed is written under the same marker.
             for leftover in found where leftover.isMix {
-                interrupted.insert(leftover.base)
                 let target = RecordingMixer.freeURL(base: leftover.base, label: "incomplete mix", ending: leftover.ending)
                 let now = keepUnmixedRecording(written: leftover.url, as: target)
                 print("Leftover \(leftover.url.lastPathComponent) -> \(now.lastPathComponent)")
@@ -1122,12 +1184,14 @@ class SCContext {
                 lines.append(line)
             }
             for leftover in found where !leftover.isMix {
-                lines.append(await recoverRecording(leftover, mixInterrupted: interrupted.contains(leftover.base), audioSettings: settings[leftover.ending] ?? [:]))
+                lines.append(await recoverRecording(leftover, audioSettings: settings[leftover.ending] ?? [:]))
             }
             let message = String(format: "Found in %@ from an earlier run of QuickRecorder that did not end normally:".local, directory) + "\n\n" + lines.joined(separator: "\n\n")
             await MainActor.run {
                 ProcessInfo.processInfo.endActivity(activity)
                 isRecovering = false
+                RecordingHealth.shared.recoveryProgress = nil
+                updateStatusBar()
                 let handlers = recoveredHandlers
                 recoveredHandlers = []
                 reportFailure(title: "Recording Recovered".local, message: message)
@@ -1139,11 +1203,12 @@ class SCContext {
     /// Deals with one recording left under its temporary name and returns what to tell the user about it.
     /// A file that does not open becomes `X (damaged)`. One that opens is mixed under the rules of `mixRecording`:
     /// the mix is written to `X.mixing`, checked, and only then renamed, and the recording itself is only ever renamed.
-    /// - Closed before the app went away (its mix was interrupted, or it is not in fragments any more): it is
-    ///   complete. Mix `X`, recording `X (unmixed, 2 audio tracks)`.
+    /// - Closed before the app went away (it is not in fragments any more): it is complete. Mix `X`, recording
+    ///   `X (unmixed, 2 audio tracks)`. Only the file itself says so; a `.mixing` file next to it does not, because
+    ///   the recovery mix of an unclosed recording leaves one too when it is interrupted.
     /// - Never closed: it plays up to its last seconds. Mix `X (recovered)`, recording `X (recovered, unmixed, 2 audio tracks)`.
     /// - The mix fails: recording `X (unmixed, 2 audio tracks)` when complete, `X (recovered)` when not.
-    private static func recoverRecording(_ leftover: RecordingMixer.Leftover, mixInterrupted: Bool, audioSettings: [String: Any]) async -> String {
+    private static func recoverRecording(_ leftover: RecordingMixer.Leftover, audioSettings: [String: Any]) async -> String {
         let raw = leftover.url
         let base = leftover.base
         let ending = leftover.ending
@@ -1164,7 +1229,7 @@ class SCContext {
         formatter.allowedUnits = [.hour, .minute, .second]
         formatter.unitsStyle = .abbreviated
         let length = formatter.string(from: seconds) ?? ""
-        let complete = mixInterrupted || !info.fragmented
+        let complete = !info.fragmented
         let what = complete
             ? String(format: "is a complete recording (%@) whose audio had not been mixed yet when the app went away.".local, length)
             : String(format: "is a recording that was not finished (%@); its last seconds may be missing.".local, length)
@@ -1181,7 +1246,11 @@ class SCContext {
             failure = "Not enough free disk space to mix the audio tracks.".local
         } else {
             do {
-                try await RecordingMixer.mix(source: raw, output: mixURL, fileType: ending.lowercased() == "mov" ? .mov : .mp4, audioSettings: audioSettings) { _ in }
+                try await RecordingMixer.mix(source: raw, output: mixURL, fileType: ending.lowercased() == "mov" ? .mov : .mp4, audioSettings: audioSettings) { fraction in
+                    DispatchQueue.main.async {
+                        if isRecovering { RecordingHealth.shared.recoveryProgress = fraction }
+                    }
+                }
                 try await RecordingMixer.verify(source: raw, output: mixURL)
                 try fd.moveItem(at: mixURL, to: final)
             } catch {

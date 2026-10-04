@@ -78,6 +78,17 @@ final class MicConverter {
     private let silenceChunk = Int64(MicConverter.sampleRate / 2)
     /// Silence written per incoming buffer at most, to bound the work done in one callback
     private let longestFill = Int64(MicConverter.sampleRate * 10)
+    /// Set where the timeline is anchored anew (the start of the session, after silence that was not measured from
+    /// a buffer, a resume). The next buffer is then placed at its own time to the sample, not within the tolerance,
+    /// or the track would keep an offset of up to 0.1 s against the others from there on.
+    private var aligning = false
+    /// Added to the time of every buffer. Zero unless the microphone's buffers kept arriving for a time the track
+    /// has already passed; see `convert`.
+    private var shift = CMTime.zero
+    /// Length of the buffers dropped in a row because they lie before the end of the track
+    private var droppedSeconds: Double = 0
+    /// How much is dropped that way before the microphone's timeline is taken to have moved
+    private let longestDrop: Double = 1
 
     init?() {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(MicConverter.sampleRate), channels: 2, interleaved: true) else { return nil }
@@ -86,7 +97,14 @@ final class MicConverter {
 
     /// Starts the timeline at the writer session's start time, so a microphone that delivers late is padded with silence
     func start(at pts: CMTime) {
-        if !nextPTS.isValid { nextPTS = CMTimeConvertScale(pts, timescale: MicConverter.sampleRate, method: .default) }
+        guard !nextPTS.isValid else { return }
+        nextPTS = CMTimeConvertScale(pts, timescale: MicConverter.sampleRate, method: .default)
+        aligning = true
+    }
+
+    /// The next buffer is placed at its own time exactly. For a point where the timeline is put together anew.
+    func realign() {
+        aligning = true
     }
 
     /// How far the track is behind `pts`, in seconds. Zero before the timeline has started.
@@ -100,24 +118,57 @@ final class MicConverter {
     ///
     /// The writer plays audio buffers back to back whatever their timestamps say, so missing samples (a device
     /// switch, a buffer the writer was not ready for) are written as silence to keep the track in sync.
+    ///
+    /// A buffer that lies before the end of the track is dropped: the device delivered more samples than time has
+    /// passed, or silence was written in its place while it was late. That must not go on for ever. When buffers
+    /// keep arriving more than a second's worth behind the end (the microphone's times lag the recording's clock,
+    /// while the monitor keeps the track up to the present with silence), every one of them would be dropped and
+    /// the track would be silence for the rest of the recording. After `longestDrop` the microphone's timeline is
+    /// therefore taken to have moved: its buffers go at the end of the track from then on (`shift`), late by that
+    /// lag but recorded. The shift is given back as soon as the buffers are ahead of the track again.
     @discardableResult
     func convert(_ sampleBuffer: CMSampleBuffer, at pts: CMTime, append: (CMSampleBuffer) -> Bool) -> Bool {
-        let start = CMTimeConvertScale(pts, timescale: MicConverter.sampleRate, method: .default)
+        var start = CMTimeConvertScale(CMTimeAdd(pts, shift), timescale: MicConverter.sampleRate, method: .default)
         guard start.isValid else { return false }
+        // Frames to leave out at the front of this buffer, so that what follows starts exactly at the end of the track
+        var skip: Int64 = 0
         if nextPTS.isValid {
-            let missing = CMTimeSubtract(start, nextPTS).value
+            var missing = CMTimeSubtract(start, nextPTS).value
+            if missing > tolerance && shift > .zero {
+                // The buffers are no longer behind: take back as much of the shift as there is room for
+                let back = min(shift, CMTime(value: missing, timescale: MicConverter.sampleRate))
+                shift = CMTimeSubtract(shift, back)
+                start = CMTimeSubtract(start, back)
+                missing = CMTimeSubtract(start, nextPTS).value
+            }
             if missing > tolerance {
                 guard writeSilence(frames: min(missing, longestFill), append: append) else { return false }
                 // Still behind after a long hole: keep filling on the next buffers before audio is written again
                 if missing > longestFill { return false }
             } else if missing < -tolerance {
-                // The device delivered more samples than time has passed: drop until the timeline catches up
-                return false
+                let length = CMTimeGetSeconds(sampleBuffer.duration)
+                droppedSeconds += length.isFinite && length > 0 ? length : 0.02
+                guard droppedSeconds > longestDrop else { return false }
+                let lag = CMTimeSubtract(nextPTS, start)
+                shift = CMTimeAdd(shift, lag)
+                print("Microphone buffers are \(CMTimeGetSeconds(lag)) s behind the recording; they are recorded that much late from here on")
+            } else if aligning, missing > 0 {
+                guard writeSilence(frames: missing, append: append) else { return false }
+            } else if aligning, missing < 0 {
+                skip = -missing
             }
         } else {
             nextPTS = start
         }
-        guard let converted = resample(sampleBuffer), let buffer = makeSampleBuffer(from: converted), append(buffer) else { return false }
+        guard var converted = resample(sampleBuffer) else { return false }
+        if skip > 0 {
+            // A buffer that ends before the end of the track has nothing to write; the next one is tried the same way
+            guard let rest = MicConverter.dropping(skip, from: converted) else { return false }
+            converted = rest
+        }
+        guard let buffer = makeSampleBuffer(from: converted), append(buffer) else { return false }
+        aligning = false
+        droppedSeconds = 0
         advance(by: Int64(converted.frameLength))
         var peak: Float = 0
         if let samples = converted.floatChannelData {
@@ -134,7 +185,24 @@ final class MicConverter {
         let end = CMTimeConvertScale(pts, timescale: MicConverter.sampleRate, method: .default)
         guard nextPTS.isValid, end.isValid else { return }
         let missing = CMTimeSubtract(end, nextPTS).value
-        if missing >= max(frames, 1) { _ = writeSilence(frames: missing, append: append) }
+        guard missing >= max(frames, 1) else { return }
+        _ = writeSilence(frames: missing, append: append)
+        // The end of the track is now a time no buffer was measured against
+        aligning = true
+    }
+
+    /// `pcm` without its first `frames` frames, nil when nothing is left. Interleaved audio only, which is what `resample` makes.
+    private static func dropping(_ frames: Int64, from pcm: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let total = Int64(pcm.frameLength)
+        guard frames < total, pcm.format.isInterleaved else { return nil }
+        let kept = AVAudioFrameCount(total - frames)
+        guard let rest = AVAudioPCMBuffer(pcmFormat: pcm.format, frameCapacity: kept) else { return nil }
+        rest.frameLength = kept
+        let frameBytes = Int(pcm.format.streamDescription.pointee.mBytesPerFrame)
+        guard frameBytes > 0, let source = pcm.audioBufferList.pointee.mBuffers.mData,
+              let target = rest.mutableAudioBufferList.pointee.mBuffers.mData else { return nil }
+        memcpy(target, source + Int(frames) * frameBytes, Int(kept) * frameBytes)
+        return rest
     }
 
     /// Returns false when the writer stopped taking buffers before all of it was written

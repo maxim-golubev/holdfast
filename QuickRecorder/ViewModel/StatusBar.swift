@@ -42,6 +42,11 @@ struct StatusBarItem: View {
                 }
                 .help(health.mixProgress == nil ? "The recording is being saved. A new one can be started when this is gone." : "The audio tracks of the recording are being mixed. A new one can be started when this is gone.")
                 .padding([.leading,.trailing], 4)
+                .onReceive(updateTimer) { _ in
+                    // Where the menu bar is not visible the floating controller shows this pill
+                    resizeStatusBar()
+                    updateFloatingController()
+                }
             } else if SCContext.streamType != nil {
                 ZStack {
                     Rectangle()
@@ -160,19 +165,7 @@ struct StatusBarItem: View {
                     resizeStatusBar()
                     let timePassed = Date.now.timeIntervalSince(SCContext.startTime ?? t)
                     if SCContext.autoStop != 0 && timePassed / 60 >= CGFloat(SCContext.autoStop) { SCContext.stopRecording() }
-                    if let visible = statusBarItem.button?.window?.occlusionState.contains(.visible) {
-                        if visible { NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.close(); return }
-                        if SCContext.streamType != nil  && !visible && !(NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.isVisible ?? false) {
-                            guard let screen = SCContext.getScreenWithMouse() else { return }
-                            let width = getStatusBarWidth()
-                            let wX = (screen.frame.width - width) / 2
-                            let contentView = NSHostingView(rootView: StatusBarItem())
-                            contentView.frame = NSRect(x: wX, y: screen.visibleFrame.maxY, width: width, height: 24)
-                            controlPanel.setFrame(contentView.frame, display: true)
-                            controlPanel.contentView = contentView
-                            controlPanel.makeKeyAndOrderFront(nil)
-                        }
-                    }
+                    updateFloatingController()
                 }
                 if !miniStatusBar {
                     if SCContext.streamType != .systemaudio {
@@ -209,6 +202,20 @@ struct StatusBarItem: View {
                         }
                     }
                 }
+            } else if SCContext.showsRecovery {
+                // A recording left by an earlier run is being mixed. Shown so that the app does not look hung when
+                // quitting waits for it.
+                ZStack {
+                    Rectangle()
+                        .fill(Color.mypurple)
+                        .shadow(color: .black.opacity(0.3), radius: 4)
+                        .cornerRadius(4)
+                    Text(health.recoveryProgress.map { "Recovering… \(Int($0 * 100))%" } ?? "Recovering…")
+                        .foregroundStyle(.white)
+                        .font(.system(size: 13))
+                }
+                .help("A recording that an earlier run of QuickRecorder did not finish is being mixed. Quitting waits for it.")
+                .padding([.leading,.trailing], 4)
             } else if ud.bool(forKey: "showMenubar") {
                 Button(action: {
                     popoverState.isShowing = true
@@ -251,9 +258,28 @@ func resizeStatusBar() {
     }
 }
 
+/// Main thread. While a recording runs or is being saved and the status item cannot be seen (a full-screen app, a
+/// hidden menu bar), the same pill is shown in a floating panel; it goes when the status item is visible again.
+func updateFloatingController() {
+    guard let visible = statusBarItem.button?.window?.occlusionState.contains(.visible) else { return }
+    if visible || (SCContext.streamType == nil && !SCContext.isSaving) {
+        controlPanel.close()
+        return
+    }
+    if controlPanel.isVisible { return }
+    guard let screen = SCContext.getScreenWithMouse() else { return }
+    let width = getStatusBarWidth()
+    let wX = (screen.frame.width - width) / 2
+    let contentView = NSHostingView(rootView: StatusBarItem())
+    contentView.frame = NSRect(x: wX, y: screen.visibleFrame.maxY, width: width, height: 24)
+    controlPanel.setFrame(contentView.frame, display: true)
+    controlPanel.contentView = contentView
+    controlPanel.makeKeyAndOrderFront(nil)
+}
+
 func updateStatusBar() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-        if SCContext.streamType == nil && !SCContext.isSaving && !ud.bool(forKey: "showMenubar") {
+        if SCContext.streamType == nil && !SCContext.isSaving && !SCContext.showsRecovery && !ud.bool(forKey: "showMenubar") {
             statusBarItem.isVisible = false
             return
         }

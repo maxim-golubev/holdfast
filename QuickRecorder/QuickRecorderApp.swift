@@ -80,7 +80,7 @@ struct QuickRecorderApp: App {
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, AVCaptureVideoDataOutputSampleBufferDelegate  {
+class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, AVCaptureVideoDataOutputSampleBufferDelegate, UNUserNotificationCenterDelegate  {
     /// The delegate SwiftUI created for `@NSApplicationDelegateAdaptor`, which is the one the app's events and the
     /// stream's callbacks go to. `NSApp.delegate` is a SwiftUI object that forwards to it, so it is noted when it is created.
     private static var created: AppDelegate?
@@ -220,16 +220,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor); mouseMonitor = nil }
     }
     
+    /// Without this the system shows no banner while the app is active, which it is right after Start was clicked
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list, .sound])
+    }
+    
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if SCContext.state == .idle && !SCContext.isRecovering { return .terminateNow }
+        if SCContext.state == .idle && !SCContext.isRecovering && !AVOutputClass.shared.isWritingFile { return .terminateNow }
         // A recording is starting, running or still being saved. Quitting now would leave a file that was not closed,
         // or one under its temporary name with unmixed audio, so the recording is stopped (a no-op when it already
-        // is) and the app quits when its files are final. Meanwhile the main run loop keeps running.
+        // is; in the idle state this stops an iDevice recording) and the app quits when its files are final.
+        // Meanwhile the main run loop keeps running.
         SCContext.stopRecording()
         if !quitWhenIdle {
             quitWhenIdle = true
-            // Also for a recording of an earlier run that is being mixed: killing that would leave it unmixed again
-            SCContext.whenIdle { SCContext.whenRecovered { NSApp.reply(toApplicationShouldTerminate: true) } }
+            // The pill says "Recovering…" while a recording of an earlier run keeps the app from quitting
+            SCContext.quitRequested = true
+            updateStatusBar()
+            // Also for a recording of an earlier run that is being mixed: killing that would leave it unmixed again.
+            // And not before the report of a failure has been seen: the notification alone may be off or silenced.
+            SCContext.whenIdle {
+                SCContext.whenRecovered {
+                    AVOutputClass.shared.whenFileClosed {
+                        SCContext.whenAlertsDismissed { NSApp.reply(toApplicationShouldTerminate: true) }
+                    }
+                }
+            }
         }
         return .terminateLater
     }
@@ -302,6 +318,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         if highRes == 0 { highRes = 2 }
         if showOnDock { NSApp.setActivationPolicy(.regular) }
         
+        UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error = error { print("Notification authorization denied: \(error.localizedDescription)") }
         }
@@ -374,7 +391,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
                 updateRecordingMouseMonitor()
             }
         }
-        KeyboardShortcuts.onKeyDown(for: .stop) { SCContext.stopRecording() }
+        // During a countdown there is no recording yet: the pending start is cancelled, as its Cancel button does
+        KeyboardShortcuts.onKeyDown(for: .stop) { [self] in if !cancelCountdown() { SCContext.stopRecording() } }
         KeyboardShortcuts.onKeyDown(for: .pauseResume) { if SCContext.stream != nil { SCContext.pauseRecording() }}
         KeyboardShortcuts.onKeyDown(for: .startWithAudio) {[self] in
             guard SCContext.canStart() else { return }
@@ -490,7 +508,8 @@ func getStatusBarWidth() -> CGFloat {
     if SCContext.isSaving { return 124.0 }
     var width = 158.0
     switch SCContext.streamType {
-    case nil: return 36.0
+    // "Recovering… 100%" while a recording of an earlier run is being mixed
+    case nil: return SCContext.showsRecovery ? 136.0 : 36.0
     case .idevice: width = miniStatusBar ? 68.0 : 138.0
     case .systemaudio: width = miniStatusBar ? 68.0 : 114.0
     default: width = miniStatusBar ? 78.0 : 158.0
@@ -537,7 +556,8 @@ func showAlertSyncOnMainThread(level: NSAlert.Style = .warning, title: String, m
     var response: NSApplication.ModalResponse = .abort
     let semaphore = DispatchSemaphore(value: 0)
     
-    DispatchQueue.main.async {
+    // A run loop block: an alert inside a main queue block would hold up everything queued behind it while it is open
+    SCContext.onMainRunLoop {
         let alert = createAlert(level: level, title: title, message: message, button1: button1, button2: button2, width: width)
         response = alert.runModal()
         semaphore.signal()
