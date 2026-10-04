@@ -451,6 +451,8 @@ class SCContext {
         sampleQueue.sync {
             isPaused.toggle()
             if !isPaused { isResume = true }
+            // Nothing arrives to replace the last frame while paused, however long that is
+            if isPaused { detachLastVideoFrame() }
             RecordingMonitor.resumeWaited = false
         }
         PopoverState.shared.isPaused = isPaused
@@ -891,6 +893,18 @@ class SCContext {
         guard let description = try? CMVideoFormatDescription(imageBuffer: copy) else { return nil }
         let timing = CMSampleTimingInfo(duration: frame.duration, presentationTimeStamp: frame.presentationTimeStamp, decodeTimeStamp: .invalid)
         return try? CMSampleBuffer(imageBuffer: copy, formatDescription: description, sampleTiming: timing)
+    }
+    
+    /// On `sampleQueue`. Replaces `lastVideoFrame` by a copy with pixels of its own, so it no longer holds a surface of
+    /// the stream. When the copy cannot be made the frame stays as it is and the next call tries again.
+    static func detachLastVideoFrame() {
+        guard !lastVideoFrameIsCopy, let frame = lastVideoFrame else { return }
+        guard let copy = detachedCopy(of: frame) else {
+            print("The last video frame could not be copied")
+            return
+        }
+        lastVideoFrame = copy
+        lastVideoFrameIsCopy = true
     }
     
     /// A picture of a video frame, at most `side` pixels wide and high, that does not depend on the frame's pixels afterwards

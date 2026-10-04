@@ -639,35 +639,27 @@ extension AppDelegate {
                     SCContext.startTime = Date.now
                 }
                 guard let samples = sampleBuffer.asPCMBuffer else { return }
-                // The file has no timestamps: audio that did not arrive is written as silence, or everything after it would be early
-                if let end = SCContext.audioEndPTS, CMTimeGetSeconds(CMTimeSubtract(pts, end)) > RecordingMonitor.gapTolerance {
-                    RecordingMonitor.fillSystemAudio(upTo: pts)
-                }
+                // The file has no timestamps: audio that did not arrive is written as silence, or everything after it
+                // would be early, and audio that arrives after silence was written in its place is left out, or
+                // everything after it would be late
+                guard let start = RecordingMonitor.placeSystemAudio(from: pts, to: endPTS) else { return }
                 do {
                     try SCContext.audioFile?.write(from: samples)
-                    SCContext.audioEndPTS = max(SCContext.audioEndPTS ?? endPTS, endPTS)
-                    RecordingMonitor.systemAudioWritten(upTo: endPTS)
+                    let end = CMTimeAdd(start, CMTimeSubtract(endPTS, pts))
+                    SCContext.audioEndPTS = end
+                    RecordingMonitor.systemAudioWritten(upTo: end)
                 } catch {
                     SCContext.abortRecording(reason: SCContext.writeFailure(error))
                 }
             } else {
                 guard SCContext.startTime != nil, let awInput = SCContext.awInput else { return }
                 SCContext.audioFormatDescription = sampleBuffer.formatDescription
-                var start = pts
-                if let end = SCContext.audioEndPTS {
-                    if start < end {
-                        // The writer is never handed audio that starts before what it already has
-                        if endPTS <= end { return }
-                        start = end
-                    } else if CMTimeGetSeconds(CMTimeSubtract(start, end)) > RecordingMonitor.gapTolerance {
-                        // The writer plays audio buffers back to back whatever their timestamps say, so audio that
-                        // did not arrive is written as silence
-                        RecordingMonitor.fillSystemAudio(upTo: start)
-                    }
-                }
+                // The writer plays audio buffers back to back whatever their timestamps say. The buffer goes at the end
+                // of what was written, and only once that end is where the buffer belongs.
+                guard let start = RecordingMonitor.placeSystemAudio(from: pts, to: endPTS) else { return }
                 guard let buffer = SCContext.retime(sampleBuffer, by: CMTimeSubtract(rawPTS, start)) else { return }
                 if SCContext.append(buffer, to: awInput) {
-                    let end = duration.isValid ? CMTimeAdd(start, duration) : start
+                    let end = CMTimeAdd(start, CMTimeSubtract(endPTS, pts))
                     SCContext.audioEndPTS = end
                     RecordingMonitor.systemAudioWritten(upTo: end)
                 }
