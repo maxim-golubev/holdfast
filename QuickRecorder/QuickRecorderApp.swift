@@ -171,6 +171,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor); mouseMonitor = nil }
     }
     
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Stops a running recording and waits for its video file to be closed; a no-op when nothing is recorded
+        SCContext.stopRecording()
+        if SCContext.finishing.wait(timeout: .now()) == .success { return .terminateNow }
+        // An audio mix or a conversion is still running, for this recording or an earlier one. Quitting now would leave
+        // the recording under its temporary name with unmixed audio, so the app quits when that work is done.
+        SCContext.finishing.notify(queue: .main) { NSApp.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
+    }
+    
     func applicationWillTerminate(_ aNotification: Notification) {
         if SCContext.stream != nil { SCContext.stopRecording() }
     }

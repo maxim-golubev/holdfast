@@ -144,6 +144,9 @@ class SCContext {
     static var backgroundColor: CGColor = CGColor.black
     /// The recording in progress, set when it starts and taken by `stopRecording()`. Only assigned inside `sampleQueue.sync`.
     static var recording: RecordingContext?
+    /// Entered for every stopped recording whose files are still being finished (audio mix, MP3 conversion, closing the
+    /// microphone file) and left when that is done. The app waits for it before it quits.
+    static let finishing = DispatchGroup()
     static var audioFile: AVAudioFile?
     static var vW: AVAssetWriter!
     static var vwInput, awInput, micInput: AVAssetWriterInput!
@@ -291,9 +294,12 @@ class SCContext {
         return directory + (capture ? "/Capturing at ".local : "/Recording at ".local) + dateFormatter.string(from: Date())
     }
     
-    static func updateAudioSettings(format: String = ud.string(forKey: "audioFormat") ?? "") -> [String : Any] {
+    /// The defaults are the current settings. Code that works on a recording passes that recording's values instead.
+    static func updateAudioSettings(format: String = ud.string(forKey: "audioFormat") ?? "",
+                                    quality: Int = ud.integer(forKey: "audioQuality"),
+                                    videoFormat: String = ud.string(forKey: "videoFormat") ?? "") -> [String : Any] {
         var audioSettings: [String : Any] = [AVSampleRateKey : 48000, AVNumberOfChannelsKey : 2] // reset audioSettings
-        let bitRate = ud.integer(forKey: "audioQuality") * 1000
+        let bitRate = quality * 1000
         switch format {
         case AudioFormat.mp3.rawValue: fallthrough
         case AudioFormat.aac.rawValue:
@@ -305,10 +311,10 @@ class SCContext {
         case AudioFormat.flac.rawValue:
             audioSettings[AVFormatIDKey] = kAudioFormatFLAC
         case AudioFormat.opus.rawValue:
-            audioSettings[AVFormatIDKey] = ud.string(forKey: "videoFormat") != VideoFormat.mp4.rawValue ? kAudioFormatOpus : kAudioFormatMPEG4AAC
+            audioSettings[AVFormatIDKey] = videoFormat != VideoFormat.mp4.rawValue ? kAudioFormatOpus : kAudioFormatMPEG4AAC
             audioSettings[AVEncoderBitRateKey] =  bitRate
         default:
-            assertionFailure("unknown audio format while setting audio settings: ".local + (ud.string(forKey: "audioFormat") ?? "[no defaults]".local))
+            assertionFailure("unknown audio format while setting audio settings: ".local + format)
         }
         return audioSettings
     }
@@ -450,13 +456,22 @@ class SCContext {
         stream = nil
         let hadMic = recording.recordMic
         let audioOnly = recording.audioOnly
-        // An audio recording without a microphone has no writer; `vW` would be the one of an earlier recording
-        let writer: AVAssetWriter? = (audioOnly && !hadMic) ? nil : vW
+        var writer: AVAssetWriter?
         var frame: CMSampleBuffer?
         // Buffers are appended on sampleQueue. Finishing the inputs there means no append runs alongside or after it.
         sampleQueue.sync {
             isCapturing = false
-            if hadMic, let input = micInput {
+            // The writer and its inputs leave the statics with the recording. `prepRecord` clears them as well, so a
+            // recording that never got as far as creating a writer has none here, not the one of an earlier recording.
+            writer = vW
+            let videoInput: AVAssetWriterInput? = vwInput
+            let audioInput: AVAssetWriterInput? = awInput
+            let microphoneInput: AVAssetWriterInput? = micInput
+            vW = nil
+            vwInput = nil
+            awInput = nil
+            micInput = nil
+            if hadMic, let input = microphoneInput {
                 // Bring the microphone track to the length of the recording, whatever the microphone delivered
                 if let end = lastPTS, writer?.status == .writing {
                     micConverter?.fill(upTo: end) { buffer in
@@ -471,8 +486,8 @@ class SCContext {
                 input.markAsFinished()
             }
             if !audioOnly {
-                vwInput?.markAsFinished()
-                awInput?.markAsFinished()
+                videoInput?.markAsFinished()
+                audioInput?.markAsFinished()
             }
             audioFile = nil // close audio file
             frame = firstFrame
@@ -493,18 +508,25 @@ class SCContext {
             }
             if !videoSaved {
                 print("Video writing failed with status: \(String(describing: writer?.status)), error: \(String(describing: writer?.error))")
-                let err = writer?.error?.localizedDescription ?? "Unknow Error"
-                showNotification(title: "Failed to save file".local, body: "\(err)", id: "quickrecorder.error.\(UUID().uuidString)")
+                var body = writer?.error?.localizedDescription ?? (writer == nil ? "The recording did not start, nothing was written.".local : "Unknown error".local)
+                // Whatever was written keeps the name it was recorded under, which is a temporary one when a mix was planned
+                if fd.fileExists(atPath: recording.rawURL.path) {
+                    body += " " + String(format: "The incomplete file was left at: %@".local, recording.rawURL.path)
+                }
+                showNotification(title: "Failed to save file".local, body: body, id: "quickrecorder.error.\(UUID().uuidString)")
             } else if recording.mixesAudio {
-                DispatchQueue.global(qos: .userInitiated).async { mixRecording(recording, frame: frame) }
+                finishing.enter()
+                DispatchQueue.global(qos: .userInitiated).async { mixRecording(recording, frame: frame) { finishing.leave() } }
             }
         } else if hadMic, let writer = writer {
             // The package is only read once the microphone file is complete
+            finishing.enter()
             writer.finishWriting {
-                DispatchQueue.main.async { finishAudioRecording(recording) }
+                DispatchQueue.main.async { finishAudioRecording(recording) { finishing.leave() } }
             }
         } else {
-            finishAudioRecording(recording)
+            finishing.enter()
+            finishAudioRecording(recording) { finishing.leave() }
         }
         
         DispatchQueue.main.async {
@@ -543,9 +565,10 @@ class SCContext {
         streamType = nil
     }
     
-    /// Mixes the audio tracks of a finished video recording and presents the result
-    private static func mixRecording(_ recording: RecordingContext, frame: CMSampleBuffer?) {
-        guard let mixURL = recording.mixURL else { return }
+    /// Mixes the audio tracks of a finished video recording and presents the result. `completion` is called once,
+    /// when the recording has its final name.
+    private static func mixRecording(_ recording: RecordingContext, frame: CMSampleBuffer?, completion: @escaping () -> Void) {
+        guard let mixURL = recording.mixURL else { completion(); return }
         mixAudioTracks(videoURL: recording.rawURL, audioURL: mixURL, outputURL: recording.finalURL, fileType: recording.fileType) { result in
             switch result {
             case .success(let url):
@@ -569,15 +592,18 @@ class SCContext {
                     DispatchQueue.main.async { showPreview(path: kept.path, frame: frame) }
                 }
             }
+            completion()
         }
     }
     
-    /// What follows an audio-only recording once its files are closed: MP3 conversion, the mix of a .qma package, or just the report
-    private static func finishAudioRecording(_ recording: RecordingContext) {
+    /// What follows an audio-only recording once its files are closed: MP3 conversion, the mix of a .qma package, or just the report.
+    /// `completion` is called once, when the files are in their final state.
+    private static func finishAudioRecording(_ recording: RecordingContext, completion: @escaping () -> Void) {
         if recording.audioFormat == .mp3 && !recording.recordMic {
-            guard let source = recording.systemAudioURL else { return }
+            guard let source = recording.systemAudioURL else { completion(); return }
             let output = recording.finalURL
             Task {
+                defer { completion() }
                 do {
                     try await m4a2mp3(inputUrl: source, outputUrl: output, bitrate: recording.audioQuality)
                     try? fd.removeItem(at: source)
@@ -590,7 +616,8 @@ class SCContext {
                         DispatchQueue.main.async { showPreview(path: output.path, image: NSImage(named: "audioIcon")) }
                     }
                 } catch {
-                    showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
+                    let body = String(format: "%@ The recording was kept as: %@".local, error.localizedDescription, source.path)
+                    showNotification(title: "Failed to save file".local, body: body, id: "quickrecorder.error.\(UUID().uuidString)")
                 }
             }
         } else if recording.remuxAudio && recording.recordMic {
@@ -600,15 +627,23 @@ class SCContext {
                 audioPlayerManager.loadAudioFiles(format: document.info.format, package: package, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
                 audioPlayerManager.sysVol = document.info.sysVol
                 audioPlayerManager.micVol = document.info.micVol
-                audioPlayerManager.saveFile(recording.finalURL, saveAsMP3: document.info.exportMP3)
+                // With the settings the recording was started with, not the current ones
+                audioPlayerManager.saveFile(recording.finalURL, saveAsMP3: document.info.exportMP3, audioQuality: recording.audioQuality, videoFormat: recording.videoFormat.rawValue, completion: completion)
+            } else {
+                let body = String(format: "The recording was kept with separate audio files: %@".local, package.path)
+                showNotification(title: "Audio Mix Failed".local, body: body, id: "quickrecorder.error.\(UUID().uuidString)")
+                completion()
             }
-        } else if !recording.showPreview {
-            let title = "Recording Completed".local
-            let body = String(format: "File saved to: %@".local, recording.rawURL.path)
-            let id = "quickrecorder.completed.\(UUID().uuidString)"
-            showNotification(title: title, body: body, id: id)
         } else {
-            showPreview(path: recording.rawURL.path, image: NSImage(named: "qmaIcon"))
+            if !recording.showPreview {
+                let title = "Recording Completed".local
+                let body = String(format: "File saved to: %@".local, recording.rawURL.path)
+                let id = "quickrecorder.completed.\(UUID().uuidString)"
+                showNotification(title: title, body: body, id: id)
+            } else {
+                showPreview(path: recording.rawURL.path, image: NSImage(named: "qmaIcon"))
+            }
+            completion()
         }
     }
     
@@ -842,7 +877,7 @@ class SCContext {
                     case .cancelled:
                         completion(.failure(NSError(domain: "ExportCancelled", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export was cancelled."])))
                     default:
-                        break
+                        completion(.failure(NSError(domain: "ExportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export ended in an unexpected state."])))
                     }
                 }
             case .failed:
@@ -850,7 +885,7 @@ class SCContext {
             case .cancelled:
                 completion(.failure(NSError(domain: "ExportCancelled", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export was cancelled."])))
             default:
-                break
+                completion(.failure(NSError(domain: "ExportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export ended in an unexpected state."])))
             }
         }
     }

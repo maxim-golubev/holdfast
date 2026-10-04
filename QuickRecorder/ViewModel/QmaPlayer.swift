@@ -558,7 +558,12 @@ class AudioPlayerManager: ObservableObject {
         }
     }
     
-    func saveFile(_ url: URL, saveAsMP3: Bool = false) {
+    /// `audioQuality` and `videoFormat` default to the current settings; finishing a recording passes the ones it was
+    /// started with. `completion` is called once, when the export has ended, whether it worked or not.
+    func saveFile(_ url: URL, saveAsMP3: Bool = false,
+                  audioQuality: Int = ud.integer(forKey: "audioQuality"),
+                  videoFormat: String = ud.string(forKey: "videoFormat") ?? "",
+                  completion: (() -> Void)? = nil) {
         var url = url
         if url.pathExtension == "mp3" { url = url.deletingPathExtension() }
         if url.pathExtension != self.fileFormat { url = url.appendingPathExtension(self.fileFormat) }
@@ -566,13 +571,16 @@ class AudioPlayerManager: ObservableObject {
         if self.exportMP3 { url = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent) }
         
         Thread.detachNewThread {
+            // The MP3 conversion outlives this thread and reports the end itself
+            var convertingToMP3 = false
+            defer { if !convertingToMP3 { completion?() } }
             DispatchQueue.main.async { self.exporting = true }
             do {
                 guard let audioFile1 = self.audioFile1, let audioFile2 = self.audioFile2 else { return }
                 self.playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
                 self.playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
                 
-                let audioSettings = SCContext.updateAudioSettings(format: self.fileEncoder)
+                let audioSettings = SCContext.updateAudioSettings(format: self.fileEncoder, quality: audioQuality, videoFormat: videoFormat)
                 let outputFormat = self.playerNode1.outputFormat(forBus: 0)
                 let outputFile = try AVAudioFile(forWriting: url, settings: audioSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
                 self.engine.stop()
@@ -612,10 +620,12 @@ class AudioPlayerManager: ObservableObject {
                     let oldURL = url
                     let newURl = url.deletingLastPathComponent().appendingPathComponent(lastComp).deletingPathExtension().appendingPathExtension("mp3")
                     body = String(format: "File saved to: %@".local, newURl.path.removingPercentEncoding!)
+                    convertingToMP3 = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         Task {
+                            defer { completion?() }
                             do {
-                                try await SCContext.m4a2mp3(inputUrl: oldURL, outputUrl: newURl)
+                                try await SCContext.m4a2mp3(inputUrl: oldURL, outputUrl: newURl, bitrate: audioQuality)
                                 try? fd.removeItem(at: oldURL)
                             } catch {
                                 SCContext.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")

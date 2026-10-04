@@ -133,7 +133,15 @@ extension AppDelegate {
         prepareMicCapture(wanted: micOverride ?? recordMic)
         // The output files and the settings this recording keeps until it is finished, whatever changes meanwhile
         let recording = RecordingContext(audioOnly: SCContext.streamType == .systemaudio, recordMic: SCContext.recordsMic, saveDirectory: outputPath)
-        SCContext.sampleQueue.sync { SCContext.recording = recording }
+        SCContext.sampleQueue.sync {
+            SCContext.recording = recording
+            // A writer still here belongs to an earlier recording and must not be taken for this one's
+            SCContext.vW = nil
+            SCContext.vwInput = nil
+            SCContext.awInput = nil
+            SCContext.micInput = nil
+            SCContext.audioFile = nil
+        }
         if recording.audioOnly {
             SCContext.filter = SCContentFilter(display: screen, excludingApplications: [], exceptingWindows: [])
             if !prepareAudioRecording(recording) {
@@ -314,7 +322,7 @@ extension AppDelegate {
     /// Creates the files of an audio-only recording. Returns false, after saying why, when they cannot be created.
     func prepareAudioRecording(_ recording: RecordingContext) -> Bool {
         guard let systemAudioURL = recording.systemAudioURL else { return false }
-        let settings = SCContext.updateAudioSettings(format: recording.audioFormat.rawValue)
+        let settings = SCContext.updateAudioSettings(format: recording.audioFormat.rawValue, quality: recording.audioQuality, videoFormat: recording.videoFormat.rawValue)
         do {
             if let micAudioURL = recording.micAudioURL {
                 let exportMP3 = recording.audioFormat == .mp3
@@ -397,22 +405,27 @@ extension AppDelegate {
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2] as [String : Any]
         }
         
-        SCContext.vwInput = AVAssetWriterInput(mediaType: AVMediaType.video, outputSettings: videoSettings)
-        SCContext.vwInput.expectsMediaDataInRealTime = true
-        
-        if SCContext.vW.canAdd(SCContext.vwInput) { SCContext.vW.add(SCContext.vwInput) }
+        // Without a writer there is nothing to add inputs to; stopping then reports that nothing was saved
+        guard let writer = SCContext.vW else { return }
+        let audioSettings = SCContext.updateAudioSettings(format: recording.audioFormat.rawValue, quality: recording.audioQuality, videoFormat: recording.videoFormat.rawValue)
+        let videoInput = AVAssetWriterInput(mediaType: AVMediaType.video, outputSettings: videoSettings)
+        videoInput.expectsMediaDataInRealTime = true
+        if writer.canAdd(videoInput) { writer.add(videoInput) }
+        SCContext.vwInput = videoInput
 
-        SCContext.awInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: SCContext.updateAudioSettings())
-        SCContext.awInput.expectsMediaDataInRealTime = true
-        if SCContext.vW.canAdd(SCContext.awInput) { SCContext.vW.add(SCContext.awInput) }
+        let audioInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
+        audioInput.expectsMediaDataInRealTime = true
+        if writer.canAdd(audioInput) { writer.add(audioInput) }
+        SCContext.awInput = audioInput
 
         if recording.recordMic {
             // MicConverter delivers 48 kHz stereo whatever the device's own format is
-            SCContext.micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: SCContext.updateAudioSettings())
-            SCContext.micInput.expectsMediaDataInRealTime = true
-            if SCContext.vW.canAdd(SCContext.micInput) { SCContext.vW.add(SCContext.micInput) }
+            let micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
+            micInput.expectsMediaDataInRealTime = true
+            if writer.canAdd(micInput) { writer.add(micInput) }
+            SCContext.micInput = micInput
         }
-        SCContext.vW.startWriting()
+        writer.startWriting()
     }
     
     func outputVideoEffectDidStart(for stream: SCStream) {
@@ -528,7 +541,8 @@ extension AppDelegate {
             }
             guard let frame = SCContext.retime(sampleBuffer, by: SCContext.timeOffset) else { return }
             if frameQueue.getArray().contains(where: { $0 >= endPTS }) { print("Skip this frame"); return } else { frameQueue.append(endPTS) }
-            if SCContext.vwInput.isReadyForMoreMediaData {
+            guard let vwInput = SCContext.vwInput else { return }
+            if vwInput.isReadyForMoreMediaData {
                 if let rect = attachments[.presenterOverlayContentRect] as? [String: Any], let x = rect["X"] as? CGFloat {
                     let type = x == .infinity ? "OFF" : (x == 0.0 ? "Small" : "Big")
                     if type != presenterType {
@@ -542,7 +556,7 @@ extension AppDelegate {
                 }
                 if isPresenterON && !isCameraReady { break }
                 if SCContext.firstFrame == nil { SCContext.firstFrame = frame }
-                SCContext.vwInput.append(frame)
+                vwInput.append(frame)
             }
             break
         case .audio:
