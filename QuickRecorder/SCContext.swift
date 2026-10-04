@@ -18,6 +18,8 @@ import SwiftUI
 /// (audio mix, preview, notifications) work from their own copy, so changing a setting or starting the next
 /// recording in the meantime cannot redirect them to another file.
 struct RecordingContext {
+    /// Tells this recording from the next one where a stop is requested asynchronously
+    let id = UUID()
     let audioOnly: Bool
     /// Whether this recording has a microphone track, which the "recordMic" setting alone does not decide
     let recordMic: Bool
@@ -108,6 +110,13 @@ struct RecordingContext {
     }
 }
 
+/// A reason a recording could not be started, shown to the user as it is
+struct RecordingError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+}
+
 class SCContext {
     static var trimingList = [URL]()
     static var firstFrame: CMSampleBuffer?
@@ -140,6 +149,8 @@ class SCContext {
     /// Set while the microphone track is behind the recording by more than `micStallSeconds` and is being filled with silence
     static var micStalled = false
     static let micStallSeconds: Double = 5
+    /// How much of a recording an unclosed .mp4, .mov or .m4a file can be missing at its end
+    static let fragmentInterval = CMTime(seconds: 10, preferredTimescale: 600)
     static var screenArea: NSRect?
     static var backgroundColor: CGColor = CGColor.black
     /// The recording in progress, set when it starts and taken by `stopRecording()`. Only assigned inside `sampleQueue.sync`.
@@ -148,11 +159,11 @@ class SCContext {
     /// microphone file) and left when that is done. The app waits for it before it quits.
     static let finishing = DispatchGroup()
     static var audioFile: AVAudioFile?
-    static var vW: AVAssetWriter!
-    static var vwInput, awInput, micInput: AVAssetWriterInput!
+    static var vW: AVAssetWriter?
+    static var vwInput, awInput, micInput: AVAssetWriterInput?
     static var startTime: Date?
     static var timePassed: TimeInterval = 0
-    static var stream: SCStream!
+    static var stream: SCStream?
     static var screen: SCDisplay?
     static var window: [SCWindow]?
     static var application: [SCRunningApplication]?
@@ -214,11 +225,11 @@ class SCContext {
     }
     
     static func getSelf() -> SCRunningApplication? {
-        return SCContext.availableContent!.applications.first(where: { Bundle.main.bundleIdentifier == $0.bundleIdentifier })
+        return SCContext.availableContent?.applications.first(where: { Bundle.main.bundleIdentifier == $0.bundleIdentifier })
     }
     
     static func getSelfWindows() -> [SCWindow]? {
-        return SCContext.availableContent!.windows.filter( {
+        return SCContext.availableContent?.windows.filter( {
             guard let title = $0.title else { return false }
             return $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
             && title != "Mouse Pointer".local
@@ -428,19 +439,110 @@ class SCContext {
         }
     }
     
-    static func stopRecording() {
+    /// On `sampleQueue`. Returns whether the buffer was written. An input that is not ready drops the buffer;
+    /// an append that fails means the file can no longer be written, which ends the recording.
+    static func append(_ buffer: CMSampleBuffer, to input: AVAssetWriterInput) -> Bool {
+        guard input.isReadyForMoreMediaData else { return false }
+        if input.append(buffer) { return true }
+        abortRecording(reason: writeFailure(vW?.error))
+        return false
+    }
+    
+    static func writeFailure(_ error: Error?) -> String {
+        return String(format: "The recording could not be written: %@".local, error?.localizedDescription ?? "Unknown error".local)
+    }
+    
+    /// On `sampleQueue`. The one way a recording ends when it cannot go on: nothing more is appended, and the
+    /// recording is stopped on the main thread, which closes the file as far as possible and tells the user why.
+    static func abortRecording(reason: String) {
+        guard isCapturing, let id = recording?.id else { return }
+        isCapturing = false
+        DispatchQueue.main.async { stopRecording(only: id, earlyReason: reason) }
+    }
+    
+    /// Undoes a start that failed before anything was recorded: the writer, the files it created, the stream and
+    /// the recording state. Returns false, having done nothing, when `recording` is not the current recording any more.
+    static func discardStart(_ recording: RecordingContext) -> Bool {
+        var writer: AVAssetWriter?
+        let current = sampleQueue.sync { () -> Bool in
+            guard SCContext.recording?.id == recording.id else { return false }
+            SCContext.recording = nil
+            isCapturing = false
+            writer = vW
+            vW = nil
+            vwInput = nil
+            awInput = nil
+            micInput = nil
+            audioFile = nil
+            firstFrame = nil
+            lastPTS = nil
+            micConverter = nil
+            micStalled = false
+            recordsMic = false
+            return true
+        }
+        guard current else { return false }
+        // Also deletes the file the writer created
+        writer?.cancelWriting()
+        // Nothing was recorded, so what is left is an empty file or a package without audio
+        try? fd.removeItem(at: recording.rawURL)
+        stream = nil
+        streamType = nil
+        startTime = nil
+        window = nil
+        screen = nil
+        DispatchQueue.main.async {
+            if let w = NSApp.windows.first(where:  { $0.title == "Area Overlayer".local }) { w.close() }
+            closeRecordingWindows()
+            updateStatusBar()
+        }
+        return true
+    }
+    
+    /// Main thread. The control panel and the camera overlays that accompany a recording.
+    private static func closeRecordingWindows() {
+        controlPanel.close()
+        if isCameraRunning() {
+            if camWindow.isVisible { camWindow.close() }
+            if deviceWindow.isVisible { deviceWindow.close() }
+            if let preview = previewSession { preview.stopRunning() }
+            if let capture = captureSession { capture.stopRunning() }
+        }
+    }
+    
+    /// A modal alert on the main thread that does not hold up the caller
+    static func showAlertLater(title: String, message: String) {
+        // Not DispatchQueue.main.async: a modal alert inside a main queue block holds up every block queued behind it,
+        // which includes the work that finishes a recording
+        RunLoop.main.perform(inModes: [.common]) {
+            NSApp.activate(ignoringOtherApps: true)
+            _ = createAlert(level: .critical, title: title, message: message, button1: "OK").runModal()
+        }
+        CFRunLoopWakeUp(CFRunLoopGetMain())
+    }
+    
+    /// For a failure that must not be missed: a notification, and an alert because notifications may be off or silenced
+    static func reportFailure(title: String, message: String) {
+        showNotification(title: title, body: message, id: "quickrecorder.error.\(UUID().uuidString)")
+        showAlertLater(title: title, message: message)
+    }
+    
+    /// Stops the current recording. Main thread. With `id`, only when that recording is still the current one.
+    /// `earlyReason` says why the recording ends without the user having stopped it; the user is told so.
+    static func stopRecording(only id: UUID? = nil, earlyReason: String? = nil) {
         // The recording being stopped. Everything below, the completion handlers included, works from this copy and
         // the locals captured here: by the time they run, the statics and the settings may belong to the next recording.
         let stopped = sampleQueue.sync { () -> RecordingContext? in
-            let current = SCContext.recording
+            guard let current = SCContext.recording, id == nil || current.id == id else { return nil }
             SCContext.recording = nil
             return current
         }
         guard let recording = stopped else {
             // Nothing is being recorded, or this recording is already being stopped
-            SleepPreventer.shared.allowSleep()
+            if id == nil { SleepPreventer.shared.allowSleep() }
             return
         }
+        DiskSpace.stopMonitoring()
         if recording.preventSleep { SleepPreventer.shared.allowSleep() }
         autoStop = 0
         recordCam = ""
@@ -452,21 +554,23 @@ class SCContext {
 
         if let w = NSApp.windows.first(where:  { $0.title == "Area Overlayer".local }) { w.close() }
         
-        if stream != nil { stream.stopCapture() }
+        stream?.stopCapture()
         stream = nil
         let hadMic = recording.recordMic
         let audioOnly = recording.audioOnly
         var writer: AVAssetWriter?
         var frame: CMSampleBuffer?
+        var sessionStarted = false
         // Buffers are appended on sampleQueue. Finishing the inputs there means no append runs alongside or after it.
         sampleQueue.sync {
             isCapturing = false
+            sessionStarted = startTime != nil
             // The writer and its inputs leave the statics with the recording. `prepRecord` clears them as well, so a
             // recording that never got as far as creating a writer has none here, not the one of an earlier recording.
             writer = vW
-            let videoInput: AVAssetWriterInput? = vwInput
-            let audioInput: AVAssetWriterInput? = awInput
-            let microphoneInput: AVAssetWriterInput? = micInput
+            let videoInput = vwInput
+            let audioInput = awInput
+            let microphoneInput = micInput
             vW = nil
             vwInput = nil
             awInput = nil
@@ -497,8 +601,14 @@ class SCContext {
             micStalled = false
             recordsMic = false
         }
+        let savedSoFar = String(format: "The recording up to that point is saved as: %@".local, recording.finalURL.path)
         var videoSaved = false
         if !audioOnly {
+            if !sessionStarted, let unused = writer {
+                // No frame arrived, so there is nothing to close: the empty file is removed and the report below says so
+                unused.cancelWriting()
+                writer = nil
+            }
             if let writer = writer {
                 let dispatchGroup = DispatchGroup()
                 dispatchGroup.enter()
@@ -508,36 +618,37 @@ class SCContext {
             }
             if !videoSaved {
                 print("Video writing failed with status: \(String(describing: writer?.status)), error: \(String(describing: writer?.error))")
-                var body = writer?.error?.localizedDescription ?? (writer == nil ? "The recording did not start, nothing was written.".local : "Unknown error".local)
-                // Whatever was written keeps the name it was recorded under, which is a temporary one when a mix was planned
+                var body = earlyReason ?? ""
+                if let error = writer?.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
+                if body.isEmpty { body = writer == nil ? "The recording did not start, nothing was written.".local : "Unknown error".local }
                 if fd.fileExists(atPath: recording.rawURL.path) {
-                    body += " " + String(format: "The incomplete file was left at: %@".local, recording.rawURL.path)
+                    // The file is written in fragments, so it plays up to the last few seconds without having been closed.
+                    // It gets its final name; no mix is attempted on it.
+                    let kept = recording.mixURL.map { keepUnmixedRecording(written: recording.rawURL, partialMix: $0, final: recording.finalURL) } ?? recording.rawURL
+                    body += " " + String(format: "The file could not be closed. What was written before that was kept as: %@".local, kept.path)
                 }
-                showNotification(title: "Failed to save file".local, body: body, id: "quickrecorder.error.\(UUID().uuidString)")
-            } else if recording.mixesAudio {
-                finishing.enter()
-                DispatchQueue.global(qos: .userInitiated).async { mixRecording(recording, frame: frame) { finishing.leave() } }
+                reportFailure(title: earlyReason == nil ? "Failed to save file".local : "Recording Stopped Early".local, message: body)
+            } else {
+                if let reason = earlyReason { reportFailure(title: "Recording Stopped Early".local, message: reason + " " + savedSoFar) }
+                if recording.mixesAudio {
+                    finishing.enter()
+                    DispatchQueue.global(qos: .userInitiated).async { mixRecording(recording, frame: frame) { finishing.leave() } }
+                }
             }
         } else if hadMic, let writer = writer {
+            if let reason = earlyReason { reportFailure(title: "Recording Stopped Early".local, message: reason + " " + savedSoFar) }
             // The package is only read once the microphone file is complete
             finishing.enter()
             writer.finishWriting {
                 DispatchQueue.main.async { finishAudioRecording(recording) { finishing.leave() } }
             }
         } else {
+            if let reason = earlyReason { reportFailure(title: "Recording Stopped Early".local, message: reason + " " + savedSoFar) }
             finishing.enter()
             finishAudioRecording(recording) { finishing.leave() }
         }
         
-        DispatchQueue.main.async {
-            controlPanel.close()
-            if isCameraRunning() {
-                if camWindow.isVisible { camWindow.close() }
-                if deviceWindow.isVisible { deviceWindow.close() }
-                if let preview = previewSession { preview.stopRunning() }
-                if let capture = captureSession { capture.stopRunning() }
-            }
-        }
+        DispatchQueue.main.async { closeRecordingWindows() }
         
         isPaused = false
         hideMousePointer = false
@@ -569,7 +680,7 @@ class SCContext {
     /// when the recording has its final name.
     private static func mixRecording(_ recording: RecordingContext, frame: CMSampleBuffer?, completion: @escaping () -> Void) {
         guard let mixURL = recording.mixURL else { completion(); return }
-        mixAudioTracks(videoURL: recording.rawURL, audioURL: mixURL, outputURL: recording.finalURL, fileType: recording.fileType) { result in
+        let finished: (Result<URL, Error>) -> Void = { result in
             switch result {
             case .success(let url):
                 print("Exported video to \(String(describing: url.path))")
@@ -594,6 +705,13 @@ class SCContext {
             }
             completion()
         }
+        // The mix writes a second file of about the same size next to the recording. On a nearly full disk the
+        // recording is kept as it is rather than put at risk.
+        guard DiskSpace.hasRoomForCopy(of: recording.rawURL) else {
+            finished(.failure(RecordingError("Not enough free disk space to mix the audio tracks.".local)))
+            return
+        }
+        mixAudioTracks(videoURL: recording.rawURL, audioURL: mixURL, outputURL: recording.finalURL, fileType: recording.fileType, completion: finished)
     }
     
     /// What follows an audio-only recording once its files are closed: MP3 conversion, the mix of a .qma package, or just the report.

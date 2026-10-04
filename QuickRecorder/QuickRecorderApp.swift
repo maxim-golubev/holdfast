@@ -487,6 +487,10 @@ func createAlert(level: NSAlert.Style = .warning, title: String, message: String
 }
 
 func showAlertSyncOnMainThread(level: NSAlert.Style = .warning, title: String, message: String, button1: String, button2: String = "", width: Int? = nil) -> NSApplication.ModalResponse {
+    // Waiting for the main queue on the main thread would never return
+    if Thread.isMainThread {
+        return createAlert(level: level, title: title, message: message, button1: button1, button2: button2, width: width).runModal()
+    }
     var response: NSApplication.ModalResponse = .abort
     let semaphore = DispatchSemaphore(value: 0)
     
