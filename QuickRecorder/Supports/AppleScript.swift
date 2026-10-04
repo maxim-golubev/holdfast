@@ -200,13 +200,22 @@ class recordAudio: NSScriptCommand {
 
 class stopRecording: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
-        // Same action as the status-bar Stop button; does nothing when no recording is running
-        DispatchQueue.main.async {
-            if SCContext.streamType == .idevice {
-                AVOutputClass.shared.stopRecording()
-            } else if SCContext.stream != nil {
-                SCContext.stopRecording()
+        // Script commands are dispatched on the main thread, so the recording state can be read directly
+        if SCContext.streamType == .idevice || SCContext.stream != nil {
+            // Same action as the status-bar Stop button
+            DispatchQueue.main.async {
+                if SCContext.streamType == .idevice {
+                    AVOutputClass.shared.stopRecording()
+                } else if SCContext.stream != nil {
+                    SCContext.stopRecording()
+                }
             }
+        } else if AppDelegate.shared.cancelCountdown() {
+            // The recording had not started yet: the countdown is cancelled like its Cancel button does
+        } else if SCContext.streamType != nil {
+            // The stream is being set up and cannot be stopped yet; tell the script instead of silently doing nothing
+            scriptErrorNumber = errOSAGeneralError
+            scriptErrorString = "The recording is still starting and was not stopped. Try again in a moment."
         }
         return nil
     }

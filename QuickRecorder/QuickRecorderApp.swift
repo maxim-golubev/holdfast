@@ -369,7 +369,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     
     func openSettingPanel() {
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.mainMenu?.items.first?.submenu?.item(at: 3)?.performAction()
+        // SwiftUI gives the Settings item a private action, so it can only be triggered through the app menu.
+        // Look it up by its Cmd+, shortcut instead of a fixed index, which shifts whenever the menu changes.
+        let appMenu = NSApp.mainMenu?.items.first?.submenu
+        let settingsItem = appMenu?.items.first(where: { $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == .command })
+        (settingsItem ?? appMenu?.item(at: 2))?.performAction()
     }
     
     class EscPanel: NSPanel {
@@ -524,6 +528,7 @@ extension NSMenuItem {
 
 extension NSImage {
     /// Captures `rect` (global AppKit screen coordinates) without this app's own windows.
+    /// Only the display containing the centre of `rect` is captured; parts of `rect` outside it are left transparent.
     /// The completion handler runs on the main queue.
     static func createScreenShot(of rect: NSRect, completion: @escaping (NSImage?) -> Void) {
         let center = NSPoint(x: rect.midX, y: rect.midY)
@@ -533,18 +538,33 @@ extension NSImage {
             completion(nil)
             return
         }
+        // sourceRect must stay inside the display, so capture only the visible part and pad the rest
+        let visible = rect.intersection(screen.frame)
+        if visible.isEmpty { completion(nil); return }
         let ownApps = content.applications.filter({ $0.bundleIdentifier == Bundle.main.bundleIdentifier })
         let filter = SCContentFilter(display: display, excludingApplications: ownApps, exceptingWindows: [])
         let factor = screen.backingScaleFactor
         let conf = SCStreamConfiguration()
         // sourceRect is relative to the display, in points, with a top-left origin
-        conf.sourceRect = CGRect(x: rect.minX - screen.frame.minX, y: screen.frame.maxY - rect.maxY, width: rect.width, height: rect.height)
-        conf.width = Int(rect.width * factor)
-        conf.height = Int(rect.height * factor)
+        conf.sourceRect = CGRect(x: visible.minX - screen.frame.minX, y: screen.frame.maxY - visible.maxY, width: visible.width, height: visible.height)
+        conf.width = max(1, Int(visible.width * factor))
+        conf.height = max(1, Int(visible.height * factor))
         conf.showsCursor = false
         SCScreenshotManager.captureImage(contentFilter: filter, configuration: conf) { cgImage, error in
             if let error = error { print("Screenshot failed: \(error.localizedDescription)") }
-            let image = cgImage.map({ NSImage(cgImage: $0, size: rect.size) })
+            var image: NSImage?
+            if let cgImage {
+                let part = NSImage(cgImage: cgImage, size: visible.size)
+                if visible == rect {
+                    image = part
+                } else {
+                    let offset = NSPoint(x: visible.minX - rect.minX, y: visible.minY - rect.minY)
+                    image = NSImage(size: rect.size, flipped: false) { _ in
+                        part.draw(in: NSRect(origin: offset, size: visible.size))
+                        return true
+                    }
+                }
+            }
             DispatchQueue.main.async { completion(image) }
         }
     }

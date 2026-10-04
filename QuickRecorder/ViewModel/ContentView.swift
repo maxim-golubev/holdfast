@@ -285,9 +285,11 @@ struct SelectorView: View {
     }
 }
 
+// The running countdown, kept outside the view so a pending start can be cancelled from anywhere
+private var countdownTimer: Timer?
+
 struct CountdownView: View {
     @State var countdownValue: Int = 00
-    @State private var timer: Timer?
     var atEnd: () -> Void
 
     var body: some View {
@@ -298,11 +300,7 @@ struct CountdownView: View {
                 .foregroundColor(.white)
                 .offset(y: -10)
             Button(action: {
-                timer?.invalidate()
-                for w in NSApp.windows.filter({
-                    $0.title == "Countdown Panel".local ||
-                    $0.title == "Area Overlayer".local
-                }) { w.close() }
+                AppDelegate.shared.cancelCountdown()
             }, label: {
                 ZStack {
                     Color.white.opacity(0.2)
@@ -315,12 +313,13 @@ struct CountdownView: View {
         .frame(width: 120, height: 120)
         .cornerRadius(10)
         .onAppear{
-            timer?.invalidate()
-            timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+            countdownTimer?.invalidate()
+            countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
                 if countdownValue > 1 {
                     countdownValue -= 1
                 } else {
                     timer.invalidate()
+                    countdownTimer = nil
                     if let w = NSApp.windows.first(where: { $0.title == "Countdown Panel".local }) { w.close() }
                     atEnd()
                 }
@@ -358,6 +357,19 @@ extension AppDelegate {
             //areaPanel.setFrameOrigin(NSPoint(x: wX, y: wY))
             areaPanel.orderFront(self)
         }
+    }
+    
+    /// Cancels a countdown that has not started its recording yet. Returns false if no countdown was running.
+    @discardableResult
+    func cancelCountdown() -> Bool {
+        guard let timer = countdownTimer else { return false }
+        timer.invalidate()
+        countdownTimer = nil
+        for w in NSApp.windows.filter({
+            $0.title == "Countdown Panel".local ||
+            $0.title == "Area Overlayer".local
+        }) { w.close() }
+        return true
     }
     
     func createCountdownPanel(screen: SCDisplay, action: @escaping () -> Void) {
