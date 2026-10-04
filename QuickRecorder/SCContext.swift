@@ -119,7 +119,9 @@ struct RecordingError: LocalizedError {
 
 class SCContext {
     static var trimingList = [URL]()
-    static var firstFrame: CMSampleBuffer?
+    /// Small picture of the recording's first frame for the preview. An image, not the frame: a frame as delivered
+    /// holds one of the stream's surfaces, and a full-size copy would sit in memory for the whole recording.
+    static var firstFrame: NSImage?
     static var autoStop = 0
     static var recordCam = ""
     static var recordDevice = ""
@@ -139,23 +141,33 @@ class SCContext {
     static var lastPTS: CMTime?
     /// Total paused time, subtracted from every buffer's timestamps
     static var timeOffset = CMTime.zero
-    /// End of the system audio appended so far
+    /// Where the writer's session starts on the timeline, nil until the first frame (or audio buffer, when only audio is recorded)
+    static var sessionStart: CMTime?
+    /// The end time of the buffer that arrived last and the uptime at which it arrived. `RecordingMonitor` tells the
+    /// present time on the buffers' clock from it while nothing arrives.
+    static var clockAnchor: (raw: CMTime, uptime: UInt64)?
+    /// End of the system audio appended so far, silence included
     static var audioEndPTS: CMTime?
+    /// Format of the system audio ScreenCaptureKit delivered last
+    static var audioFormatDescription: CMAudioFormatDescription?
     /// Time of the last video frame appended, and that frame, which is written again while no new one arrives
     static var videoPTS: CMTime?
     static var lastVideoFrame: CMSampleBuffer?
     /// Whether `lastVideoFrame` owns its pixels instead of holding a surface of the stream
     static var lastVideoFrameIsCopy = false
-    /// How far the video track may fall behind before the last frame is written again
-    static let videoStallSeconds: Double = 3
+    /// How long no frame may arrive before the last one is written again
+    static let videoStallSeconds: Double = 1
     /// Whether the current recording has a microphone track. Decided when the recording starts, unlike the "recordMic" setting.
     static var recordsMic = false
-    /// The device ScreenCaptureKit captures, nil for the system default input
+    /// The device ScreenCaptureKit is asked to capture when the recording starts, nil for the system default input
     static var micCaptureDeviceID: String?
+    /// The microphone setting this recording was started with: a device's uniqueID, or "default"
+    static var micSelection = "default"
+    /// The device the microphone is being captured from. `MicDevices` changes it when the devices change.
+    static var micActiveDeviceID: String?
+    /// The configuration the stream was started with, kept to update it when the microphone changes
+    static var streamConfiguration: SCStreamConfiguration?
     static var micConverter: MicConverter?
-    /// Set while the microphone track is behind the recording by more than `micStallSeconds` and is being filled with silence
-    static var micStalled = false
-    static let micStallSeconds: Double = 5
     /// How much of a recording an unclosed .mp4, .mov or .m4a file can be missing at its end
     static let fragmentInterval = CMTime(seconds: 10, preferredTimescale: 600)
     static var screenArea: NSRect?
@@ -439,11 +451,34 @@ class SCContext {
         sampleQueue.sync {
             isPaused.toggle()
             if !isPaused { isResume = true }
+            RecordingMonitor.resumeWaited = false
         }
         PopoverState.shared.isPaused = isPaused
         if !isPaused {
             startTime = Date.now.addingTimeInterval(-1) - SCContext.timePassed
         }
+    }
+    
+    /// On `sampleQueue`. Turns a time on the buffers' clock into a time on the writer's timeline, which leaves out the
+    /// pauses. The first time after a pause continues where the recording left off: the paused time is taken out of
+    /// every track alike, which keeps video, system audio and microphone in sync.
+    static func timelineTime(_ raw: CMTime) -> CMTime {
+        if isResume {
+            isResume = false
+            if let last = lastPTS {
+                let offset = CMTimeSubtract(raw, last)
+                if offset > timeOffset { timeOffset = offset }
+                print("time removed for pauses: \(CMTimeGetSeconds(timeOffset))")
+            }
+        }
+        return CMTimeSubtract(raw, timeOffset)
+    }
+    
+    /// On `sampleQueue`. Keeps `lastPTS` at the latest end time of anything on the timeline.
+    static func noteEnd(_ end: CMTime?) {
+        guard let end = end, end.isValid else { return }
+        if let last = lastPTS, end <= last { return }
+        lastPTS = end
     }
     
     /// On `sampleQueue`. Returns whether the buffer was written. An input that is not ready drops the buffer;
@@ -485,12 +520,15 @@ class SCContext {
             lastVideoFrame = nil
             videoPTS = nil
             lastPTS = nil
+            sessionStart = nil
+            clockAnchor = nil
             micConverter = nil
-            micStalled = false
             recordsMic = false
+            RecordingMonitor.stop()
             return true
         }
         guard current else { return false }
+        streamConfiguration = nil
         // Also deletes the file the writer created
         writer?.cancelWriting()
         // Nothing was recorded, so what is left is an empty file or a package without audio
@@ -565,14 +603,16 @@ class SCContext {
         
         stream?.stopCapture()
         stream = nil
+        streamConfiguration = nil
         let hadMic = recording.recordMic
         let audioOnly = recording.audioOnly
         var writer: AVAssetWriter?
-        var frame: CMSampleBuffer?
+        var frame: NSImage?
         var sessionStarted = false
         // Buffers are appended on sampleQueue. Finishing the inputs there means no append runs alongside or after it.
         sampleQueue.sync {
             isCapturing = false
+            RecordingMonitor.stop()
             sessionStarted = startTime != nil
             // The writer and its inputs leave the statics with the recording. `prepRecord` clears them as well, so a
             // recording that never got as far as creating a writer has none here, not the one of an earlier recording.
@@ -608,8 +648,9 @@ class SCContext {
             lastVideoFrame = nil
             videoPTS = nil
             lastPTS = nil
+            sessionStart = nil
+            clockAnchor = nil
             micConverter = nil
-            micStalled = false
             recordsMic = false
         }
         let savedSoFar = String(format: "The recording up to that point is saved as: %@".local, recording.finalURL.path)
@@ -703,7 +744,7 @@ class SCContext {
                 let id = "quickrecorder.completed.\(UUID().uuidString)"
                 showNotification(title: title, body: body, id: id)
             } else {
-                showPreview(path: url.path, frame: frame)
+                showPreview(path: url.path, image: frame)
             }
             if recording.trimAfterRecord {
                 AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, only: false)
@@ -715,7 +756,7 @@ class SCContext {
     
     /// Mixes the audio tracks of a finished video recording and presents the result. `completion` is called once,
     /// when the recording has its final name.
-    private static func mixRecording(_ recording: RecordingContext, frame: CMSampleBuffer?, completion: @escaping () -> Void) {
+    private static func mixRecording(_ recording: RecordingContext, frame: NSImage?, completion: @escaping () -> Void) {
         guard let mixURL = recording.mixURL else { completion(); return }
         let finished: (Result<URL, Error>) -> Void = { result in
             switch result {
@@ -728,7 +769,7 @@ class SCContext {
                     if recording.trimAfterRecord {
                         AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, only: false)
                     } else if recording.showPreview {
-                        showPreview(path: url.path, frame: frame)
+                        showPreview(path: url.path, image: frame)
                     }
                 }
             case .failure(let error):
@@ -737,7 +778,7 @@ class SCContext {
                 let body = String(format: "%@ The recording was kept with separate audio tracks: %@".local, error.localizedDescription, kept.path)
                 showNotification(title: "Audio Mix Failed".local, body: body, id: "quickrecorder.error.\(UUID().uuidString)")
                 if recording.showPreview {
-                    DispatchQueue.main.async { showPreview(path: kept.path, frame: frame) }
+                    DispatchQueue.main.async { showPreview(path: kept.path, image: frame) }
                 }
             }
             completion()
@@ -852,14 +893,21 @@ class SCContext {
         return try? CMSampleBuffer(imageBuffer: copy, formatDescription: description, sampleTiming: timing)
     }
     
-    /// Shows the floating preview for a finished recording. `frame` is that recording's first video frame, `image` an icon to show instead.
-    static func showPreview(path: String, frame: CMSampleBuffer? = nil, image: NSImage? = nil) {
-        var previewImage: NSImage?
-        let previewURL = fd.temporaryDirectory.appendingPathComponent("qr-preview.jpg")
-        if image == nil { frame?.nsImage?.saveToFile(previewURL, type: .jpeg) }
-        
-        if let i = image { previewImage = i } else { previewImage = NSImage(contentsOf: previewURL) }
-        if let previewImage = previewImage, let screen = getScreenWithMouse() {
+    /// A picture of a video frame, at most `side` pixels wide and high, that does not depend on the frame's pixels afterwards
+    static func thumbnail(of frame: CMSampleBuffer, side: CGFloat = 1280) -> NSImage? {
+        guard let pixels = frame.imageBuffer else { return nil }
+        var image = CIImage(cvPixelBuffer: pixels)
+        let longest = max(image.extent.width, image.extent.height)
+        guard longest > 0 else { return nil }
+        if longest > side { image = image.transformed(by: CGAffineTransform(scaleX: side / longest, y: side / longest)) }
+        let bounds = image.extent.integral.intersection(image.extent)
+        guard !bounds.isEmpty, let rendered = CIContext().createCGImage(image, from: bounds) else { return nil }
+        return NSImage(cgImage: rendered, size: .zero)
+    }
+    
+    /// Shows the floating preview for a finished recording. `image` is that recording's first frame or an icon.
+    static func showPreview(path: String, image: NSImage?) {
+        if let previewImage = image, let screen = getScreenWithMouse() {
             let contentView = NSHostingView(rootView: PreviewView(frame: previewImage, filePath: path))
             previewWindow.contentView = contentView
             previewWindow.setFrameOrigin(NSPoint(x: screen.frame.maxX - 280, y: screen.frame.minY + 20))

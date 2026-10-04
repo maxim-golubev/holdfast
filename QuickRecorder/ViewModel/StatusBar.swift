@@ -20,6 +20,7 @@ struct StatusBarItem: View {
     @State private var recordingLength = "00:00"
     //@State private var isPassed = SCContext.isPaused
     @StateObject private var popoverState = PopoverState.shared
+    @ObservedObject private var health = RecordingHealth.shared
     //@NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @AppStorage("miniStatusBar") private var miniStatusBar: Bool = false
     //@AppStorage("highlightMouse") private var highlightMouse: Bool = false
@@ -30,7 +31,8 @@ struct StatusBarItem: View {
             if SCContext.streamType != nil {
                 ZStack {
                     Rectangle()
-                        .fill(Color.mypurple)
+                        // Orange while a track is not being recorded
+                        .fill(health.warning == nil ? Color.mypurple : Color.orange)
                         .shadow(color: .black.opacity(0.3), radius: 4)
                         .cornerRadius(4)
                     HStack(spacing: 4) {
@@ -131,6 +133,17 @@ struct StatusBarItem: View {
                         }
                     }
                 }
+                // Microphone activity: grey without signal, green with sound. Drawn over the corner, so the layout stays as it is.
+                .overlay(alignment: .topTrailing) {
+                    if let level = health.micLevel {
+                        Circle()
+                            .fill(level == 0 ? Color.white.opacity(0.4) : Color.green.opacity(level == 1 ? 0.6 : 1))
+                            .frame(width: 5, height: 5)
+                            .padding(2)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .help(health.warning ?? "")
                 .padding([.leading,.trailing], 4)
                 .popover(isPresented: $popoverState.isShowing, arrowEdge: .bottom) {
                     CameraPopoverView(closePopover: { popoverState.isShowing = false })
@@ -201,15 +214,7 @@ struct StatusBarItem: View {
                 })
                 .buttonStyle(.plain)
                 .popover(isPresented: $popoverState.isShowing, arrowEdge: .bottom) {
-                    if #available(macOS 13, *) {
-                        ContentViewNew().onAppear{ closeAllWindow() }
-                    } else {
-                        ContentView(fromStatusBar: true)
-                            .onAppear{
-                                closeAllWindow()
-                                if isMacOS12 { NSApp.activate(ignoringOtherApps: true) }
-                            }
-                    }
+                    ContentViewNew().onAppear{ closeAllWindow() }
                 }
             }
         }
@@ -230,8 +235,8 @@ func updateStatusBar() {
         }
         guard let button = statusBarItem.button else { return }
         //let width = SCContext.streamType == nil ? 36 : ((SCContext.streamType == .idevice || SCContext.streamType == .systemaudio) ? 138 : 158)
-        let iconView = NSHostingView(rootView: StatusBarItem().padding(.top, isMacOS14 ? -2 : -1))
-        iconView.frame = NSRect(x: 0, y: 1, width: getStatusBarWidth(), height: isMacOS14 ? 22 : 21)
+        let iconView = NSHostingView(rootView: StatusBarItem().padding(.top, -1))
+        iconView.frame = NSRect(x: 0, y: 1, width: getStatusBarWidth(), height: 21)
         button.subviews = [iconView]
         button.frame = iconView.frame
         button.setAccessibilityLabel("QuickRecorder")

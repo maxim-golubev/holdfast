@@ -4,6 +4,56 @@
 //
 
 import AVFoundation
+import Accelerate
+
+/// The one place silent audio is made, for the microphone track and the system audio track alike
+enum AudioSilence {
+    /// `frames` of silence in `format`
+    static func pcm(format: AVAudioFormat, frames: Int64) -> AVAudioPCMBuffer? {
+        guard frames > 0, frames <= Int64(UInt32.max) else { return nil }
+        let count = AVAudioFrameCount(frames)
+        guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count) else { return nil }
+        pcm.frameLength = count
+        for buffer in UnsafeMutableAudioBufferListPointer(pcm.mutableAudioBufferList) {
+            if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+        }
+        return pcm
+    }
+
+    /// Wraps PCM audio in a sample buffer that starts at `pts`. `description` must describe the format of `pcm`.
+    static func sampleBuffer(from pcm: AVAudioPCMBuffer, description: CMAudioFormatDescription, at pts: CMTime) -> CMSampleBuffer? {
+        let rate = pcm.format.sampleRate
+        guard rate > 0, pts.isValid else { return nil }
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: CMTimeScale(rate)),
+            presentationTimeStamp: pts,
+            decodeTimeStamp: .invalid
+        )
+        var created: CMSampleBuffer?
+        guard CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: nil,
+            dataReady: false,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: description,
+            sampleCount: CMItemCount(pcm.frameLength),
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &created
+        ) == noErr, let sampleBuffer = created else { return nil }
+        guard CMSampleBufferSetDataBufferFromAudioBufferList(
+            sampleBuffer,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: 0,
+            bufferList: pcm.audioBufferList
+        ) == noErr else { return nil }
+        return sampleBuffer
+    }
+}
 
 /// Turns the microphone buffers ScreenCaptureKit delivers into one fixed format on a continuous timeline.
 ///
@@ -19,6 +69,10 @@ final class MicConverter {
     private var converter: AVAudioConverter?
     /// Where the next sample goes on the writer's timeline
     private var nextPTS = CMTime.invalid
+    /// End of the track on the writer's timeline, invalid before it has started
+    var end: CMTime { nextPTS }
+    /// Largest sample magnitude of the last buffer `convert` wrote. Exactly zero for digital silence.
+    private(set) var lastPeak: Float = 0
     /// How far the device's timestamps may drift from the sample count before the timeline is corrected, in frames
     private let tolerance = Int64(MicConverter.sampleRate / 10)
     private let silenceChunk = Int64(MicConverter.sampleRate / 2)
@@ -65,6 +119,12 @@ final class MicConverter {
         }
         guard let converted = resample(sampleBuffer), let buffer = makeSampleBuffer(from: converted), append(buffer) else { return false }
         advance(by: Int64(converted.frameLength))
+        var peak: Float = 0
+        if let samples = converted.floatChannelData {
+            // Interleaved: one buffer holds every channel
+            vDSP_maxmgv(samples[0], 1, &peak, vDSP_Length(converted.frameLength) * vDSP_Length(outputFormat.channelCount))
+        }
+        lastPeak = peak
         return true
     }
 
@@ -131,43 +191,12 @@ final class MicConverter {
     }
 
     private func silence(frames: Int64) -> CMSampleBuffer? {
-        let count = AVAudioFrameCount(frames)
-        guard let pcm = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: count) else { return nil }
-        pcm.frameLength = count
-        let buffer = pcm.audioBufferList.pointee.mBuffers
-        if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+        guard let pcm = AudioSilence.pcm(format: outputFormat, frames: frames) else { return nil }
         return makeSampleBuffer(from: pcm)
     }
 
     /// Wraps converted audio in a sample buffer placed at the end of the timeline
     private func makeSampleBuffer(from pcm: AVAudioPCMBuffer) -> CMSampleBuffer? {
-        var timing = CMSampleTimingInfo(
-            duration: CMTime(value: 1, timescale: MicConverter.sampleRate),
-            presentationTimeStamp: nextPTS,
-            decodeTimeStamp: .invalid
-        )
-        var created: CMSampleBuffer?
-        guard CMSampleBufferCreate(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: nil,
-            dataReady: false,
-            makeDataReadyCallback: nil,
-            refcon: nil,
-            formatDescription: outputFormat.formatDescription,
-            sampleCount: CMItemCount(pcm.frameLength),
-            sampleTimingEntryCount: 1,
-            sampleTimingArray: &timing,
-            sampleSizeEntryCount: 0,
-            sampleSizeArray: nil,
-            sampleBufferOut: &created
-        ) == noErr, let sampleBuffer = created else { return nil }
-        guard CMSampleBufferSetDataBufferFromAudioBufferList(
-            sampleBuffer,
-            blockBufferAllocator: kCFAllocatorDefault,
-            blockBufferMemoryAllocator: kCFAllocatorDefault,
-            flags: 0,
-            bufferList: pcm.audioBufferList
-        ) == noErr else { return nil }
-        return sampleBuffer
+        return AudioSilence.sampleBuffer(from: pcm, description: outputFormat.formatDescription, at: nextPTS)
     }
 }

@@ -38,6 +38,7 @@
 		18FDFC8E2BDA435F0020E685 /* ScreenMagnifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FDFC8D2BDA435F0020E685 /* ScreenMagnifier.swift */; };
 		18FEBDAA2BCF8200003F09BC /* RecordEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDA92BCF8200003F09BC /* RecordEngine.swift */; };
 		18FEBDAC2BCF8200003F09BC /* MicConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDAB2BCF8200003F09BC /* MicConverter.swift */; };
+		18FEBDC22BCF8400003F09BC /* RecordingMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC12BCF8400003F09BC /* RecordingMonitor.swift */; };
 		18FEBDAC2BD01E82003F09BC /* WinSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDAB2BD01E82003F09BC /* WinSelector.swift */; };
 		18FEBDAE2BD10ED1003F09BC /* ScreenSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDAD2BD10ED1003F09BC /* ScreenSelector.swift */; };
 		18FEBDB02BD2C0D1003F09BC /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDAF2BD2C0D1003F09BC /* SettingsView.swift */; };
@@ -75,6 +76,7 @@
 		18FDFC8D2BDA435F0020E685 /* ScreenMagnifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenMagnifier.swift; sourceTree = "<group>"; };
 		18FEBDA92BCF8200003F09BC /* RecordEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordEngine.swift; sourceTree = "<group>"; };
 		18FEBDAB2BCF8200003F09BC /* MicConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicConverter.swift; sourceTree = "<group>"; };
+		18FEBDC12BCF8400003F09BC /* RecordingMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingMonitor.swift; sourceTree = "<group>"; };
 		18FEBDAB2BD01E82003F09BC /* WinSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WinSelector.swift; sourceTree = "<group>"; };
 		18FEBDAD2BD10ED1003F09BC /* ScreenSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSelector.swift; sourceTree = "<group>"; };
 		18FEBDAF2BD2C0D1003F09BC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -139,6 +141,7 @@
 				18D3BDEA2BCE5DC1006CFFC0 /* QuickRecorderApp.swift */,
 				18FEBDA92BCF8200003F09BC /* RecordEngine.swift */,
 				18FEBDAB2BCF8200003F09BC /* MicConverter.swift */,
+				18FEBDC12BCF8400003F09BC /* RecordingMonitor.swift */,
 				18D3BE032BCEC847006CFFC0 /* SCContext.swift */,
 				184CAEC62BDCCC2300D61D57 /* AVContext.swift */,
 				18A551F52D0749C3008FC5F6 /* Supports */,
@@ -287,6 +290,7 @@
 				18D3BE012BCEB1BF006CFFC0 /* AppSelector.swift in Sources */,
 				18FEBDAA2BCF8200003F09BC /* RecordEngine.swift in Sources */,
 				18FEBDAC2BCF8200003F09BC /* MicConverter.swift in Sources */,
+				18FEBDC22BCF8400003F09BC /* RecordingMonitor.swift in Sources */,
 				18FEBDB02BD2C0D1003F09BC /* SettingsView.swift in Sources */,
 				18E6F11A2C2E74DF00249DB1 /* QmaPlayer.swift in Sources */,
 				18D3BDEB2BCE5DC1006CFFC0 /* QuickRecorderApp.swift in Sources */,
