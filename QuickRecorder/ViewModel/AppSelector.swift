@@ -128,7 +128,6 @@ struct AppSelector: View {
                             Text(" Stop after".local)
                             TextField("", value: $autoStop, formatter: NumberFormatter())
                                 .textFieldStyle(RoundedBorderTextFieldStyle())
-                                //.onChange(of: autoStop) { newValue in SCContext.autoStop = newValue }
                             Stepper("", value: $autoStop)
                                 .padding(.leading, -10)
                             Text("minutes ".local)
@@ -159,8 +158,7 @@ struct AppSelector: View {
     func startRecording() {
         closeAllWindow()
         appDelegate.createCountdownPanel(screen: display) {
-            SCContext.autoStop = autoStop
-            appDelegate.prepRecord(type: "application", screens: display, windows: nil, applications: selected)
+            appDelegate.prepRecord(type: "application", screens: display, windows: nil, applications: selected, autoStop: autoStop)
         }
     }
 }

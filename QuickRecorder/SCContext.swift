@@ -584,11 +584,16 @@ class SCContext {
             startTime = nil
             window = nil
             screen = nil
-            if let w = NSApp.windows.first(where:  { $0.title == "Area Overlayer".local }) { w.close() }
+            closeAreaOverlay()
             closeRecordingWindows()
             endFailedStart()
         }
         if Thread.isMainThread { reset() } else { DispatchQueue.main.async(execute: reset) }
+    }
+    
+    /// Main thread. The dashed frame around the recorded area, which a selector puts up before it asks for the start.
+    static func closeAreaOverlay() {
+        for w in NSApp.windows where w.title == "Area Overlayer".local { w.close() }
     }
     
     /// Main thread. The control panel and the camera overlays that accompany a recording.
@@ -634,9 +639,16 @@ class SCContext {
     }
     
     /// Main thread. idle → starting: the only way into a recording, called by `prepRecord` before anything else.
-    static func beginStart() -> Bool {
-        guard canStart() else { return false }
+    /// `autoStop` (minutes, 0 for none) belongs to the recording being started, so it is only taken when the start is accepted.
+    static func beginStart(autoStop: Int = 0) -> Bool {
+        guard canStart() else {
+            // A selector's dashed frame must not stay behind. While a recording is starting or running the frame
+            // on screen may be that recording's, so it is left alone.
+            if state != .starting && state != .recording { closeAreaOverlay() }
+            return false
+        }
         pendingStop = nil
+        SCContext.autoStop = max(0, autoStop)
         state = .starting
         return true
     }
@@ -646,6 +658,7 @@ class SCContext {
         guard state == .starting else { return }
         pendingStop = nil
         streamType = nil
+        autoStop = 0
         state = .idle
     }
     
@@ -701,7 +714,7 @@ class SCContext {
         mousePointer.orderOut(nil)
         screenMagnifier.orderOut(nil)
         AppDelegate.shared.stopGlobalMouseMonitor()
-        if let w = NSApp.windows.first(where:  { $0.title == "Area Overlayer".local }) { w.close() }
+        closeAreaOverlay()
         closeRecordingWindows()
         hideMousePointer = false
         PopoverState.shared.isPaused = false
@@ -723,6 +736,9 @@ class SCContext {
     }
     
     /// Suspends until `body` calls the closure it is given, on any thread. Calls after the first do nothing.
+    /// `body` itself runs on the main thread, like the caller: what it starts may build windows (the preview, the
+    /// audio player of the mix). Work that takes time has to leave the main thread inside `body`.
+    @MainActor
     private static func completion(of body: @escaping (@escaping () -> Void) -> Void) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let lock = NSLock()
@@ -739,6 +755,7 @@ class SCContext {
     
     /// Returns when the stream has stopped delivering buffers. A stream that does not answer is given 5 seconds;
     /// what it delivers after that is ignored, because the recording is no longer capturing by then.
+    @MainActor
     private static func stopCapture(_ stream: SCStream) async {
         await completion { done in
             stream.stopCapture { error in
@@ -922,7 +939,9 @@ class SCContext {
     }
     
     /// What follows an audio-only recording once its files are closed: MP3 conversion, the mix of a .qma package, or just the report.
-    /// `completion` is called once, when the files are in their final state.
+    /// `completion` is called once, when the files are in their final state. Main thread: it shows the preview
+    /// and creates the audio player that does the mix.
+    @MainActor
     private static func finishAudioRecording(_ recording: RecordingContext, completion: @escaping () -> Void) {
         if recording.audioFormat == .mp3 && !recording.recordMic {
             guard let source = recording.systemAudioURL else { completion(); return }

@@ -237,8 +237,7 @@ struct AreaSelector: View {
         window.contentView = NSHostingView(rootView: DashWindow())
         window.orderFront(self)
         appDelegate.createCountdownPanel(screen: screen) {
-            SCContext.autoStop = autoStop
-            appDelegate.prepRecord(type: "area", screens: screen, windows: nil, applications: nil)
+            appDelegate.prepRecord(type: "area", screens: screen, windows: nil, applications: nil, autoStop: autoStop)
         }
     }
 }

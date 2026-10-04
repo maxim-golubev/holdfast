@@ -16,8 +16,9 @@ extension AppDelegate {
     /// The one way a recording starts: the selectors, the hotkeys, the script commands and the countdown all end
     /// here. Main thread. It does nothing unless the recording side is idle (`SCContext.beginStart`), so a second
     /// start while one is starting, recording or still being saved cannot get in.
-    /// `recordMic` overrides the "recordMic" setting for this recording only.
-    func prepRecord(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil) {
+    /// `recordMic` overrides the "recordMic" setting for this recording only. `autoStop` is the number of minutes
+    /// after which this recording stops by itself (0: never); it is not set anywhere else.
+    func prepRecord(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil, autoStop: Int = 0) {
         let streamType: StreamType
         switch type {
         case "window":  streamType = .window
@@ -28,10 +29,11 @@ extension AppDelegate {
         case "audio":   streamType = .systemaudio
             default: return // if we don't even know what to record I don't think we should even try
         }
-        guard SCContext.beginStart() else { return }
+        guard SCContext.beginStart(autoStop: autoStop) else { return }
         SCContext.streamType = streamType
         // Every reason not to start ends here, with one alert
         func failToRecord(_ message: String) {
+            SCContext.closeAreaOverlay()
             SCContext.endFailedStart()
             SCContext.showAlertLater(title: "Failed to Record".local, message: message)
         }

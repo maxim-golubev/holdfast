@@ -154,8 +154,7 @@ struct ScreenSelector: View {
         closeAllWindow()
         if let screen = selected {
             appDelegate.createCountdownPanel(screen: screen) {
-                SCContext.autoStop = autoStop
-                appDelegate.prepRecord(type: "display", screens: screen, windows: nil, applications: nil)
+                appDelegate.prepRecord(type: "display", screens: screen, windows: nil, applications: nil, autoStop: autoStop)
             }
         }
     }
