@@ -141,6 +141,13 @@ class SCContext {
     static var timeOffset = CMTime.zero
     /// End of the system audio appended so far
     static var audioEndPTS: CMTime?
+    /// Time of the last video frame appended, and that frame, which is written again while no new one arrives
+    static var videoPTS: CMTime?
+    static var lastVideoFrame: CMSampleBuffer?
+    /// Whether `lastVideoFrame` owns its pixels instead of holding a surface of the stream
+    static var lastVideoFrameIsCopy = false
+    /// How far the video track may fall behind before the last frame is written again
+    static let videoStallSeconds: Double = 3
     /// Whether the current recording has a microphone track. Decided when the recording starts, unlike the "recordMic" setting.
     static var recordsMic = false
     /// The device ScreenCaptureKit captures, nil for the system default input
@@ -475,6 +482,8 @@ class SCContext {
             micInput = nil
             audioFile = nil
             firstFrame = nil
+            lastVideoFrame = nil
+            videoPTS = nil
             lastPTS = nil
             micConverter = nil
             micStalled = false
@@ -596,6 +605,8 @@ class SCContext {
             audioFile = nil // close audio file
             frame = firstFrame
             firstFrame = nil
+            lastVideoFrame = nil
+            videoPTS = nil
             lastPTS = nil
             micConverter = nil
             micStalled = false
@@ -609,7 +620,8 @@ class SCContext {
                 unused.cancelWriting()
                 writer = nil
             }
-            if let writer = writer {
+            // A writer that already failed has nothing to finish
+            if let writer = writer, writer.status == .writing {
                 let dispatchGroup = DispatchGroup()
                 dispatchGroup.enter()
                 writer.finishWriting { dispatchGroup.leave() }
@@ -635,12 +647,37 @@ class SCContext {
                     DispatchQueue.global(qos: .userInitiated).async { mixRecording(recording, frame: frame) { finishing.leave() } }
                 }
             }
+        } else if !sessionStarted {
+            // No audio arrived, so the files are empty. The microphone writer never got a session and cannot be closed.
+            writer?.cancelWriting()
+            try? fd.removeItem(at: recording.rawURL)
+            let body = (earlyReason.map { $0 + " " } ?? "") + "No audio arrived, nothing was recorded.".local
+            reportFailure(title: earlyReason == nil ? "Failed to save file".local : "Recording Stopped Early".local, message: body)
         } else if hadMic, let writer = writer {
-            if let reason = earlyReason { reportFailure(title: "Recording Stopped Early".local, message: reason + " " + savedSoFar) }
-            // The package is only read once the microphone file is complete
-            finishing.enter()
-            writer.finishWriting {
-                DispatchQueue.main.async { finishAudioRecording(recording) { finishing.leave() } }
+            let title = earlyReason == nil ? "Failed to save file".local : "Recording Stopped Early".local
+            // The microphone file did not close: the package is kept as it is and is not mixed
+            let reportUnclosed = {
+                var body = earlyReason ?? ""
+                if let error = writer.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
+                body += (body.isEmpty ? "" : " ") + String(format: "The microphone file could not be closed. The recording was kept with separate audio files: %@".local, recording.rawURL.path)
+                reportFailure(title: title, message: body)
+            }
+            if writer.status == .writing {
+                // The package is only read once the microphone file is complete
+                finishing.enter()
+                writer.finishWriting {
+                    DispatchQueue.main.async {
+                        guard writer.status == .completed else {
+                            reportUnclosed()
+                            finishing.leave()
+                            return
+                        }
+                        if let reason = earlyReason { reportFailure(title: title, message: reason + " " + savedSoFar) }
+                        finishAudioRecording(recording) { finishing.leave() }
+                    }
+                }
+            } else {
+                reportUnclosed()
             }
         } else {
             if let reason = earlyReason { reportFailure(title: "Recording Stopped Early".local, message: reason + " " + savedSoFar) }
@@ -777,6 +814,42 @@ class SCContext {
             print("Failed to rename the unmixed recording: \(error.localizedDescription)")
             return written
         }
+    }
+    
+    /// A copy of a video frame with pixels of its own. A frame as ScreenCaptureKit delivers it holds one of the
+    /// stream's few surfaces for as long as it is kept. Nil when the pixels cannot be copied.
+    static func detachedCopy(of frame: CMSampleBuffer) -> CMSampleBuffer? {
+        guard let source = frame.imageBuffer else { return nil }
+        var created: CVPixelBuffer?
+        let attributes = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary
+        guard CVPixelBufferCreate(kCFAllocatorDefault, CVPixelBufferGetWidth(source), CVPixelBufferGetHeight(source),
+                                  CVPixelBufferGetPixelFormatType(source), attributes, &created) == kCVReturnSuccess,
+              let copy = created else { return nil }
+        CVBufferPropagateAttachments(source, copy)
+        guard CVPixelBufferLockBaseAddress(source, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(source, .readOnly) }
+        guard CVPixelBufferLockBaseAddress(copy, []) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(copy, []) }
+        func copyRows(from: UnsafeMutableRawPointer?, _ fromRow: Int, to: UnsafeMutableRawPointer?, _ toRow: Int, rows: Int) -> Bool {
+            guard let from = from, let to = to else { return false }
+            for row in 0..<rows { memcpy(to + row * toRow, from + row * fromRow, min(fromRow, toRow)) }
+            return true
+        }
+        if CVPixelBufferIsPlanar(source) {
+            guard CVPixelBufferGetPlaneCount(source) == CVPixelBufferGetPlaneCount(copy) else { return nil }
+            for plane in 0..<CVPixelBufferGetPlaneCount(source) {
+                guard copyRows(from: CVPixelBufferGetBaseAddressOfPlane(source, plane), CVPixelBufferGetBytesPerRowOfPlane(source, plane),
+                               to: CVPixelBufferGetBaseAddressOfPlane(copy, plane), CVPixelBufferGetBytesPerRowOfPlane(copy, plane),
+                               rows: min(CVPixelBufferGetHeightOfPlane(source, plane), CVPixelBufferGetHeightOfPlane(copy, plane))) else { return nil }
+            }
+        } else {
+            guard copyRows(from: CVPixelBufferGetBaseAddress(source), CVPixelBufferGetBytesPerRow(source),
+                           to: CVPixelBufferGetBaseAddress(copy), CVPixelBufferGetBytesPerRow(copy),
+                           rows: min(CVPixelBufferGetHeight(source), CVPixelBufferGetHeight(copy))) else { return nil }
+        }
+        guard let description = try? CMVideoFormatDescription(imageBuffer: copy) else { return nil }
+        let timing = CMSampleTimingInfo(duration: frame.duration, presentationTimeStamp: frame.presentationTimeStamp, decodeTimeStamp: .invalid)
+        return try? CMSampleBuffer(imageBuffer: copy, formatDescription: description, sampleTiming: timing)
     }
     
     /// Shows the floating preview for a finished recording. `frame` is that recording's first video frame, `image` an icon to show instead.

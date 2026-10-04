@@ -13,11 +13,15 @@ enum DiskSpace {
     private static let interval: TimeInterval = 5
     private static var timer: Timer?
     
-    /// Bytes that can be written right now, without counting on the system purging anything. Nil when it cannot be determined.
+    /// Bytes available for a recording, counting the space the system frees on demand (purgeable space: local
+    /// snapshots, caches), as Finder does. Counting only what is free right now would refuse or stop recordings
+    /// that fit. Volumes that do not report this figure report zero for it, so the larger of the two is used.
+    /// Nil when neither can be determined.
     static func available(at path: String) -> Int64? {
-        guard let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeAvailableCapacityKey]),
-              let capacity = values.volumeAvailableCapacity else { return nil }
-        return Int64(capacity)
+        guard let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]) else { return nil }
+        let free = values.volumeAvailableCapacity.map { Int64($0) }
+        guard let important = values.volumeAvailableCapacityForImportantUsage else { return free }
+        return max(important, free ?? 0)
     }
     
     static func formatted(_ bytes: Int64) -> String {

@@ -213,6 +213,9 @@ extension AppDelegate {
             SCContext.timeOffset = .zero
             SCContext.lastPTS = nil
             SCContext.audioEndPTS = nil
+            SCContext.videoPTS = nil
+            SCContext.lastVideoFrame = nil
+            SCContext.lastVideoFrameIsCopy = false
             SCContext.isPaused = false
             SCContext.isResume = false
             SCContext.micStalled = false
@@ -442,10 +445,16 @@ extension AppDelegate {
         guard writer.canAdd(videoInput) else { throw RecordingError("The video settings are not supported by this file format.".local) }
         writer.add(videoInput)
 
-        let audioInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
-        audioInput.expectsMediaDataInRealTime = true
-        guard writer.canAdd(audioInput) else { throw RecordingError("The audio settings are not supported by this file format.".local) }
-        writer.add(audioInput)
+        // Only tracks that are fed: the writer puts a fragment on disk once every track has data for it, so a single
+        // track that never gets any would leave the whole file unreadable until it is closed
+        var audioInput: AVAssetWriterInput?
+        if conf.capturesAudio {
+            let input = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
+            input.expectsMediaDataInRealTime = true
+            guard writer.canAdd(input) else { throw RecordingError("The audio settings are not supported by this file format.".local) }
+            writer.add(input)
+            audioInput = input
+        }
 
         var micInput: AVAssetWriterInput?
         if recording.recordMic {
@@ -564,6 +573,7 @@ extension AppDelegate {
             SCContext.lastPTS = endPTS
         }
         if outputType != .microphone { checkMicrophone(at: pts) }
+        keepVideoGoing(at: pts)
         switch outputType {
         case .screen:
             if (SCContext.screen == nil && SCContext.window == nil && SCContext.application == nil) || SCContext.streamType == .systemaudio { break }
@@ -581,6 +591,8 @@ extension AppDelegate {
             guard let frame = SCContext.retime(sampleBuffer, by: SCContext.timeOffset) else { return }
             if frameQueue.getArray().contains(where: { $0 >= endPTS }) { print("Skip this frame"); return } else { frameQueue.append(endPTS) }
             guard let vwInput = SCContext.vwInput else { return }
+            // The writer fails on a frame that is not later than the one before it
+            if let last = SCContext.videoPTS, pts <= last { return }
             if vwInput.isReadyForMoreMediaData {
                 if let rect = attachments[.presenterOverlayContentRect] as? [String: Any], let x = rect["X"] as? CGFloat {
                     let type = x == .infinity ? "OFF" : (x == 0.0 ? "Small" : "Big")
@@ -594,8 +606,13 @@ extension AppDelegate {
                     }
                 }
                 if isPresenterON && !isCameraReady { break }
-                if SCContext.firstFrame == nil { SCContext.firstFrame = frame }
-                _ = SCContext.append(frame, to: vwInput)
+                // Kept as a copy, so that it does not hold one of the stream's few surfaces for the whole recording
+                if SCContext.firstFrame == nil { SCContext.firstFrame = SCContext.detachedCopy(of: frame) ?? frame }
+                if SCContext.append(frame, to: vwInput) {
+                    SCContext.videoPTS = pts
+                    SCContext.lastVideoFrame = frame
+                    SCContext.lastVideoFrameIsCopy = false
+                }
             }
             break
         case .audio:
@@ -654,6 +671,29 @@ extension AppDelegate {
         converter.fill(upTo: end, atLeast: Int64(MicConverter.sampleRate)) { buffer in
             SCContext.append(buffer, to: micInput)
         }
+    }
+
+    /// Runs on every buffer of every output. ScreenCaptureKit delivers no frames while the picture does not change
+    /// (a static slide, a locked or sleeping display), and the writer only puts a fragment on disk once every track
+    /// has data for it. So when the video track falls behind, the last frame is written again, which keeps the
+    /// fragments coming and the unclosed file readable up to the last few seconds.
+    private func keepVideoGoing(at pts: CMTime) {
+        guard SCContext.startTime != nil, let vwInput = SCContext.vwInput, let last = SCContext.videoPTS, let frame = SCContext.lastVideoFrame else { return }
+        guard CMTimeGetSeconds(CMTimeSubtract(pts, last)) > SCContext.videoStallSeconds else { return }
+        var repeated = frame
+        if !SCContext.lastVideoFrameIsCopy {
+            // The frame is going to be used for a while: give its surface back to the stream
+            if let copy = SCContext.detachedCopy(of: frame) {
+                SCContext.lastVideoFrame = copy
+                repeated = copy
+            }
+            SCContext.lastVideoFrameIsCopy = true
+        }
+        // A little in the past, so a frame that is on its way with an earlier timestamp than this buffer still fits after it
+        let time = CMTimeSubtract(pts, CMTime(seconds: 1, preferredTimescale: 600))
+        let timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: time, decodeTimeStamp: .invalid)
+        guard let again = try? CMSampleBuffer(copying: repeated, withNewTiming: [timing]) else { return }
+        if SCContext.append(again, to: vwInput) { SCContext.videoPTS = time }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) { // stream error
