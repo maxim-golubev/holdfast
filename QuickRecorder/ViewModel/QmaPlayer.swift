@@ -621,12 +621,15 @@ class AudioPlayerManager: ObservableObject {
                     let newURl = url.deletingLastPathComponent().appendingPathComponent(lastComp).deletingPathExtension().appendingPathExtension("mp3")
                     body = String(format: "File saved to: %@".local, newURl.path.removingPercentEncoding!)
                     convertingToMP3 = true
+                    let savedBody = body
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         Task {
                             defer { completion?() }
                             do {
                                 try await SCContext.m4a2mp3(inputUrl: oldURL, outputUrl: newURl, bitrate: audioQuality)
                                 try? fd.removeItem(at: oldURL)
+                                // Only now is there a file to report
+                                SCContext.showNotification(title: title, body: savedBody, id: id)
                             } catch {
                                 SCContext.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
                                 return
@@ -635,7 +638,7 @@ class AudioPlayerManager: ObservableObject {
                     }
                 }
                 
-                SCContext.showNotification(title: title, body: body, id: id)
+                if !saveAsMP3 { SCContext.showNotification(title: title, body: body, id: id) }
             } catch {
                 SCContext.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
             }

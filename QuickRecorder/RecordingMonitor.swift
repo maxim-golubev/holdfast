@@ -17,6 +17,8 @@ final class RecordingHealth: ObservableObject {
     @Published var micLevel: Int?
     /// True from the moment a recording is stopped until its files are final (`SCContext.isSaving`)
     @Published var saving = false
+    /// From 0 to 1 while the audio tracks of a stopped recording are being mixed, nil otherwise
+    @Published var mixProgress: Double?
 }
 
 /// Runs twice a second on `SCContext.sampleQueue` while a recording is capturing, whether or not any buffer arrives.

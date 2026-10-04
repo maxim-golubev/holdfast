@@ -35,8 +35,13 @@ struct RecordingContext {
     let audioQuality: Int
     /// What is written while recording: the video file, the audio file, or the .qma package for audio with a microphone
     let rawURL: URL
-    /// Intermediate file of the audio mix after a video recording, nil when the audio tracks are not mixed
+    /// What the audio mix after a video recording writes before it is checked and gets the final name, nil when
+    /// the audio tracks are not mixed
     let mixURL: URL?
+    /// The name the recording as it was written (two audio tracks) gets when it is kept, nil when the audio tracks are not mixed
+    let unmixedURL: URL?
+    /// Whether the recording as it was written stays next to the mixed one
+    let keepUnmixed: Bool
     /// What the user ends up with
     let finalURL: URL
     /// Audio-only recordings: the system audio file, and the microphone file when there is one
@@ -74,12 +79,14 @@ struct RecordingContext {
         self.audioFormat = audioFormat
         self.saveDirectory = saveDirectory
         self.audioQuality = ud.integer(forKey: "audioQuality")
+        self.keepUnmixed = ud.bool(forKey: "keepUnmixed")
         
         let base = SCContext.getFilePath(directory: saveDirectory)
         if audioOnly {
             let ending = RecordingContext.fileEnding(for: audioFormat)
             let exported = audioFormat == .mp3 ? "mp3" : ending
             mixURL = nil
+            unmixedURL = nil
             if recordMic {
                 let package = "\(base).qma".url
                 rawURL = package
@@ -99,11 +106,14 @@ struct RecordingContext {
             systemAudioURL = nil
             micAudioURL = nil
             if remuxAudio && recordMic && recordWinSound {
-                // Written under a temporary name; the mix produces the final file
-                mixURL = "\(base).\(ending).\(ending)".url
-                rawURL = "\(base).\(ending).\(ending).\(ending)".url
+                // Written under a temporary name, and so is the mix, which becomes the final file once it is
+                // complete and checked. See RecordingMixer for the names.
+                rawURL = RecordingMixer.temporaryURL(base: base, marker: RecordingMixer.rawMarker, ending: ending)
+                mixURL = RecordingMixer.temporaryURL(base: base, marker: RecordingMixer.mixMarker, ending: ending)
+                unmixedURL = RecordingMixer.unmixedURL(base: base, ending: ending)
             } else {
                 mixURL = nil
+                unmixedURL = nil
                 rawURL = finalURL
             }
         }
@@ -194,6 +204,7 @@ class SCContext {
             guard state != oldValue else { return }
             print("Recording state: \(oldValue) -> \(state)")
             RecordingHealth.shared.saving = isSaving
+            if state != .finalizing { RecordingHealth.shared.mixProgress = nil }
             updateStatusBar()
             guard state == .idle else { return }
             let handlers = idleHandlers
@@ -831,6 +842,8 @@ class SCContext {
             sampleQueue.async { continuation.resume(returning: takeWriter()) }
         }
         state = .finalizing
+        // Held until the files are final, whether or not the recording itself kept the display awake
+        SleepPreventer.shared.preventSleep(reason: "Finishing a recording", display: false)
         let frame = taken.frame
         var writer = taken.writer
         if !taken.sessionStarted {
@@ -854,18 +867,17 @@ class SCContext {
                 if body.isEmpty { body = writer == nil ? "The recording did not start, nothing was written.".local : "Unknown error".local }
                 if fd.fileExists(atPath: recording.rawURL.path) {
                     // The file is written in fragments, so it plays up to the last few seconds without having been closed.
-                    // It gets its final name; no mix is attempted on it.
-                    let kept = recording.mixURL.map { keepUnmixedRecording(written: recording.rawURL, partialMix: $0, final: recording.finalURL) } ?? recording.rawURL
+                    // It leaves its temporary name; no mix is attempted on it.
+                    let kept = recording.unmixedURL.map { keepUnmixedRecording(written: recording.rawURL, as: $0) } ?? recording.rawURL
                     body += " " + String(format: "The file could not be closed. What was written before that was kept as: %@".local, kept.path)
                 }
                 reportFailure(title: failureTitle, message: body)
             } else {
-                if let reason = earlyReason { reportFailure(title: failureTitle, message: reason + " " + savedSoFar) }
                 if recording.mixesAudio {
-                    await completion { done in
-                        DispatchQueue.global(qos: .userInitiated).async { mixRecording(recording, frame: frame, completion: done) }
-                    }
+                    // Where the recording ends up is only known after the mix
+                    await mixRecording(recording, frame: frame, earlyReason: earlyReason)
                 } else {
+                    if let reason = earlyReason { reportFailure(title: failureTitle, message: reason + " " + savedSoFar) }
                     let url = recording.finalURL
                     if !recording.showPreview {
                         showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, url.path), id: "quickrecorder.completed.\(UUID().uuidString)")
@@ -893,49 +905,82 @@ class SCContext {
             if let reason = earlyReason { reportFailure(title: failureTitle, message: reason + " " + savedSoFar) }
             await completion { done in finishAudioRecording(recording, completion: done) }
         }
-        if recording.preventSleep { SleepPreventer.shared.allowSleep() }
+        SleepPreventer.shared.allowSleep()
         AppDelegate.shared.presenterType = "OFF"
         // A frame that arrived while the capture was being stopped may have set it again
         startTime = nil
         state = .idle
     }
     
-    /// Mixes the audio tracks of a finished video recording and presents the result. `completion` is called once,
-    /// when the recording has its final name.
-    private static func mixRecording(_ recording: RecordingContext, frame: NSImage?, completion: @escaping () -> Void) {
-        guard let mixURL = recording.mixURL else { completion(); return }
-        let finished: (Result<URL, Error>) -> Void = { result in
-            switch result {
-            case .success(let url):
-                print("Exported video to \(String(describing: url.path))")
-                if !recording.showPreview {
-                    showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, url.path), id: "quickrecorder.completed.\(UUID().uuidString)")
-                }
-                DispatchQueue.main.async {
-                    if recording.trimAfterRecord {
-                        AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, only: false)
-                    } else if recording.showPreview {
-                        showPreview(path: url.path, image: frame)
-                    }
-                }
-            case .failure(let error):
-                print("Failed to export video: \(error.localizedDescription)")
-                let kept = keepUnmixedRecording(written: recording.rawURL, partialMix: mixURL, final: recording.finalURL)
-                let body = String(format: "%@ The recording was kept with separate audio tracks: %@".local, error.localizedDescription, kept.path)
-                showNotification(title: "Audio Mix Failed".local, body: body, id: "quickrecorder.error.\(UUID().uuidString)")
-                if recording.showPreview {
-                    DispatchQueue.main.async { showPreview(path: kept.path, image: frame) }
-                }
-            }
-            completion()
-        }
+    /// Mixes the audio tracks of a finished video recording and presents the result. Returns when the recording has
+    /// its final name. The recording as it was written is only removed or renamed after the mix has been written
+    /// completely, checked against it and moved to the final name; whatever goes wrong before that, it is kept
+    /// under its "(unmixed, 2 audio tracks)" name and the user is told. The work itself runs off the main thread.
+    @MainActor
+    private static func mixRecording(_ recording: RecordingContext, frame: NSImage?, earlyReason: String?) async {
+        guard let mixURL = recording.mixURL, let unmixedURL = recording.unmixedURL else { return }
+        let raw = recording.rawURL
+        let final = recording.finalURL
+        let early = earlyReason.map { $0 + " " } ?? ""
+        var failure: String?
         // The mix writes a second file of about the same size next to the recording. On a nearly full disk the
         // recording is kept as it is rather than put at risk.
-        guard DiskSpace.hasRoomForCopy(of: recording.rawURL) else {
-            finished(.failure(RecordingError("Not enough free disk space to mix the audio tracks.".local)))
+        if !DiskSpace.hasRoomForCopy(of: raw) {
+            failure = "Not enough free disk space to mix the audio tracks.".local
+        } else {
+            RecordingHealth.shared.mixProgress = 0
+            let settings = updateAudioSettings(format: recording.audioFormat.rawValue, quality: recording.audioQuality, videoFormat: recording.videoFormat.rawValue)
+            do {
+                try await RecordingMixer.mix(source: raw, output: mixURL, fileType: recording.fileType, audioSettings: settings) { fraction in
+                    DispatchQueue.main.async {
+                        if state == .finalizing { RecordingHealth.shared.mixProgress = fraction }
+                    }
+                }
+                try await RecordingMixer.verify(source: raw, output: mixURL)
+                // A rename within the folder: the final name appears with the complete file or not at all
+                try fd.moveItem(at: mixURL, to: final)
+            } catch {
+                print("Failed to mix the audio tracks: \(error)")
+                failure = error.localizedDescription
+            }
+        }
+        if let failure = failure {
+            // What the mix wrote is incomplete or not to be trusted, and the recording has everything
+            try? fd.removeItem(at: mixURL)
+            let kept = keepUnmixedRecording(written: raw, as: unmixedURL)
+            let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept with system audio and microphone as two separate audio tracks in: %@".local, failure, kept.path)
+            reportFailure(title: "Audio Mix Failed".local, message: body)
+            if recording.showPreview { showPreview(path: kept.path, image: frame) }
             return
         }
-        mixAudioTracks(videoURL: recording.rawURL, audioURL: mixURL, outputURL: recording.finalURL, fileType: recording.fileType, completion: finished)
+        print("Mixed recording saved to \(final.path)")
+        var leftover: URL?
+        if recording.keepUnmixed {
+            let kept = keepUnmixedRecording(written: raw, as: unmixedURL)
+            if kept != unmixedURL { leftover = kept }
+        } else {
+            do {
+                try fd.removeItem(at: raw)
+            } catch {
+                print("Failed to remove the unmixed recording: \(error.localizedDescription)")
+                leftover = keepUnmixedRecording(written: raw, as: unmixedURL)
+            }
+        }
+        if let leftover = leftover {
+            let body = String(format: "The recording was mixed and saved, but its unmixed copy is still at: %@".local, leftover.path)
+            showNotification(title: "Recording Completed".local, body: body, id: "quickrecorder.completed.\(UUID().uuidString)")
+        }
+        if let reason = earlyReason {
+            reportFailure(title: "Recording Stopped Early".local, message: reason + " " + String(format: "The recording up to that point is saved as: %@".local, final.path))
+        }
+        if !recording.showPreview {
+            showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, final.path), id: "quickrecorder.completed.\(UUID().uuidString)")
+        }
+        if recording.trimAfterRecord {
+            AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: final), title: final.lastPathComponent, only: false)
+        } else if recording.showPreview {
+            showPreview(path: final.path, image: frame)
+        }
     }
     
     /// What follows an audio-only recording once its files are closed: MP3 conversion, the mix of a .qma package, or just the report.
@@ -991,17 +1036,49 @@ class SCContext {
         }
     }
     
-    /// After a failed audio mix: removes what the mix left behind and gives the recording, which was written under a
-    /// temporary name for the mix, its final name. Only the three given files are touched. Returns where the recording is afterwards.
-    static func keepUnmixedRecording(written: URL, partialMix: URL, final: URL) -> URL {
-        try? fd.removeItem(at: partialMix)
-        try? fd.removeItem(at: final)
+    /// Gives a recording that was written under its temporary name the name it is kept under. Nothing is deleted
+    /// or replaced: when the name is taken or the rename fails, the recording stays where it is. Returns where it is afterwards.
+    static func keepUnmixedRecording(written: URL, as kept: URL) -> URL {
         do {
-            try fd.moveItem(at: written, to: final)
-            return final
+            try fd.moveItem(at: written, to: kept)
+            return kept
         } catch {
             print("Failed to rename the unmixed recording: \(error.localizedDescription)")
             return written
+        }
+    }
+    
+    /// Main thread, once at launch, before anything can be recorded. A recording that was being written or mixed
+    /// when the app crashed or was killed is still in the save folder under its temporary name. Each such file is
+    /// renamed to say what it is (see `RecordingMixer.recover`) and the user is told; none is deleted.
+    /// With another instance of the app running, the files may be its recording, so nothing is touched.
+    static func recoverLeftovers() {
+        let instances = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }
+        guard instances.count <= 1, let directory = ud.string(forKey: "saveDirectory") else { return }
+        let found = RecordingMixer.leftovers(in: directory)
+        guard !found.isEmpty else { return }
+        Task.detached {
+            var lines = [String]()
+            for url in found {
+                let leftover = await RecordingMixer.recover(url)
+                print("Leftover \(leftover.found.lastPathComponent) -> \(leftover.url.lastPathComponent), seconds: \(String(describing: leftover.seconds))")
+                var line: String
+                switch (leftover.kind, leftover.seconds) {
+                case (.mix, _):
+                    line = String(format: "\"%@\" is what an interrupted audio mix had written. The recording it was made from is kept separately; this file can be deleted.".local, leftover.url.lastPathComponent)
+                case (.recording, let seconds?):
+                    let formatter = DateComponentsFormatter()
+                    formatter.allowedUnits = [.hour, .minute, .second]
+                    formatter.unitsStyle = .abbreviated
+                    line = String(format: "\"%@\" is a recording that was not finished (%@). It plays, with system audio and microphone as separate audio tracks; its last seconds may be missing.".local, leftover.url.lastPathComponent, formatter.string(from: seconds) ?? "")
+                case (.recording, nil):
+                    line = String(format: "\"%@\" is a recording that was not finished and cannot be opened.".local, leftover.url.lastPathComponent)
+                }
+                if !leftover.renamed { line += " " + "It could not be renamed.".local }
+                lines.append(line)
+            }
+            let message = String(format: "Found in %@ from an earlier run of QuickRecorder that did not end normally:".local, directory) + "\n\n" + lines.joined(separator: "\n\n")
+            await MainActor.run { reportFailure(title: "Recording Recovered".local, message: message) }
         }
     }
     
@@ -1167,125 +1244,6 @@ class SCContext {
         let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error { print("Notification failed to send：\(error.localizedDescription)") }
-        }
-    }
-    
-    /// Mixes the audio tracks of `videoURL` into one and writes the result to `outputURL`, using `audioURL` for the
-    /// intermediate audio file. On success `videoURL` and `audioURL` are removed. It touches no other files and reads
-    /// no settings, so a recording started while this runs is not affected.
-    static func mixAudioTracks(videoURL: URL, audioURL audioOutputURL: URL, outputURL: URL, fileType: AVFileType, completion: @escaping (Result<URL, Error>) -> Void) {
-        showNotification(title: "Still Processing".local, body: "Mixing audio track...".local, id: "quickrecorder.processing.\(UUID().uuidString)")
-        
-        let asset = AVAsset(url: videoURL)
-        let audioOnlyComposition = AVMutableComposition()
-        
-        let audioTracks = asset.tracks(withMediaType: .audio)
-        guard audioTracks.count > 1 else {
-            completion(.failure(NSError(domain: "AudioTrackError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Not enough audio tracks found."])))
-            return
-        }
-        
-        for audioTrack in audioTracks {
-            if let compositionAudioTrack = audioOnlyComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                do {
-                    try compositionAudioTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: audioTrack, at: .zero)
-                } catch {
-                    completion(.failure(NSError(domain: "AudioTrackInsertionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert audio track: \(error.localizedDescription)"])))
-                    return
-                }
-            }
-        }
-        
-        let audioMix = AVMutableAudioMix()
-        audioMix.inputParameters = audioTracks.map {
-            let parameters = AVMutableAudioMixInputParameters(track: $0)
-            parameters.trackID = $0.trackID
-            return parameters
-        }
-        
-        guard let audioExportSession = AVAssetExportSession(asset: audioOnlyComposition, presetName: AVAssetExportPresetHighestQuality) else {
-            completion(.failure(NSError(domain: "AudioExportSessionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio export session."])))
-            return
-        }
-        audioExportSession.outputURL = audioOutputURL
-        audioExportSession.outputFileType = fileType
-        audioExportSession.audioMix = audioMix
-        
-        audioExportSession.exportAsynchronously {
-            /*var exportStatus: AVAssetExportSession.Status = .unknown
-            
-            // Loop until export session is completed, failed, or cancelled
-            while exportStatus != .completed && exportStatus != .failed && exportStatus != .cancelled {
-                exportStatus = audioExportSession.status
-                Thread.sleep(forTimeInterval: 0.1)
-            }*/
-            
-            switch audioExportSession.status {
-            case .completed:
-                let audioAsset = AVAsset(url: audioOutputURL)
-                let composition = AVMutableComposition()
-                
-                guard let videoTrack = asset.tracks(withMediaType: .video).first,
-                      let compositionVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-                    completion(.failure(NSError(domain: "VideoTrackError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to get video track."])))
-                    return
-                }
-                
-                do {
-                    try compositionVideoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: videoTrack, at: .zero)
-                } catch {
-                    completion(.failure(NSError(domain: "VideoTrackInsertionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert video track: \(error.localizedDescription)"])))
-                    return
-                }
-                
-                let audioTracks = audioAsset.tracks(withMediaType: .audio)
-                guard audioTracks.count >= 1 else {
-                    completion(.failure(NSError(domain: "AudioTrackError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Not enough audio tracks found."])))
-                    return
-                }
-                
-                for audioTrack in audioTracks {
-                    if let compositionAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                        do {
-                            try compositionAudioTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: audioTrack, at: .zero)
-                        } catch {
-                            completion(.failure(NSError(domain: "AudioTrackInsertionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert audio track: \(error.localizedDescription)"])))
-                            return
-                        }
-                    }
-                }
-                
-                guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
-                    completion(.failure(NSError(domain: "ExportSessionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create export session."])))
-                    return
-                }
-                
-                exportSession.outputURL = outputURL
-                exportSession.outputFileType = fileType
-                exportSession.audioMix = audioMix
-                
-                exportSession.exportAsynchronously {
-                    switch exportSession.status {
-                    case .completed:
-                        // Only the files this call was given are removed
-                        try? fd.removeItem(at: videoURL)
-                        try? fd.removeItem(at: audioOutputURL)
-                        completion(.success(outputURL))
-                    case .failed:
-                        completion(.failure(exportSession.error ?? NSError(domain: "ExportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export failed for an unknown reason."])))
-                    case .cancelled:
-                        completion(.failure(NSError(domain: "ExportCancelled", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export was cancelled."])))
-                    default:
-                        completion(.failure(NSError(domain: "ExportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export ended in an unexpected state."])))
-                    }
-                }
-            case .failed:
-                completion(.failure(audioExportSession.error ?? NSError(domain: "ExportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export failed for an unknown reason."])))
-            case .cancelled:
-                completion(.failure(NSError(domain: "ExportCancelled", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export was cancelled."])))
-            default:
-                completion(.failure(NSError(domain: "ExportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export ended in an unexpected state."])))
-            }
         }
     }
 }

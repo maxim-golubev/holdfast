@@ -36,11 +36,11 @@ struct StatusBarItem: View {
                         .fill(Color.mypurple)
                         .shadow(color: .black.opacity(0.3), radius: 4)
                         .cornerRadius(4)
-                    Text("Saving…")
+                    Text(health.mixProgress.map { "Finishing… \(Int($0 * 100))%" } ?? "Saving…")
                         .foregroundStyle(.white)
                         .font(.system(size: 13))
                 }
-                .help("The recording is being saved. A new one can be started when this is gone.")
+                .help(health.mixProgress == nil ? "The recording is being saved. A new one can be started when this is gone." : "The audio tracks of the recording are being mixed. A new one can be started when this is gone.")
                 .padding([.leading,.trailing], 4)
             } else if SCContext.streamType != nil {
                 ZStack {

@@ -160,6 +160,7 @@ struct OutputView: View {
     @AppStorage("pixelFormat")      private var pixelFormat: PixFormat = .delault
     @AppStorage("background")       private var background: BackgroundType = .wallpaper
     @AppStorage("remuxAudio")       private var remuxAudio: Bool = true
+    @AppStorage("keepUnmixed")      private var keepUnmixed: Bool = true
     @AppStorage("withAlpha")        private var withAlpha: Bool = false
     @AppStorage("saveDirectory")    private var saveDirectory: String?
 
@@ -185,6 +186,9 @@ struct OutputView: View {
                 }
                 SDivider()
                 SToggle("Record Microphone to Main Track", isOn: $remuxAudio)
+                SDivider()
+                SToggle("Keep the unmixed recording", isOn: $keepUnmixed, tips: "The recording as it was written, with system audio and microphone as two separate audio tracks, stays next to the mixed file as \"<name> (unmixed, 2 audio tracks)\".")
+                    .disabled(!remuxAudio)
             }
             SGroupBox(label: "Video") {
                 SPicker("Format", selection: $videoFormat) {

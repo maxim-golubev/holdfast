@@ -249,6 +249,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
                 "showMouse": true,
                 "recordMic": false,
                 "remuxAudio": true,
+                "keepUnmixed": true,
                 "recordWinSound": true,
                 "trimAfterRecord": false,
                 "showOnDock": true,
@@ -362,6 +363,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
+        SCContext.recoverLeftovers()
         if showOnDock { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
     }
     
@@ -442,8 +444,8 @@ func findNSSplitVIew(view: NSView?) -> NSSplitView? {
 func getStatusBarWidth() -> CGFloat {
     @AppStorage("miniStatusBar") var miniStatusBar: Bool = false
     var width = 158.0
-    // "Saving…" while a stopped recording is being closed and post-processed
-    if SCContext.isSaving { return 78.0 }
+    // "Saving…" or "Finishing… 100%" while a stopped recording is being closed and post-processed
+    if SCContext.isSaving { return 124.0 }
     switch SCContext.streamType {
     case nil: width = miniStatusBar ? 36.0 : 36.0
     case .idevice: width = miniStatusBar ? 68.0 : 138.0
