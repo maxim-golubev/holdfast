@@ -183,14 +183,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if SCContext.state == .idle { return .terminateNow }
+        if SCContext.state == .idle && !SCContext.isRecovering { return .terminateNow }
         // A recording is starting, running or still being saved. Quitting now would leave a file that was not closed,
         // or one under its temporary name with unmixed audio, so the recording is stopped (a no-op when it already
         // is) and the app quits when its files are final. Meanwhile the main run loop keeps running.
         SCContext.stopRecording()
         if !quitWhenIdle {
             quitWhenIdle = true
-            SCContext.whenIdle { NSApp.reply(toApplicationShouldTerminate: true) }
+            // Also for a recording of an earlier run that is being mixed: killing that would leave it unmixed again
+            SCContext.whenIdle { SCContext.whenRecovered { NSApp.reply(toApplicationShouldTerminate: true) } }
         }
         return .terminateLater
     }

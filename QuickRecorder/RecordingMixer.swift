@@ -16,7 +16,7 @@ import Foundation
 /// `<name> (unmixed, 2 audio tracks).<ext>` for the recording as it was written.
 ///
 /// Nothing here deletes or renames a file. It writes the mix to the URL it is given and says whether that file can
-/// be trusted; the caller decides what happens to the recording.
+/// be trusted, and it finds and describes leftovers; the caller decides what happens to the files.
 enum RecordingMixer {
     struct Failure: LocalizedError {
         let message: String
@@ -93,7 +93,7 @@ enum RecordingMixer {
         writer.startSession(atSourceTime: .zero)
 
         var lastPercent = -1
-        let copied = await copy([(videoOutput, videoInput), (audioOutput, audioInput)], reader: reader) { buffer, index in
+        let copied = await copy([(videoOutput, videoInput), (audioOutput, audioInput)], reader: reader, writer: writer) { buffer, index in
             guard index == 0 else { return }
             let percent = Int(max(0, min(1, CMTimeGetSeconds(buffer.presentationTimeStamp) / seconds)) * 100)
             if percent != lastPercent {
@@ -102,11 +102,11 @@ enum RecordingMixer {
             }
         }
         // Every state but "completed" is a failure: failed, cancelled, and anything unexpected
-        guard copied, reader.status == .completed else {
+        guard copied == nil, reader.status == .completed else {
             let error = writer.error ?? reader.error
             reader.cancelReading()
             writer.cancelWriting()
-            throw error ?? Failure("Mixing the audio tracks was interrupted.")
+            throw error ?? Failure(copied ?? "Mixing the audio tracks was interrupted.")
         }
         guard writer.status == .writing else {
             throw writer.error ?? Failure("The mixed recording could not be written.")
@@ -118,51 +118,113 @@ enum RecordingMixer {
         progress(1)
     }
 
-    /// Moves every sample of each reader output to its writer input. Returns when all of them have reached their
-    /// end, or at once when an append fails. All the work is done on one serial queue, which also owns the state.
-    private static func copy(_ pairs: [(AVAssetReaderOutput, AVAssetWriterInput)], reader: AVAssetReader, each: @escaping (CMSampleBuffer, Int) -> Void) async -> Bool {
+    /// How long the copy may go without moving a single sample before it is given up
+    static let stallLimit: TimeInterval = 60
+
+    /// What the copy and its watchdog share: they run on different queues
+    private final class CopyState {
+        private let lock = NSLock()
+        private var result: String??
+        private var activity = DispatchTime.now().uptimeNanoseconds
+        private let continuation: CheckedContinuation<String?, Never>
+
+        init(_ continuation: CheckedContinuation<String?, Never>) { self.continuation = continuation }
+
+        /// Whether the copy has ended, one way or the other
+        var isOver: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return result != nil
+        }
+
+        func noteActivity() {
+            lock.lock(); defer { lock.unlock() }
+            activity = DispatchTime.now().uptimeNanoseconds
+        }
+
+        var idleSeconds: Double {
+            lock.lock(); defer { lock.unlock() }
+            let now = DispatchTime.now().uptimeNanoseconds
+            return now > activity ? Double(now - activity) / 1_000_000_000 : 0
+        }
+
+        /// Ends the wait with `failure` (nil for success). Only the first call counts; returns whether this was it.
+        @discardableResult
+        func end(_ failure: String?) -> Bool {
+            lock.lock()
+            let first = result == nil
+            if first { result = .some(failure) }
+            lock.unlock()
+            if first { continuation.resume(returning: failure) }
+            return first
+        }
+    }
+
+    /// Moves every sample of each reader output to its writer input. Returns nil when all of them have reached
+    /// their end, and what went wrong otherwise: at once when an append fails, and from a watchdog when the writer
+    /// or the reader has failed or no sample has moved for `stallLimit` seconds. The copy runs on one serial queue,
+    /// which owns its bookkeeping. The watchdog runs on another, because a read that hangs would hold up the first;
+    /// without it a writer that stops asking for data would leave the caller waiting for ever.
+    private static func copy(_ pairs: [(AVAssetReaderOutput, AVAssetWriterInput)], reader: AVAssetReader, writer: AVAssetWriter, each: @escaping (CMSampleBuffer, Int) -> Void) async -> String? {
         let queue = DispatchQueue(label: "QuickRecorder.mix")
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+        let watchdog = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "QuickRecorder.mix.watchdog"))
+        let failure = await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            let state = CopyState(continuation)
             var remaining = pairs.count
-            var resumed = false
             var ended = [Bool](repeating: false, count: pairs.count)
-            func end(_ index: Int, success: Bool) {
+            // On the copy queue
+            func end(_ index: Int, failure: String?) {
+                // Once the wait is over the caller owns the writer (and may be cancelling it): hands off
+                guard !state.isOver else { return }
                 if !ended[index] {
                     ended[index] = true
                     pairs[index].1.markAsFinished()
                     remaining -= 1
                 }
-                if !success {
-                    // A writer that failed never asks the other input for data again, so the wait ends here
+                if let failure = failure {
                     reader.cancelReading()
-                    for other in pairs.indices where !ended[other] {
-                        ended[other] = true
-                        pairs[other].1.markAsFinished()
-                        remaining -= 1
-                    }
-                }
-                if !resumed && (!success || remaining == 0) {
-                    resumed = true
-                    continuation.resume(returning: success)
+                    state.end(failure)
+                } else if remaining == 0 {
+                    state.end(nil)
                 }
             }
             for (index, pair) in pairs.enumerated() {
                 let (output, input) = pair
                 input.requestMediaDataWhenReady(on: queue) {
-                    while !ended[index] && input.isReadyForMoreMediaData {
+                    while !ended[index] && !state.isOver && input.isReadyForMoreMediaData {
                         guard let buffer = output.copyNextSampleBuffer() else {
-                            end(index, success: true)
+                            end(index, failure: nil)
                             return
                         }
+                        guard !state.isOver else { return }
                         guard input.append(buffer) else {
-                            end(index, success: false)
+                            end(index, failure: "The mixed recording could not be written.")
                             return
                         }
+                        state.noteActivity()
                         each(buffer, index)
                     }
                 }
             }
+            watchdog.schedule(deadline: .now() + 2, repeating: 2)
+            watchdog.setEventHandler {
+                guard !state.isOver else { return }
+                var problem: String?
+                if writer.status == .failed {
+                    problem = "The mixed recording could not be written."
+                } else if reader.status == .failed {
+                    problem = "The recording could not be read."
+                } else if state.idleSeconds > stallLimit {
+                    problem = String(format: "Mixing made no progress for %d seconds and was given up.", Int(stallLimit))
+                }
+                guard let problem = problem, state.end(problem) else { return }
+                print("Mix watchdog: \(problem) writer: \(String(describing: writer.error)), reader: \(String(describing: reader.error))")
+                // Lets a read that is still waiting return
+                reader.cancelReading()
+            }
+            watchdog.resume()
         }
+        watchdog.cancel()
+        return failure
     }
 
     // MARK: - Verification
@@ -257,63 +319,68 @@ enum RecordingMixer {
 
     // MARK: - Leftovers of an earlier run
 
+    /// What a temporary name is made of: `<base>.<marker>.<ending>`
     struct Leftover {
-        enum Kind { case recording, mix }
-        let kind: Kind
-        /// Where it was found and where it is now, which is the same place when it could not be renamed
-        let found: URL
         let url: URL
+        /// Path of the final file without its extension
+        let base: String
+        let isMix: Bool
+        let ending: String
+    }
+
+    /// What can be told about a leftover recording by opening it
+    struct Inspection {
         /// Nil when the file does not open
         let seconds: Double?
-        var renamed: Bool { found != url }
+        /// Whether the file is still in the fragments it was recorded in. A recording that was closed is not.
+        let fragmented: Bool
+        /// One video track and two audio tracks
+        let mixable: Bool
     }
 
-    /// The files in `directory` that carry a temporary name. Only call this when no recording is running or being
+    /// The files in `directory` that this app left under a temporary name: `<prefix>….recording.<ext>` and
+    /// `<prefix>….mixing.<ext>`, `prefix` being what the app's recordings are named with. A file that merely has
+    /// such an ending is someone else's and is left alone. Only call this when no recording is running or being
     /// finished, in this or in another instance of the app: until then such a file is not a leftover.
-    static func leftovers(in directory: String) -> [URL] {
+    static func leftovers(in directory: String, prefix: String) -> [Leftover] {
         let folder = URL(fileURLWithPath: directory, isDirectory: true)
         guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
-        return files.filter { url in
-            guard ["mp4", "mov"].contains(url.pathExtension.lowercased()) else { return false }
-            let marker = url.deletingPathExtension().pathExtension
-            guard marker == rawMarker || marker == mixMarker else { return false }
-            return (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
-        }.sorted { $0.path < $1.path }
+        return files.sorted { $0.path < $1.path }.compactMap { url in
+            let ending = url.pathExtension
+            guard ["mp4", "mov"].contains(ending.lowercased()) else { return nil }
+            let stem = url.deletingPathExtension()
+            let marker = stem.pathExtension
+            guard marker == rawMarker || marker == mixMarker else { return nil }
+            let name = stem.deletingPathExtension().lastPathComponent
+            guard !prefix.isEmpty, name.hasPrefix(prefix), name.count > prefix.count else { return nil }
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return nil }
+            return Leftover(url: url, base: stem.deletingPathExtension().path, isMix: marker == mixMarker, ending: ending)
+        }
     }
 
-    /// Gives a leftover a name that says what it is, so it is found by the user and not taken for a leftover again:
-    /// `<name> (recovered)` for a recording that opens (it was written in fragments, so it plays up to its last few
-    /// seconds without having been closed), `<name> (damaged)` for one that does not, and `<name> (incomplete mix)`
-    /// for what an interrupted mix wrote. The file is renamed, never changed or deleted.
-    static func recover(_ found: URL) async -> Leftover {
-        let ending = found.pathExtension
-        let stem = found.deletingPathExtension()
-        let kind: Leftover.Kind = stem.pathExtension == mixMarker ? .mix : .recording
-        let base = stem.deletingPathExtension().path
-        var seconds: Double?
-        let asset = AVURLAsset(url: found)
-        if let (playable, duration) = try? await asset.load(.isPlayable, .duration), playable {
-            let length = CMTimeGetSeconds(duration)
-            if length.isFinite && length > 0 { seconds = length }
+    static func inspect(_ url: URL) async -> Inspection {
+        let asset = AVURLAsset(url: url)
+        guard let (playable, duration) = try? await asset.load(.isPlayable, .duration), playable else {
+            return Inspection(seconds: nil, fragmented: true, mixable: false)
         }
-        let label: String
-        switch kind {
-        case .mix: label = "incomplete mix"
-        case .recording: label = seconds == nil ? "damaged" : "recovered"
-        }
+        let length = CMTimeGetSeconds(duration)
+        guard length.isFinite, length > 0 else { return Inspection(seconds: nil, fragmented: true, mixable: false) }
+        // When in doubt the file counts as not closed
+        let fragmented = (try? await asset.load(.containsFragments)) ?? true
+        let video = (try? await asset.loadTracks(withMediaType: .video).count) ?? 0
+        let audio = (try? await asset.loadTracks(withMediaType: .audio).count) ?? 0
+        return Inspection(seconds: length, fragmented: fragmented, mixable: video == 1 && audio == 2)
+    }
+
+    /// `<base>.<ending>`, or `<base> (<label>).<ending>` with a label, numbered when that name is taken
+    static func freeURL(base: String, label: String?, ending: String) -> URL {
         let manager = FileManager.default
-        var target = URL(fileURLWithPath: "\(base) (\(label)).\(ending)")
+        var target = URL(fileURLWithPath: label.map { "\(base) (\($0)).\(ending)" } ?? "\(base).\(ending)")
         var number = 2
         while manager.fileExists(atPath: target.path) && number < 100 {
-            target = URL(fileURLWithPath: "\(base) (\(label) \(number)).\(ending)")
+            target = URL(fileURLWithPath: "\(base) (\(label.map { $0 + " " } ?? "")\(number)).\(ending)")
             number += 1
         }
-        do {
-            try manager.moveItem(at: found, to: target)
-            return Leftover(kind: kind, found: found, url: target, seconds: seconds)
-        } catch {
-            print("Failed to rename \(found.path): \(error.localizedDescription)")
-            return Leftover(kind: kind, found: found, url: found, seconds: seconds)
-        }
+        return target
     }
 }
