@@ -145,6 +145,8 @@ struct RecorderView: View {
                 SToggle("Hide Control Center Icons", isOn: $hideCCenter, tips: "Hide the clock, Wi-Fi, bluetooth, volume and other system icons in the menu bar.")
                 SDivider()
                 SToggle("Highlight the Mouse Cursor", isOn: $highlightMouse, tips: "Not available for \"Single Window Capture\"")
+                    // A running recording starts or stops listening to the mouse, once the setting is stored
+                    .onChange(of: highlightMouse) { _ in DispatchQueue.main.async { AppDelegate.shared.updateRecordingMouseMonitor() } }
                 SDivider()
                 SToggle("Exclude Files on Desktop", isOn: $hideDesktopFiles, tips: "If enabled, all files on the Desktop will be hidden from the video when recording.")
             }
@@ -153,11 +155,10 @@ struct RecorderView: View {
 }
 
 struct OutputView: View {
-    @AppStorage("encoder")          private var encoder: Encoder = .h265
+    @AppStorage("encoder")          private var encoder: Encoder = .preferred
     @AppStorage("videoFormat")      private var videoFormat: VideoFormat = .mp4
     @AppStorage("audioFormat")      private var audioFormat: AudioFormat = .aac
     @AppStorage("audioQuality")     private var audioQuality: AudioQuality = .high
-    @AppStorage("pixelFormat")      private var pixelFormat: PixFormat = .delault
     @AppStorage("background")       private var background: BackgroundType = .wallpaper
     @AppStorage("remuxAudio")       private var remuxAudio: Bool = true
     @AppStorage("keepUnmixed")      private var keepUnmixed: Bool = true

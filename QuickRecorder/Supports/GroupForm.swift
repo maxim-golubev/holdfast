@@ -75,29 +75,6 @@ struct SDivider: View {
     }
 }
 
-struct SSlider: View {
-    var label: LocalizedStringKey? = nil
-    @Binding var value: Int
-    var range: ClosedRange<Double> = 0...100
-    var width: CGFloat = .infinity
-    
-    var body: some View {
-        HStack {
-            if let label = label {
-                Text(label)
-            }
-            Spacer()
-            Slider(value:
-                    Binding(get: { Double(value) },
-                            set: { newValue in
-                let base: Int = Int(newValue.rounded())
-                let modulo: Int = base % 1
-                value = base - modulo
-            }), in: range).frame(maxWidth: width)
-        }.frame(height: 16)
-    }
-}
-
 struct SInfoButton: View {
     var tips: LocalizedStringKey
     @State private var isPresented: Bool = false
@@ -121,58 +98,6 @@ struct SInfoButton: View {
                     Text("OK").frame(width: 30)
                 }).keyboardShortcut(.defaultAction)
             }.padding()
-        }
-    }
-}
-
-struct SButton: View {
-    var title: LocalizedStringKey
-    var buttonTitle: LocalizedStringKey
-    var tips: LocalizedStringKey?
-    var action: () -> Void
-    
-    init(_ title: LocalizedStringKey, buttonTitle: LocalizedStringKey, tips: LocalizedStringKey? = nil, action: @escaping () -> Void) {
-        self.title = title
-        self.buttonTitle = buttonTitle
-        self.tips = tips
-        self.action = action
-    }
-    
-    var body: some View {
-        HStack(spacing: 4) {
-            Text(title)
-            Spacer()
-            if let tips = tips { SInfoButton(tips: tips) }
-            Button(buttonTitle,
-                   action: { action() })
-        }.frame(height: 16)
-    }
-}
-
-struct SField: View {
-    var title: LocalizedStringKey
-    var placeholder: LocalizedStringKey
-    var tips: LocalizedStringKey?
-    @Binding var text: String
-    var width: Double
-    
-    init(_ title: LocalizedStringKey, placeholder:LocalizedStringKey = "", tips: LocalizedStringKey? = nil, text: Binding<String>, width: Double = .infinity) {
-        self.title = title
-        self.placeholder = placeholder
-        self.tips = tips
-        self._text = text
-        self.width = width
-    }
-    
-    var body: some View {
-        HStack(spacing: 4) {
-            Text(title)
-            Spacer()
-            if let tips = tips { SInfoButton(tips: tips) }
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: width)
         }
     }
 }

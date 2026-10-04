@@ -117,6 +117,7 @@ struct iDevicePopoverView: View {
 struct ActivityIndicator: View {
     
     @State var currentDegrees = 0.0
+    @State private var timer: Timer?
     
     let colorGradient = LinearGradient(gradient: Gradient(colors: [
         .secondary, .secondary.opacity(0.75), .secondary.opacity(0.5), .secondary.opacity(0.2), .clear
@@ -129,11 +130,17 @@ struct ActivityIndicator: View {
             .frame(width: 18, height: 18)
             .rotationEffect(Angle(degrees: currentDegrees))
             .onAppear {
-                Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+                timer?.invalidate()
+                timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
                     withAnimation {
                         self.currentDegrees += 10
                     }
                 }
+            }
+            .onDisappear {
+                // The timer would go on firing for the rest of the app's life otherwise
+                timer?.invalidate()
+                timer = nil
             }
     }
 }

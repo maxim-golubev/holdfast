@@ -17,7 +17,7 @@ struct StatusBarItem: View {
     @State private var deviceWindowIsShowing = true
     @State private var isMainMenuShowing = false
     @State private var isHovering = false
-    @State private var recordingLength = "00:00"
+    @State private var recordingLength = SCContext.getRecordingLength()
     //@State private var isPassed = SCContext.isPaused
     @StateObject private var popoverState = PopoverState.shared
     @ObservedObject private var health = RecordingHealth.shared
@@ -156,6 +156,8 @@ struct StatusBarItem: View {
                 }
                 .onReceive(updateTimer) { t in
                     recordingLength = SCContext.getRecordingLength()
+                    // The timer gets longer at the first hour
+                    resizeStatusBar()
                     let timePassed = Date.now.timeIntervalSince(SCContext.startTime ?? t)
                     if SCContext.autoStop != 0 && timePassed / 60 >= CGFloat(SCContext.autoStop) { SCContext.stopRecording() }
                     if let visible = statusBarItem.button?.window?.occlusionState.contains(.visible) {
@@ -230,6 +232,22 @@ struct StatusBarItem: View {
             hideMousePointer = hovering
             hideScreenMagnifier = hovering
         }
+    }
+}
+
+/// Main thread. Gives the status item, and the floating controller when it is shown, the width the pill needs now,
+/// without building them anew.
+func resizeStatusBar() {
+    let width = getStatusBarWidth()
+    if let button = statusBarItem.button, let iconView = button.subviews.first, iconView.frame.width != width {
+        iconView.frame.size.width = width
+        button.frame = iconView.frame
+    }
+    if controlPanel.isVisible, controlPanel.frame.width != width {
+        var frame = controlPanel.frame
+        frame.origin.x -= (width - frame.width) / 2
+        frame.size.width = width
+        controlPanel.setFrame(frame, display: true)
     }
 }
 

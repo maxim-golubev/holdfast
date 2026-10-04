@@ -121,8 +121,7 @@ extension AppDelegate {
             if SCContext.streamType == .screen || SCContext.streamType == .screenarea {
                 if SCContext.streamType == .screenarea {
                     if let area = SCContext.screenArea, let name = screen.nsScreen?.localizedName {
-                        let a = ["x": area.origin.x, "y": area.origin.y, "width": area.width, "height": area.height]
-                        ud.set([name: a], forKey: "savedArea")
+                        SCContext.saveArea(area, forScreen: name)
                     }
                 }
                 var excluded = [SCRunningApplication]()
@@ -251,13 +250,7 @@ extension AppDelegate {
             conf.width = Int(filter.contentRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
             conf.height = Int(filter.contentRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
             
-            if fastStart{
-                conf.showsCursor = false
-            } else{
-                conf.showsCursor = showMouse
-            }
-                    
-
+            conf.showsCursor = showMouse
             if background.rawValue != BackgroundType.wallpaper.rawValue { conf.backgroundColor = SCContext.getBackgroundColor() }
             if !recordHDR {
                 conf.pixelFormat = kCVPixelFormatType_32BGRA
@@ -285,24 +278,11 @@ extension AppDelegate {
         conf.microphoneCaptureDeviceID = SCContext.micCaptureDeviceID
         
 
-        //  conf.minimumFrameInterval = CMTime(value: 1, timescale: audioOnly ? CMTimeScale.max : CMTimeScale(frameRate))
-         conf.minimumFrameInterval = CMTime(value: 1, timescale: audioOnly ? CMTimeScale.max : (frameRate >= 60 ? 0 : CMTimeScale(frameRate)))
-
-//        CMTimeScale is the denominator in the fraction
-//        conf.minimumFrameInterval = CMTime(seconds: audioOnly ? Double(CMTimeScale.max) : Double(1)/Double(frameRate), preferredTimescale: 10000)
-
-        // note: ScreenCaptureKit only delivers frames when something changes
-        // https://www.reddit.com/r/swift/comments/158n4c9/comment/ju847rm/?utm_source=share&utm_medium=web3x&utm_name=web3xcss&utm_term=1&utm_content=share_button
-
-        //blog post from the reddit comment https://nonstrict.eu/blog/2023/recording-to-disk-with-screencapturekit/
-
-        //https://github.com/nonstrict-hq/ScreenCaptureKit-Recording-example
-
-        // https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/minimumframeinterval
-        //minimumFrameInterval: Use this value to throttle the rate at which you receive updates. The default value is 0, which indicates that the system uses the maximum supported frame rate.
-
-        print("Frame interval passed to ScreenCaptureKit. (timescale is FPS. 0 means no throttling): \(conf.minimumFrameInterval)")
-        
+        // Always an explicit interval: a timescale of 0 is not a valid time, and leaving the stream unthrottled
+        // delivers frames at the display's rate whatever the setting says. An audio-only stream gets next to no frames.
+        let fps = SCContext.captureFrameRate(frameRate)
+        conf.minimumFrameInterval = CMTime(value: 1, timescale: audioOnly ? CMTimeScale.max : CMTimeScale(fps))
+        print("Frame interval passed to ScreenCaptureKit: \(conf.minimumFrameInterval)")
 
         if SCContext.streamType == .screenarea {
             if let nsRect = SCContext.screenArea, let display = SCContext.screen {
@@ -362,7 +342,7 @@ extension AppDelegate {
             // Nothing can have stopped this recording yet: a stop that was asked for while the capture was starting
             // is carried out by enterRecording below, after everything it undoes has been set up
             guard SCContext.state == .starting else { return }
-            if !audioOnly { self.registerGlobalMouseMonitor() }
+            if !audioOnly { self.startRecordingMouseMonitor() }
             if recording.preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
             if recording.recordMic { MicDevices.watch() }
             DiskSpace.startMonitoring(recording.saveDirectory) { free in
@@ -425,7 +405,8 @@ extension AppDelegate {
         // Closing the file normally turns it into an ordinary movie file.
         writer.movieFragmentInterval = SCContext.fragmentInterval
         let encoderIsH265 = (encoder.rawValue == Encoder.h265.rawValue) || recordHDR
-        let fpsMultiplier: Double = Double(frameRate)/8
+        let fps = SCContext.captureFrameRate(frameRate)
+        let fpsMultiplier: Double = Double(fps)/8
         let encoderMultiplier: Double = encoderIsH265 ? 0.5 : 0.9
         let resolution = Double(max(600, conf.width)) * Double(max(600, conf.height))
         var qualityMultiplier = 1 - (log10(sqrt(resolution) * fpsMultiplier) / 5)
@@ -438,7 +419,7 @@ extension AppDelegate {
         let h265Level = recordHDR ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel
 
         let targetBitrate = resolution * fpsMultiplier * encoderMultiplier * qualityMultiplier * (recordHDR ? 2 : 1)
-        print("framerate set in app: \(frameRate)")
+        print("framerate set in app: \(fps)")
         print("target bitrate: \(targetBitrate/1000000)")
 
         var videoSettings: [String: Any] = [
@@ -449,7 +430,7 @@ extension AppDelegate {
             AVVideoCompressionPropertiesKey: [
                 AVVideoProfileLevelKey: encoderIsH265 ? h265Level : h264Level,
                 AVVideoAverageBitRateKey: max(200000, Int(targetBitrate)),
-                AVVideoExpectedSourceFrameRateKey: frameRate,
+                AVVideoExpectedSourceFrameRateKey: fps,
             ] as [String : Any]
         ]
         
@@ -671,7 +652,8 @@ extension AppDelegate {
             }
             if written { RecordingMonitor.microphoneWritten(upTo: converter.end, peak: converter.lastPeak) }
         @unknown default:
-            assertionFailure("unknown stream type".local)
+            // An output type this version does not know is not recorded
+            break
         }
     }
 

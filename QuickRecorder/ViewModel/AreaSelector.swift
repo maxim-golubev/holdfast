@@ -280,19 +280,15 @@ class ScreenshotOverlayView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        selectionRect = NSRect(x: (self.frame.width - size.width) / 2, y: (self.frame.height - size.height) / 2, width: size.width, height: size.height)
-        if !force {
-            let savedArea = ud.object(forKey: "savedArea") as! [String: [String: CGFloat]]
-            if let name = self.window?.screen?.localizedName {
-                if let area = savedArea[name] {
-                    selectionRect = NSRect(x: area["x"]!, y: area["y"]!, width: area["width"]!, height: area["height"]!)
-                }
-            }
+        var selection = NSRect(x: (self.frame.width - size.width) / 2, y: (self.frame.height - size.height) / 2, width: size.width, height: size.height)
+        if !force, let name = self.window?.screen?.localizedName, let saved = SCContext.savedArea(forScreen: name) {
+            selection = saved
         }
+        selectionRect = selection
         if self.window != nil {
-            areaWidth = Int(selectionRect!.width)
-            areaHeight = Int(selectionRect!.height)
-            SCContext.screenArea = selectionRect
+            areaWidth = Int(selection.width)
+            areaHeight = Int(selection.height)
+            SCContext.screenArea = selection
         }
         updateMaskLayer()
         updateSelectionLayer()

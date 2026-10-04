@@ -14,10 +14,8 @@ import UserNotifications
 import KeyboardShortcuts
 import ServiceManagement
 import CoreMediaIO
+import VideoToolbox
 
-let isMacOS12 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 12
-let isMacOS14 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 14
-let isMacOS15 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 15
 var scPerm = false
 let fd = FileManager.default
 let ud = UserDefaults.standard
@@ -103,6 +101,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     var frameQueue = FixedLengthArray<CMTime>(maxLength: 20)
     private var isMagnifierCapturing = false
     private var pendingMagnifierEvent: NSEvent?
+    /// The monitor that drives the mouse highlight and the magnifier of a recording. Not `mouseMonitor`, which
+    /// belongs to the selectors.
+    private var recordingMouseMonitor: Any?
+    private var tracksMouseForRecording = false
+    private var mousePointerHost: NSHostingView<MousePointerView>?
     
     @AppStorage("showOnDock")       var showOnDock: Bool = true
     @AppStorage("showMenubar")      var showMenubar: Bool = false
@@ -110,7 +113,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     @AppStorage("remuxAudio")       var remuxAudio: Bool = true
     @AppStorage("recordWinSound")   var recordWinSound: Bool = true
     @AppStorage("recordHDR")        var recordHDR: Bool = false
-    @AppStorage("encoder")          var encoder: Encoder = .h265
+    @AppStorage("encoder")          var encoder: Encoder = .preferred
     @AppStorage("highRes")          var highRes: Int = 2
     @AppStorage("withAlpha")        var withAlpha: Bool = false
     @AppStorage("saveDirectory")    var saveDirectory: String?
@@ -126,12 +129,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     @AppStorage("showPreview")      var showPreview: Bool = true
     @AppStorage("background")       var background: BackgroundType = .wallpaper
     @AppStorage("showMouse")        var showMouse: Bool = true
-    @AppStorage("frameRate")        var frameRate: Int = 60
-    @AppStorage("videoQuality")     var videoQuality: Double = 1.0
+    @AppStorage("frameRate")        var frameRate: Int = 30
+    @AppStorage("videoQuality")     var videoQuality: Double = 0.7
     @AppStorage("videoFormat")      var videoFormat: VideoFormat = .mp4
     @AppStorage("audioFormat")      var audioFormat: AudioFormat = .aac
     @AppStorage("audioQuality")     var audioQuality: AudioQuality = .high
-    @AppStorage("pixelFormat")      var pixelFormat: PixFormat = .delault
     @AppStorage("hideCCenter")      var hideCCenter: Bool = false
     
     func mousePointerReLocation(event: NSEvent) {
@@ -143,7 +145,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         let mouseLocation = event.locationInWindow
         var windowFrame = mousePointer.frame
         windowFrame.origin = NSPoint(x: mouseLocation.x - windowFrame.width / 2, y: mouseLocation.y - windowFrame.height / 2)
-        mousePointer.contentView = NSHostingView(rootView: MousePointerView(event: event))
+        // One hosting view for the whole run, not a new one for every mouse event
+        if let host = mousePointerHost {
+            host.rootView = MousePointerView(event: event)
+            if mousePointer.contentView !== host { mousePointer.contentView = host }
+        } else {
+            let host = NSHostingView(rootView: MousePointerView(event: event))
+            mousePointerHost = host
+            mousePointer.contentView = host
+        }
         mousePointer.setFrameOrigin(windowFrame.origin)
         mousePointer.orderFront(nil)
     }
@@ -170,13 +180,41 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         }
     }
     
-    func registerGlobalMouseMonitor() {
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .mouseMoved, .rightMouseUp, .rightMouseDown, .rightMouseDragged, .leftMouseUp,  .leftMouseDown, .leftMouseDragged, .otherMouseUp, .otherMouseDown, .otherMouseDragged]) { event in
-            self.mousePointerReLocation(event: event)
-            self.screenMagnifierReLocation(event: event)
-        }
+    /// Main thread. From here on a video recording runs, which may show the mouse highlight and the magnifier.
+    func startRecordingMouseMonitor() {
+        tracksMouseForRecording = true
+        updateRecordingMouseMonitor()
     }
-        
+    
+    /// Main thread. The recording is over.
+    func stopRecordingMouseMonitor() {
+        tracksMouseForRecording = false
+        updateRecordingMouseMonitor()
+    }
+    
+    /// Main thread. Every mouse event of the system is only listened to while something is drawn from it: during a
+    /// video recording with "Highlight the Mouse Cursor" on or the magnifier switched on. Called when any of the
+    /// three changes.
+    func updateRecordingMouseMonitor() {
+        let highlight = tracksMouseForRecording && highlightMouse
+        let magnifier = tracksMouseForRecording && SCContext.isMagnifierEnabled
+        if highlight || magnifier {
+            if recordingMouseMonitor == nil {
+                recordingMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .mouseMoved, .rightMouseUp, .rightMouseDown, .rightMouseDragged, .leftMouseUp,  .leftMouseDown, .leftMouseDragged, .otherMouseUp, .otherMouseDown, .otherMouseDragged]) { [weak self] event in
+                    self?.mousePointerReLocation(event: event)
+                    self?.screenMagnifierReLocation(event: event)
+                }
+            }
+        } else if let monitor = recordingMouseMonitor {
+            NSEvent.removeMonitor(monitor)
+            recordingMouseMonitor = nil
+        }
+        // No event may come any more to take them off the screen
+        if !highlight { mousePointer.orderOut(nil) }
+        if !magnifier { screenMagnifier.orderOut(nil) }
+    }
+    
+    /// Removes the monitor a selector installed (`mouseMonitor`)
     func stopGlobalMouseMonitor() {
         mousePointer.orderOut(nil)
         if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor); mouseMonitor = nil }
@@ -227,24 +265,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             }
         }
         
-        lazy var userDesktop = (NSSearchPathForDirectoriesInDomains(.desktopDirectory, .userDomainMask, true) as [String]).first!
+        let userDesktop = NSSearchPathForDirectoriesInDomains(.desktopDirectory, .userDomainMask, true).first ?? (NSHomeDirectory() + "/Desktop")
         
         ud.register( // default defaults (used if not set)
             defaults: [
                 "audioFormat": AudioFormat.aac.rawValue,
                 "audioQuality": AudioQuality.high.rawValue,
                 "background": BackgroundType.wallpaper.rawValue,
-                "frameRate": 60,
+                "frameRate": 30,
                 "highRes": 2,
                 "hideSelf": true,
                 "highlightMouse" : false,
                 "hideDesktopFiles": false,
                 "includeMenuBar": true,
-                "videoQuality": 1.0,
+                "videoQuality": 0.7,
                 "countdown": 0,
                 "videoFormat": VideoFormat.mp4.rawValue,
-                "pixelFormat": PixFormat.delault.rawValue,
-                "encoder": Encoder.h264.rawValue,
+                "encoder": Encoder.preferred.rawValue,
                 "poSafeDelay": 1,
                 "saveDirectory": userDesktop as NSString,
                 "showMouse": true,
@@ -331,7 +368,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             if SCContext.stream == nil { NSApp.activate(ignoringOtherApps: true) }
         }
         KeyboardShortcuts.onKeyDown(for: .saveFrame) { if SCContext.stream != nil { SCContext.saveFrame = true }}
-        KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { if SCContext.stream != nil { SCContext.isMagnifierEnabled.toggle() }}
+        KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { [self] in
+            if SCContext.stream != nil {
+                SCContext.isMagnifierEnabled.toggle()
+                updateRecordingMouseMonitor()
+            }
+        }
         KeyboardShortcuts.onKeyDown(for: .stop) { SCContext.stopRecording() }
         KeyboardShortcuts.onKeyDown(for: .pauseResume) { if SCContext.stream != nil { SCContext.pauseRecording() }}
         KeyboardShortcuts.onKeyDown(for: .startWithAudio) {[self] in
@@ -444,45 +486,19 @@ func findNSSplitVIew(view: NSView?) -> NSSplitView? {
 
 func getStatusBarWidth() -> CGFloat {
     @AppStorage("miniStatusBar") var miniStatusBar: Bool = false
-    var width = 158.0
     // "Saving…" or "Finishing… 100%" while a stopped recording is being closed and post-processed
     if SCContext.isSaving { return 124.0 }
+    var width = 158.0
     switch SCContext.streamType {
-    case nil: width = miniStatusBar ? 36.0 : 36.0
+    case nil: return 36.0
     case .idevice: width = miniStatusBar ? 68.0 : 138.0
     case .systemaudio: width = miniStatusBar ? 68.0 : 114.0
     default: width = miniStatusBar ? 78.0 : 158.0
     }
-    return width
-}
-
-func process(path: String, arguments: [String]) -> String? {
-    let task = Process()
-    task.launchPath = path
-    task.arguments = arguments
-    task.standardError = Pipe()
-    
-    let outputPipe = Pipe()
-    defer {
-        outputPipe.fileHandleForReading.closeFile()
-    }
-    task.standardOutput = outputPipe
-    
-    do {
-        try task.run()
-    } catch let error {
-        print("\(error.localizedDescription)")
-        return nil
-    }
-    
-    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(decoding: outputData, as: UTF8.self)
-    
-    if output.isEmpty {
-        return nil
-    }
-    
-    return output.trimmingCharacters(in: .newlines)
+    // The widths above are made for a timer that reads "07:05". From the first hour on it reads "1:07:05",
+    // and every character more needs its own room (15 pt monospaced digits are about 9 pt wide).
+    let extraCharacters = max(0, SCContext.getRecordingLength().count - 5)
+    return width + (Double(extraCharacters) * 9.5).rounded(.up)
 }
 
 func tips(_ message: String, title: String? = nil, id: String, buttonTitle: String = "OK", switchButton: Bool = false, width: Int? = nil, action: (() -> Void)? = nil) {
@@ -666,11 +682,29 @@ enum AudioFormat: String { case aac, alac, flac, opus, mp3 }
 
 enum VideoFormat: String { case mov, mp4 }
 
-enum PixFormat: String { case delault, yuv420p8v, yuv420p8f, yuv420p10v, yuv420p10f, bgra32 }
-
-enum ColSpace: String { case delault, srgb, p3, bt709, bt2020 }
-
-enum Encoder: String { case h264, h265 }
+enum Encoder: String {
+    case h264, h265
+    
+    /// The encoder used while the user has not chosen one: HEVC where the Mac encodes it in hardware (every Apple
+    /// Silicon Mac does), which gives about half the file size of H.264 for the same picture, and H.264 otherwise.
+    static let preferred: Encoder = {
+        var session: VTCompressionSession?
+        let status = VTCompressionSessionCreate(
+            allocator: nil,
+            width: 1920,
+            height: 1080,
+            codecType: kCMVideoCodecType_HEVC,
+            encoderSpecification: [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true] as CFDictionary,
+            imageBufferAttributes: nil,
+            compressedDataAllocator: nil,
+            outputCallback: nil,
+            refcon: nil,
+            compressionSessionOut: &session
+        )
+        if let session = session { VTCompressionSessionInvalidate(session) }
+        return status == noErr ? .h265 : .h264
+    }()
+}
 
 enum StreamType: Int { case screen, window, windows, application, screenarea, systemaudio, idevice, camera }
 

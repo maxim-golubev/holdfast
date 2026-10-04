@@ -7,8 +7,10 @@ class RecorderPlayerModel: NSObject, ObservableObject {
     @Published var playerView: AVPlayerView
     var asset: AVAsset?
     var fileUrl: URL?
-    var playerItem: AVPlayerItem!
+    var playerItem: AVPlayerItem?
     var nsWindow: NSWindow?
+    private var observesStatus = false
+    private var timeJumpObserver: NSObjectProtocol?
     
     override init() {
         self.playerView = AVPlayerView()
@@ -20,22 +22,32 @@ class RecorderPlayerModel: NSObject, ObservableObject {
         fileUrl = fromUrl
         asset = AVAsset(url: fromUrl)
         guard let asset = asset else { return }
-        playerItem = AVPlayerItem(asset: asset)
+        // Loading again must not leave the observers of the item before
+        removeObservers()
+        let playerItem = AVPlayerItem(asset: asset)
+        self.playerItem = playerItem
         playerView.player?.replaceCurrentItem(with: playerItem)
         playerView.controlsStyle = .inline
         
         playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.new], context: nil)
+        observesStatus = true
         
-        let checkCanBeginTrimming: () -> Void = {
-            if self.playerView.canBeginTrimming {
-                completion()
-            }
-        }
-        
-        NotificationCenter.default.addObserver(forName: .AVPlayerItemTimeJumped, object: playerItem, queue: nil) { _ in
-            checkCanBeginTrimming()
+        timeJumpObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemTimeJumped, object: playerItem, queue: nil) { [weak self] _ in
+            if self?.playerView.canBeginTrimming == true { completion() }
         }
     }
+    
+    /// Takes the status observer and the notification observer off the current item. Safe to call more than once.
+    private func removeObservers() {
+        if observesStatus, let playerItem = playerItem {
+            playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
+        }
+        observesStatus = false
+        if let observer = timeJumpObserver { NotificationCenter.default.removeObserver(observer) }
+        timeJumpObserver = nil
+    }
+    
+    deinit { removeObservers() }
     
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
         guard let playerItem = object as? AVPlayerItem, keyPath == #keyPath(AVPlayerItem.status) else {
@@ -96,13 +108,15 @@ class RecorderPlayerModel: NSObject, ObservableObject {
             
             checkCanBeginTrimming()
 
-            playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
+            if observesStatus, playerItem === self.playerItem {
+                playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
+                observesStatus = false
+            }
         }
     }
     
     func cleanup() {
-        // 移除所有观察者
-        playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
+        removeObservers()
         playerView.player?.pause()
         playerView.player = nil // 移除 player 对象
     }
@@ -152,7 +166,7 @@ struct VideoTrimmerView: View {
             SCContext.trimingList.append(videoURL)
         }, onWindowClose: {
             playerViewModel.playerView.player?.replaceCurrentItem(with: nil)
-            playerViewModel.playerView.player = nil
+            playerViewModel.cleanup()
             SCContext.trimingList.removeAll(where: { $0 == videoURL })
         }))
         //.navigationTitle(videoURL.lastPathComponent)

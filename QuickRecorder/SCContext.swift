@@ -150,7 +150,6 @@ class SCContext {
     static var recordDevice = ""
     static var captureSession: AVCaptureSession!
     static var previewSession: AVCaptureSession!
-    static var frameCache: CMSampleBuffer?
     static var filter: SCContentFilter?
     static var isMagnifierEnabled = false
     static var saveFrame = false
@@ -278,7 +277,7 @@ class SCContext {
                 return
             }
             availableContent = content
-            assert(availableContent?.displays.isEmpty != nil, "There needs to be at least one display connected!".local)
+            if content?.displays.isEmpty != false { print("There needs to be at least one display connected!".local) }
             completion()
         }
     }
@@ -300,16 +299,16 @@ class SCContext {
     
     static func getApps(isOnScreen: Bool = true, hideSelf: Bool = true) -> [SCRunningApplication] {
         var apps = [SCRunningApplication]()
-        for app in getWindows(isOnScreen: isOnScreen, hideSelf: hideSelf).map({ $0.owningApplication }) {
-            if !apps.contains(app!) { apps.append(app!) }
+        for app in getWindows(isOnScreen: isOnScreen, hideSelf: hideSelf).compactMap({ $0.owningApplication }) {
+            if !apps.contains(app) { apps.append(app) }
         }
         if hideSelf && ud.bool(forKey: "hideSelf") { apps = apps.filter({$0.bundleIdentifier != Bundle.main.bundleIdentifier}) }
         return apps
     }
     
     static func getWindows(isOnScreen: Bool = true, hideSelf: Bool = true) -> [SCWindow] {
-        var windows = [SCWindow]()
-        windows = availableContent!.windows.filter {
+        guard let content = availableContent else { return [] }
+        var windows = content.windows.filter {
             guard let app =  $0.owningApplication,
                   let title = $0.title else {//, !title.isEmpty else {
                 return false
@@ -332,7 +331,7 @@ class SCContext {
             return icon
         }
         let icon = NSImage(systemSymbolName: "questionmark.app.dashed", accessibilityDescription: "blank icon")
-        icon!.size = NSSize(width: 69, height: 69)
+        icon?.size = NSSize(width: 69, height: 69)
         return icon
     }
     
@@ -384,7 +383,10 @@ class SCContext {
             audioSettings[AVFormatIDKey] = videoFormat != VideoFormat.mp4.rawValue ? kAudioFormatOpus : kAudioFormatMPEG4AAC
             audioSettings[AVEncoderBitRateKey] =  bitRate
         default:
-            assertionFailure("unknown audio format while setting audio settings: ".local + format)
+            // An unknown format must not cost the recording: AAC goes into every container used here
+            print("Unknown audio format \"\(format)\", using AAC")
+            audioSettings[AVFormatIDKey] = kAudioFormatMPEG4AAC
+            audioSettings[AVEncoderBitRateKey] = bitRate
         }
         return audioSettings
     }
@@ -418,9 +420,36 @@ class SCContext {
                                                        button1: "Open Settings",
                                                        button2: "Cancel")
             if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+                openPrivacySettings("Privacy_Microphone")
             }
         }
+    }
+    
+    private static func openPrivacySettings(_ pane: String) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+    
+    /// The frame rate a recording is captured and encoded at, whatever the "frameRate" setting holds (a script can
+    /// set any number): never 0 or negative, which would make an invalid frame interval
+    static func captureFrameRate(_ setting: Int) -> Int {
+        return min(240, max(1, setting))
+    }
+    
+    /// The area last recorded on the screen with that name, as the area selector stored it
+    static func savedArea(forScreen name: String) -> NSRect? {
+        guard let area = ud.dictionary(forKey: "savedArea")?[name] as? [String: Any] else { return nil }
+        func value(_ key: String) -> CGFloat? { (area[key] as? NSNumber).map { CGFloat($0.doubleValue) } }
+        guard let x = value("x"), let y = value("y"), let width = value("width"), let height = value("height"),
+              width > 0, height > 0 else { return nil }
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+    
+    /// Remembers `area` for the screen with that name. The areas of the other screens stay as they are.
+    static func saveArea(_ area: NSRect, forScreen name: String) {
+        var saved = ud.dictionary(forKey: "savedArea") ?? [:]
+        saved[name] = ["x": Double(area.origin.x), "y": Double(area.origin.y), "width": Double(area.width), "height": Double(area.height)]
+        ud.set(saved, forKey: "savedArea")
     }
     
     private static func requestPermissions() {
@@ -430,7 +459,7 @@ class SCContext {
                                                        button1: "Open Settings",
                                                        button2: "Cancel")
             if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                openPrivacySettings("Privacy_ScreenCapture")
             }
             NSApp.terminate(self)
         }
@@ -448,7 +477,7 @@ class SCContext {
                                                            button1: "Open Settings",
                                                            button2: "Cancel")
                 if alert.runModal() == .alertFirstButtonReturn {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!)
+                    openPrivacySettings("Privacy_Camera")
                 }
             }
         @unknown default:
@@ -470,13 +499,15 @@ class SCContext {
     }
     
     static func getRecordingLength() -> String {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.minute, .second]
-        formatter.zeroFormattingBehavior = .pad
-        formatter.unitsStyle = .positional
-        if isPaused { return formatter.string(from: timePassed) ?? "Unknown".local }
-        timePassed = Date.now.timeIntervalSince(startTime ?? Date.now)
-        return formatter.string(from: timePassed) ?? "Unknown".local
+        if !isPaused { timePassed = Date.now.timeIntervalSince(startTime ?? Date.now) }
+        return lengthText(timePassed)
+    }
+    
+    /// "07:05" up to an hour, "1:07:05" from then on. The status bar makes room for the longer form (`getStatusBarWidth`).
+    static func lengthText(_ interval: TimeInterval) -> String {
+        let total = interval.isFinite ? max(0, Int(interval)) : 0
+        let hours = total / 3600, minutes = total % 3600 / 60, seconds = total % 60
+        return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, seconds) : String(format: "%02d:%02d", minutes, seconds)
     }
     
     static func isCameraRunning() -> Bool {
@@ -725,6 +756,7 @@ class SCContext {
         mousePointer.orderOut(nil)
         screenMagnifier.orderOut(nil)
         AppDelegate.shared.stopGlobalMouseMonitor()
+        AppDelegate.shared.stopRecordingMouseMonitor()
         closeAreaOverlay()
         closeRecordingWindows()
         hideMousePointer = false
