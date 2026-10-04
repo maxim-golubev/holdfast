@@ -37,7 +37,7 @@
             </parameter>
         </command>
         
-        <command name="stop recording" code="QKrdSTop" description="Stop the current recording, or cancel a running countdown. Does nothing if idle; returns an error if a recording is still starting up and could not be stopped yet">
+        <command name="stop recording" code="QKrdSTop" description="Stop the current recording, or cancel a running countdown. Returns at once; the file is saved in the background. A recording that is still starting up is stopped as soon as it runs. Does nothing if idle or if a recording is already being saved">
             <cocoa class="QuickRecorder.stopRecording"/>
         </command>
         

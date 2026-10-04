@@ -83,7 +83,18 @@ struct QuickRecorderApp: App {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, AVCaptureVideoDataOutputSampleBufferDelegate  {
-    static let shared = AppDelegate()
+    /// The delegate SwiftUI created for `@NSApplicationDelegateAdaptor`, which is the one the app's events and the
+    /// stream's callbacks go to. `NSApp.delegate` is a SwiftUI object that forwards to it, so it is noted when it is created.
+    private static var created: AppDelegate?
+    static var shared: AppDelegate { created ?? AppDelegate() }
+    private var quitWhenIdle = false
+    
+    override init() {
+        super.init()
+        // SwiftUI creates its delegate before any view or script command asks for `shared`; nothing else creates one
+        AppDelegate.created = self
+    }
+    
     var filter: SCContentFilter?
     var isCameraReady = false
     var isPresenterON = false
@@ -172,17 +183,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // Stops a running recording and waits for its video file to be closed; a no-op when nothing is recorded
+        if SCContext.state == .idle { return .terminateNow }
+        // A recording is starting, running or still being saved. Quitting now would leave a file that was not closed,
+        // or one under its temporary name with unmixed audio, so the recording is stopped (a no-op when it already
+        // is) and the app quits when its files are final. Meanwhile the main run loop keeps running.
         SCContext.stopRecording()
-        if SCContext.finishing.wait(timeout: .now()) == .success { return .terminateNow }
-        // An audio mix or a conversion is still running, for this recording or an earlier one. Quitting now would leave
-        // the recording under its temporary name with unmixed audio, so the app quits when that work is done.
-        SCContext.finishing.notify(queue: .main) { NSApp.reply(toApplicationShouldTerminate: true) }
+        if !quitWhenIdle {
+            quitWhenIdle = true
+            SCContext.whenIdle { NSApp.reply(toApplicationShouldTerminate: true) }
+        }
         return .terminateLater
     }
     
     func applicationWillTerminate(_ aNotification: Notification) {
-        if SCContext.stream != nil { SCContext.stopRecording() }
+        // applicationShouldTerminate has waited for the recording, so there is nothing left to do here. Should the
+        // app ever be terminated past it, the recording is stopped the same way and given a moment to be saved:
+        // the run loop is run, not blocked, because saving continues on the main thread.
+        guard SCContext.state != .idle else { return }
+        SCContext.stopRecording()
+        let deadline = Date.now.addingTimeInterval(30)
+        while SCContext.state != .idle && Date.now < deadline {
+            RunLoop.current.run(mode: .default, before: Date.now.addingTimeInterval(0.1))
+        }
     }
     
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -308,25 +330,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         }
         KeyboardShortcuts.onKeyDown(for: .saveFrame) { if SCContext.stream != nil { SCContext.saveFrame = true }}
         KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { if SCContext.stream != nil { SCContext.isMagnifierEnabled.toggle() }}
-        KeyboardShortcuts.onKeyDown(for: .stop) { if SCContext.stream != nil { SCContext.stopRecording() }}
+        KeyboardShortcuts.onKeyDown(for: .stop) { SCContext.stopRecording() }
         KeyboardShortcuts.onKeyDown(for: .pauseResume) { if SCContext.stream != nil { SCContext.pauseRecording() }}
         KeyboardShortcuts.onKeyDown(for: .startWithAudio) {[self] in
-            if SCContext.streamType != nil { return }
+            guard SCContext.canStart() else { return }
             closeAllWindow()
             prepRecord(type: "audio", screens: SCContext.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
         }
         KeyboardShortcuts.onKeyDown(for: .startWithScreen) {[self] in
-            if SCContext.stream != nil { return }
+            guard SCContext.canStart() else { return }
             closeAllWindow()
             prepRecord(type: "display", screens: SCContext.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
         }
         KeyboardShortcuts.onKeyDown(for: .startWithArea) {[self] in
-            if SCContext.stream != nil { return }
+            guard SCContext.canStart() else { return }
             closeAllWindow()
             showAreaSelector(size: NSSize(width: 600, height: 450))
         }
         KeyboardShortcuts.onKeyDown(for: .startWithWindow) { [self] in
-            if SCContext.stream != nil { return }
+            guard SCContext.canStart() else { return }
             closeAllWindow()
             let frontmostApp = NSWorkspace.shared.frontmostApplication
             if let pid = frontmostApp?.processIdentifier {
@@ -420,6 +442,8 @@ func findNSSplitVIew(view: NSView?) -> NSSplitView? {
 func getStatusBarWidth() -> CGFloat {
     @AppStorage("miniStatusBar") var miniStatusBar: Bool = false
     var width = 158.0
+    // "Saving…" while a stopped recording is being closed and post-processed
+    if SCContext.isSaving { return 78.0 }
     switch SCContext.streamType {
     case nil: width = miniStatusBar ? 36.0 : 36.0
     case .idevice: width = miniStatusBar ? 68.0 : 138.0

@@ -28,7 +28,21 @@ struct StatusBarItem: View {
     
     var body: some View {
         HStack(spacing: 0) {
-            if SCContext.streamType != nil {
+            if health.saving {
+                // The recording was stopped and is being closed and post-processed. Nothing can be clicked: the
+                // pill goes away when the file is final.
+                ZStack {
+                    Rectangle()
+                        .fill(Color.mypurple)
+                        .shadow(color: .black.opacity(0.3), radius: 4)
+                        .cornerRadius(4)
+                    Text("Saving…")
+                        .foregroundStyle(.white)
+                        .font(.system(size: 13))
+                }
+                .help("The recording is being saved. A new one can be started when this is gone.")
+                .padding([.leading,.trailing], 4)
+            } else if SCContext.streamType != nil {
                 ZStack {
                     Rectangle()
                         // Orange while a track is not being recorded
@@ -39,11 +53,7 @@ struct StatusBarItem: View {
                         if miniStatusBar {
                             if isHovering {
                                 Button(action: {
-                                    if SCContext.streamType == .idevice {
-                                        AVOutputClass.shared.stopRecording()
-                                    } else {
-                                        SCContext.stopRecording()
-                                    }
+                                    SCContext.stopRecording()
                                 }, label: {
                                     ZStack {
                                         Image(systemName: "circle.fill")
@@ -98,11 +108,7 @@ struct StatusBarItem: View {
                         } else {
                             Group {
                                 Button(action: {
-                                    if SCContext.streamType == .idevice {
-                                        AVOutputClass.shared.stopRecording()
-                                    } else {
-                                        SCContext.stopRecording()
-                                    }
+                                    SCContext.stopRecording()
                                 }, label: {
                                     ZStack {
                                         Image(systemName: "circle.fill")
@@ -229,7 +235,7 @@ struct StatusBarItem: View {
 
 func updateStatusBar() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-        if SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
+        if SCContext.streamType == nil && !SCContext.isSaving && !ud.bool(forKey: "showMenubar") {
             statusBarItem.isVisible = false
             return
         }

@@ -15,6 +15,8 @@ final class RecordingHealth: ObservableObject {
     @Published var warning: String?
     /// Nil without a microphone track. 0: digital silence or nothing at all, 1: quiet, 2: sound.
     @Published var micLevel: Int?
+    /// True from the moment a recording is stopped until its files are final (`SCContext.isSaving`)
+    @Published var saving = false
 }
 
 /// Runs twice a second on `SCContext.sampleQueue` while a recording is capturing, whether or not any buffer arrives.

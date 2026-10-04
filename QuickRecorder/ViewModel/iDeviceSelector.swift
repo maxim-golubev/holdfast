@@ -54,6 +54,8 @@ struct iDevicePopoverView: View {
             } else {
                 ForEach(devices.indices, id: \.self) { index in
                     Button(action: {
+                        // Not while a recording is running or still being saved
+                        guard SCContext.canStart() else { return }
                         closePopover()
                         closeAllWindow()
                         DispatchQueue.global().async {

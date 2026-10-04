@@ -264,12 +264,18 @@ struct CountdownView: View {
         .onAppear{
             countdownTimer?.invalidate()
             countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+                // The panel is the countdown: once it is closed, by whatever closed it, nothing is started
+                guard countdownPanel.isVisible else {
+                    timer.invalidate()
+                    if countdownTimer === timer { countdownTimer = nil }
+                    return
+                }
                 if countdownValue > 1 {
                     countdownValue -= 1
                 } else {
                     timer.invalidate()
                     countdownTimer = nil
-                    if let w = NSApp.windows.first(where: { $0.title == "Countdown Panel".local }) { w.close() }
+                    countdownPanel.close()
                     atEnd()
                 }
             }

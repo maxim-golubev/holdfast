@@ -13,20 +13,26 @@ import AVFAudio
 import VideoToolbox
 
 extension AppDelegate {
-    /// `recordMic` overrides the "recordMic" setting for this recording only
+    /// The one way a recording starts: the selectors, the hotkeys, the script commands and the countdown all end
+    /// here. Main thread. It does nothing unless the recording side is idle (`SCContext.beginStart`), so a second
+    /// start while one is starting, recording or still being saved cannot get in.
+    /// `recordMic` overrides the "recordMic" setting for this recording only.
     func prepRecord(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil) {
+        let streamType: StreamType
         switch type {
-        case "window":  SCContext.streamType = .window
-        case "windows":  SCContext.streamType = .windows
-        case "display": SCContext.streamType = .screen
-        case "application": SCContext.streamType = .application
-        case "area": SCContext.streamType = .screenarea
-        case "audio":   SCContext.streamType = .systemaudio
+        case "window":  streamType = .window
+        case "windows":  streamType = .windows
+        case "display": streamType = .screen
+        case "application": streamType = .application
+        case "area": streamType = .screenarea
+        case "audio":   streamType = .systemaudio
             default: return // if we don't even know what to record I don't think we should even try
         }
+        guard SCContext.beginStart() else { return }
+        SCContext.streamType = streamType
         // Every reason not to start ends here, with one alert
         func failToRecord(_ message: String) {
-            SCContext.streamType = nil
+            SCContext.endFailedStart()
             SCContext.showAlertLater(title: "Failed to Record".local, message: message)
         }
         
@@ -154,7 +160,9 @@ extension AppDelegate {
             SCContext.awInput = nil
             SCContext.micInput = nil
             SCContext.audioFile = nil
+            SCContext.sessionStart = nil
         }
+        SCContext.startTime = nil
         if recording.audioOnly {
             SCContext.filter = SCContentFilter(display: screen, excludingApplications: [], exceptingWindows: [])
             do {
@@ -171,11 +179,11 @@ extension AppDelegate {
         Task { await record(filter: filter, fastStart: fastStart, recording: recording) }
     }
     
-    /// A recording that was set up but could not be started: everything created for it is removed and the user gets one alert.
-    /// Nothing happens when the recording was stopped or replaced in the meantime.
+    /// A recording that was set up but could not be started: everything created for it is removed, the state goes
+    /// back to idle and the user gets one alert.
     func failStart(_ recording: RecordingContext, error: Error) {
         print("Failed to start the recording: \(error)")
-        guard SCContext.discardStart(recording) else { return }
+        SCContext.discardStart(recording)
         SCContext.showAlertLater(title: "Failed to Record".local, message: error.localizedDescription)
     }
 
@@ -348,18 +356,18 @@ extension AppDelegate {
         }
         // From here on the tracks are kept going and watched whether or not their sources deliver anything
         SCContext.sampleQueue.sync { RecordingMonitor.start(for: recording.id) }
-        if !audioOnly { registerGlobalMouseMonitor() }
         DispatchQueue.main.async {
-            updateStatusBar()
-            // Recordings are stopped on the main thread. If this one was stopped while the capture was starting,
-            // nothing would release the assertion or end the disk check any more, so they are not started.
-            guard SCContext.stream === stream else { return }
+            // Nothing can have stopped this recording yet: a stop that was asked for while the capture was starting
+            // is carried out by enterRecording below, after everything it undoes has been set up
+            guard SCContext.state == .starting else { return }
+            if !audioOnly { self.registerGlobalMouseMonitor() }
             if recording.preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
             if recording.recordMic { MicDevices.watch() }
             DiskSpace.startMonitoring(recording.saveDirectory) { free in
                 let reason = String(format: "The disk is almost full, only %@ is left.".local, DiskSpace.formatted(free))
                 SCContext.stopRecording(only: recording.id, earlyReason: reason)
             }
+            SCContext.enterRecording()
         }
     }
 
@@ -408,8 +416,6 @@ extension SCDisplay {
 extension AppDelegate {
     /// Creates the video file and its tracks. When it throws, the caller discards what was created.
     func initVideo(conf: SCStreamConfiguration, recording: RecordingContext) throws {
-        SCContext.startTime = nil
-
         let writer = try AVAssetWriter(outputURL: recording.rawURL, fileType: recording.fileType)
         SCContext.vW = writer
         // The file is written in fragments, so a crash, a kill or a power loss costs the last few seconds instead of
@@ -550,7 +556,9 @@ extension AppDelegate {
                 //                CGImageDestinationFinalize(destination)
             }
         }
-        guard SCContext.isCapturing, !SCContext.isPaused, sampleBuffer.isValid else { return }
+        // `recording` and `sessionStart` belong to this queue. The statics the main thread owns (`streamType`,
+        // `startTime`, `screen`) decide nothing here: stopping clears them while the last buffers still arrive.
+        guard SCContext.isCapturing, !SCContext.isPaused, sampleBuffer.isValid, let recording = SCContext.recording else { return }
         var rawPTS = sampleBuffer.presentationTimeStamp
         let duration = sampleBuffer.duration
         if outputType == .microphone {
@@ -577,19 +585,15 @@ extension AppDelegate {
         SCContext.noteEnd(endPTS)
         switch outputType {
         case .screen:
-            if (SCContext.screen == nil && SCContext.window == nil && SCContext.application == nil) || SCContext.streamType == .systemaudio { break }
+            if recording.audioOnly { break }
             guard let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
                   let attachments = attachmentsArray.first else { return }
             guard let statusRawValue = attachments[SCStreamFrameInfo.status] as? Int,
                   let status = SCFrameStatus(rawValue: statusRawValue),
                   status == .complete else { return }
             
-            if SCContext.startTime == nil, let writer = SCContext.vW, writer.status == .writing {
-                SCContext.startTime = Date.now
-                writer.startSession(atSourceTime: pts)
-                SCContext.sessionStart = pts
-                SCContext.micConverter?.start(at: pts)
-            }
+            // The first complete frame starts the session; until then nothing is appended to any track
+            if SCContext.sessionStart == nil { guard SCContext.beginSession(at: pts) else { return } }
             guard var frame = SCContext.retime(sampleBuffer, by: SCContext.timeOffset) else { return }
             if frameQueue.getArray().contains(where: { $0 >= endPTS }) { print("Skip this frame"); return } else { frameQueue.append(endPTS) }
             guard let vwInput = SCContext.vwInput else { return }
@@ -628,16 +632,10 @@ extension AppDelegate {
             }
             break
         case .audio:
-            if SCContext.streamType == .systemaudio { // write directly to file if not video recording
+            if recording.audioOnly { // write directly to file if not video recording
                 hideMousePointer = true
-                if SCContext.startTime == nil {
-                    if SCContext.recordsMic, let writer = SCContext.vW, writer.status == .writing {
-                        writer.startSession(atSourceTime: pts)
-                        SCContext.micConverter?.start(at: pts)
-                    }
-                    SCContext.sessionStart = pts
-                    SCContext.startTime = Date.now
-                }
+                // The first system audio starts the session of the microphone file, if there is one
+                if SCContext.sessionStart == nil { guard SCContext.beginSession(at: pts) else { return } }
                 guard let samples = sampleBuffer.asPCMBuffer else { return }
                 // The file has no timestamps: audio that did not arrive is written as silence, or everything after it
                 // would be early, and audio that arrives after silence was written in its place is left out, or
@@ -652,7 +650,7 @@ extension AppDelegate {
                     SCContext.abortRecording(reason: SCContext.writeFailure(error))
                 }
             } else {
-                guard SCContext.startTime != nil, let awInput = SCContext.awInput else { return }
+                guard SCContext.sessionStart != nil, let awInput = SCContext.awInput else { return }
                 SCContext.audioFormatDescription = sampleBuffer.formatDescription
                 // The writer plays audio buffers back to back whatever their timestamps say. The buffer goes at the end
                 // of what was written, and only once that end is where the buffer belongs.
@@ -665,7 +663,7 @@ extension AppDelegate {
                 }
             }
         case .microphone:
-            guard SCContext.recordsMic, SCContext.startTime != nil, let micInput = SCContext.micInput, let converter = SCContext.micConverter else { return }
+            guard SCContext.recordsMic, SCContext.sessionStart != nil, let micInput = SCContext.micInput, let converter = SCContext.micConverter else { return }
             let written = converter.convert(sampleBuffer, at: pts) { buffer in
                 SCContext.append(buffer, to: micInput)
             }
@@ -681,7 +679,9 @@ extension AppDelegate {
         DispatchQueue.main.async {
             // A stream that was already stopped must not stop the recording that was started after it
             guard SCContext.stream === stream else { return }
-            SCContext.stream = nil
+            // While the capture is still starting the stream stays where it is: either startCapture fails and the
+            // start is discarded, or the stop below is carried out once it runs
+            if SCContext.state != .starting { SCContext.stream = nil }
             let nsError = error as NSError
             if nsError.domain == SCStreamErrorDomain && nsError.code == SCStreamError.Code.userStopped.rawValue {
                 // Stopped by the user from the system's screen sharing menu, which is a stop like any other
