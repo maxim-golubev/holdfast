@@ -276,15 +276,21 @@ struct AutoStopButton: View {
         .accessibilityLabel("Stop Automatically")
         .accessibilityValue(minutes == 0 ? "Off" : minutes == 1 ? "After 1 minute" : String(format: "After %d minutes", minutes))
         .popover(isPresented: $isShowing, arrowEdge: .bottom) {
-            HStack {
-                Text("Stop after")
-                TextField("Minutes", value: limited, format: .number.grouping(.never))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 50)
-                Stepper("Minutes", value: limited, in: AutoStopButton.range)
-                Text("minutes")
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Stop after")
+                    TextField("Minutes", value: limited, format: .number.grouping(.never))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 50)
+                    Stepper("Minutes", value: limited, in: AutoStopButton.range)
+                    Text(minutes == 1 ? "minute" : "minutes")
+                }
+                .labelsHidden()
+                // 0 is no limit, which "Stop after 0 minutes" alone would not say
+                Text(minutes == 0 ? "No limit: the recording runs until it is stopped." : "Set to 0 for no limit.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .labelsHidden()
             .fixedSize()
             .padding()
         }
