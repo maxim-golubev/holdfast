@@ -200,6 +200,25 @@ func logicTests() async {
         expect(!DiskSpace.hasRoom(forCopyOf: 3_000_000_000, free: 2_900_000_000), "not when the file is larger than the free space")
     }
 
+    await test("DiskSpace: an open recording is followed when its folder moves, and found when it is deleted") {
+        let parent = try Suite.folder("open-file")
+        let folder = parent.appendingPathComponent("Meetings")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("Recording at X.mp4")
+        try Data(count: 100).write(to: file)
+        let opened = try require(DiskSpace.OpenFile(file), "the file opens")
+        expectEqual(opened.folder, folder.path, "its folder")
+        expect(!opened.isDeleted, "not deleted")
+        let moved = parent.appendingPathComponent("Meetings renamed")
+        try FileManager.default.moveItem(at: folder, to: moved)
+        expectEqual(opened.folder, moved.path, "the folder after it was renamed")
+        expect(!opened.isDeleted, "a moved file is not deleted")
+        try FileManager.default.removeItem(at: moved)
+        expect(opened.isDeleted, "deleted with its folder")
+        expect(opened.folder == nil, "and has no folder")
+        expect(DiskSpace.OpenFile(file) == nil, "a file that is not there does not open")
+    }
+
     await test("DiskSpace: free space counts what the system can free") {
         expectEqual(DiskSpace.usable(important: 10, free: 4), 10, "the larger of the two")
         expectEqual(DiskSpace.usable(important: 0, free: 7), 7, "a volume that reports zero for it")

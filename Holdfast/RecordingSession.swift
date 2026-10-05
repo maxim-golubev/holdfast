@@ -106,6 +106,8 @@ final class RecordingSession: @unchecked Sendable {
     /// Every recording starts with its microphone on: a mute is this recording's and goes with it
     @MainActor private(set) var isMicrophoneMuted = false
     @MainActor private(set) var health = Health()
+    /// Set when the disk watch found the recording's file deleted: there is nothing to save or to look for
+    @MainActor var filesDeleted = false
     @MainActor var isMagnifierEnabled = false
     /// The wall clock of the status-bar timer and of the automatic stop, moved on by the time spent paused. It gates nothing.
     @MainActor private var startTime: Date?

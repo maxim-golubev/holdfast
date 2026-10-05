@@ -186,10 +186,18 @@ extension RecorderController {
                 if !audioOnly { AppDelegate.shared.startRecordingMouseMonitor() }
                 if recording.preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
                 if recording.recordMic { MicDevices.watch() }
-                let watch = RecordingFileStore(directory: recording.saveDirectory).watchFreeSpace { [weak session] free in
+                // The file that is written to all along: in a package, its system audio file
+                let file = recording.systemAudioURL ?? recording.rawURL
+                let watch = RecordingFileStore(directory: recording.saveDirectory).watch(file: file, onLow: { [weak session] free in
                     let reason = String(format: "The disk is almost full, only %@ is left.".local, DiskSpace.formatted(free))
                     MainActor.assumeIsolated { session?.stop(earlyReason: reason) }
-                }
+                }, onDeleted: { [weak session] in
+                    RecLog.write("The recording's file was deleted: \(file.path)")
+                    MainActor.assumeIsolated {
+                        session?.filesDeleted = true
+                        session?.stop(earlyReason: "The recording's file was deleted while recording, or the folder it was in was, so nothing of it can be kept. Start a new recording to record the rest.".local)
+                    }
+                })
                 session.whenStopped { watch.cancel() }
             }
         }

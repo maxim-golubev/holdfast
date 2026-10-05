@@ -53,14 +53,57 @@ enum DiskSpace {
         return hasRoom(forCopyOf: Int64(size), free: free)
     }
     
-    /// Checks the volume of `path` every 5 seconds and calls `onLow` once, on the main thread, when less than
-    /// `stopMinimum` is free, until it is cancelled. Main thread only. A recording has its own.
+    /// A recording's file as it is open, wherever its folder goes: whether it was deleted, and where it is now.
+    /// Holds a descriptor for events only (`O_EVTONLY`), which does not keep its volume from being ejected.
+    final class OpenFile {
+        private let descriptor: Int32
+
+        /// Nil when `url` cannot be opened
+        init?(_ url: URL) {
+            descriptor = open(url.path, O_RDONLY | O_EVTONLY)
+            guard descriptor >= 0 else { return nil }
+        }
+
+        deinit { close(descriptor) }
+
+        /// Its folder now: moving or renaming the folder or the file does not lose it. Nil once the file is deleted.
+        var folder: String? {
+            var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            guard !isDeleted, fcntl(descriptor, F_GETPATH, &buffer) == 0 else { return nil }
+            return (String(cString: buffer) as NSString).deletingLastPathComponent
+        }
+
+        /// Whether the file has no name left: it was deleted, or its folder was, while it was open. Its data goes
+        /// when it is closed.
+        var isDeleted: Bool {
+            var info = stat()
+            return fstat(descriptor, &info) == 0 && info.st_nlink == 0
+        }
+    }
+
+    /// Checks the volume of a recording every 5 seconds and calls `onLow` once, on the main thread, when less than
+    /// `stopMinimum` is free, until it is cancelled; `onDeleted` once when `file` is deleted. The volume is the
+    /// one `file` is on now, `folder` when it cannot be opened. Main thread only. A recording has its own.
     final class Watch {
         private var timer: Timer?
 
-        init(_ path: String, onLow: @escaping (Int64) -> Void) {
+        init(file: URL, folder: String, onLow: @escaping (Int64) -> Void, onDeleted: @escaping () -> Void) {
+            let opened = OpenFile(file)
+            if opened == nil { RecLog.write("The recording's file cannot be watched: \(file.path)") }
+            var unknownLogged = false
             let poll = Timer(timeInterval: DiskSpace.interval, repeats: true) { [weak self] _ in
-                guard let free = DiskSpace.available(at: path), DiskSpace.mustStop(free: free) else { return }
+                // A file that was replaced, not deleted, is still there under its name
+                if let opened = opened, opened.isDeleted, !FileManager.default.fileExists(atPath: file.path) {
+                    self?.cancel()
+                    onDeleted()
+                    return
+                }
+                guard let free = DiskSpace.available(at: opened?.folder ?? folder) else {
+                    if !unknownLogged { RecLog.write("The free disk space of the recording cannot be determined") }
+                    unknownLogged = true
+                    return
+                }
+                guard DiskSpace.mustStop(free: free) else { return }
                 self?.cancel()
                 onLow(free)
             }

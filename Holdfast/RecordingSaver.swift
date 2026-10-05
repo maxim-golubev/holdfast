@@ -33,7 +33,10 @@ enum RecordingSaver {
             closed = writer.status == .completed
         }
         let failureTitle = earlyReason == nil ? "Failed to save file".local : "Recording Stopped Early".local
-        if !taken.sessionStarted && cancelled {
+        if session.filesDeleted {
+            // The reason says it all: what was written is gone with its name, and there is no file to point to
+            UserNotice.reportFailure(title: "Recording Stopped Early".local, message: earlyReason ?? "")
+        } else if !taken.sessionStarted && cancelled {
             // Stopped before the first frame or the first audio arrived. Nothing was lost, so nothing is reported as failed.
             try? fd.removeItem(at: recording.rawURL)
             UserNotice.showNotification(title: "Recording Cancelled".local, body: "The recording was stopped before anything was recorded.".local, id: "holdfast.cancelled.\(UUID().uuidString)")
