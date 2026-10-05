@@ -190,7 +190,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     /// The symbol in a box of its own size, moved up or down so that the middle of what it draws is on the middle of
     /// the digits. AppKit centres the box, and the ink of SF Symbols at this size sits below the box's centre
-    /// (measured at 2x: pause.circle.fill covers rows 9–35 of the button, its middle 0.7 pt below the digits'), so a
+    /// (measured at 2x in the button: the middle of pause.circle.fill's ink is 0.7 pt below the digits'), so a
     /// paused, muted or warning symbol would otherwise sit low next to the time. Measured the same way after the
     /// move: every symbol's middle is within 0.2 px of the digits'.
     private static func onDigitsLine(_ symbol: NSImage) -> NSImage {
