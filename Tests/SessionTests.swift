@@ -431,6 +431,28 @@ func sessionTests() async {
         starting.abandonStart()
     }
 
+    await test("session: pausing and resuming neither moves the timer nor the automatic stop") {
+        let rig = try Rig("session-pause-time")
+        let (session, _, writer) = try rig.start(autoStop: 1)
+        expectEqual(session.elapsed(), 0, "no time before the writer's session starts")
+        writer.events.sessionStarted()
+        expect(await rig.wait { session.elapsed() > 0.2 }, "the timer runs from the session's start")
+        rig.controller.togglePause()
+        let paused = session.elapsed()
+        await rig.settle()
+        expectEqual(session.elapsed(), paused, "it stands still while paused")
+        expect(!session.autoStopIsDue(), "no automatic stop while paused")
+        rig.controller.togglePause()
+        expectClose(session.elapsed(), paused, within: 0.05, "and goes on from where it stood, with nothing added")
+        for _ in 0..<5 {
+            rig.controller.togglePause()
+            rig.controller.togglePause()
+        }
+        expectClose(session.elapsed(), paused, within: 0.05, "however often it is paused")
+        rig.controller.stop()
+        expect(await rig.idle(), "idle")
+    }
+
     await test("session: the microphone is muted for one recording, and only one that has a microphone") {
         let rig = try Rig("session-mute")
         expect(!rig.controller.setMicrophoneMuted(true), "nothing to mute when idle")

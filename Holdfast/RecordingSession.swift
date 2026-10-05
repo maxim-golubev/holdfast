@@ -107,8 +107,9 @@ final class RecordingSession: @unchecked Sendable {
     @MainActor private(set) var isMicrophoneMuted = false
     @MainActor private(set) var health = Health()
     @MainActor var isMagnifierEnabled = false
-    /// The wall clock of the status-bar timer and of the automatic stop. It gates nothing.
+    /// The wall clock of the status-bar timer and of the automatic stop, moved on by the time spent paused. It gates nothing.
     @MainActor private var startTime: Date?
+    /// While paused: the time recorded up to the pause
     @MainActor private var timePassed: TimeInterval = 0
     /// A stop that was asked for while the capture was still starting, with its reason
     @MainActor private var pendingStop: PendingStop?
@@ -274,8 +275,9 @@ final class RecordingSession: @unchecked Sendable {
             return writer.togglePause()
         }
         guard let paused = paused else { return }
+        // The writer takes the pause out of the file exactly, so the timer stands still and goes on from there
+        if paused { timePassed = elapsed() } else { startTime = Date.now - timePassed }
         isPaused = paused
-        if !paused { startTime = Date.now.addingTimeInterval(-1) - timePassed }
         statusChanged(self)
     }
 
@@ -320,19 +322,26 @@ final class RecordingSession: @unchecked Sendable {
         }
     }
 
+    /// The seconds recorded so far as the status item counts them: from the writer's session start, without the
+    /// time spent paused
+    @MainActor
+    func elapsed() -> TimeInterval {
+        if isPaused { return timePassed }
+        return startTime.map { Date.now.timeIntervalSince($0) } ?? 0
+    }
+
     /// "07:05" up to an hour, "1:07:05" from then on
     @MainActor
     func lengthText() -> String {
-        if !isPaused { timePassed = Date.now.timeIntervalSince(startTime ?? Date.now) }
-        return Timeline.lengthText(timePassed)
+        return Timeline.lengthText(elapsed())
     }
 
     /// Whether the recording has run for its `autoStop` minutes: the time the status item shows, so never while
     /// paused, and time spent paused does not count
     @MainActor
     func autoStopIsDue() -> Bool {
-        guard autoStop != 0, !isPaused, let startTime = startTime else { return false }
-        return Date.now.timeIntervalSince(startTime) / 60 >= Double(autoStop)
+        guard autoStop != 0, !isPaused, startTime != nil else { return false }
+        return elapsed() / 60 >= Double(autoStop)
     }
 
     /// From the audio mix, while the recording is being finalized
