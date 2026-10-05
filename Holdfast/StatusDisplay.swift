@@ -119,21 +119,29 @@ struct StatusDisplay: Equatable {
 }
 
 extension StatusDisplay.Kind {
-    /// The SF Symbol of the state
-    var symbol: String {
+    /// What the status item draws for a state
+    enum Symbol: Hashable {
+        /// The SF Symbol of that name
+        case system(String)
+        /// A ring with a dot, which the status item draws itself to the pixel
+        case recordDot
+    }
+
+    var symbol: Symbol {
         switch self {
-        case .idle: return "dot.circle.and.hand.point.up.left.fill"
-        case .starting: return "circle.dotted"
-        case .recording: return "record.circle"
-        case .muted: return "mic.slash.fill"
-        case .paused: return "pause.circle.fill"
-        case .warning: return "exclamationmark.triangle"
-        case .saving: return "square.and.arrow.down"
-        case .recovering: return "arrow.triangle.2.circlepath"
-        case .exporting: return "square.and.arrow.up"
+        case .idle: return .system("dot.circle.and.hand.point.up.left.fill")
+        case .starting: return .system("circle.dotted")
+        case .recording: return .recordDot
+        case .muted: return .system("mic.slash.fill")
+        case .paused: return .system("pause.circle.fill")
+        case .warning: return .system("exclamationmark.triangle")
+        case .saving: return .system("square.and.arrow.down")
+        case .recovering: return .system("arrow.triangle.2.circlepath")
+        case .exporting: return .system("square.and.arrow.up")
         }
     }
 
+    /// The colour the symbol is drawn in
     var tint: StatusDisplay.Tint {
         switch self {
         case .recording, .muted: return .red
@@ -149,6 +157,14 @@ extension StatusDisplay.Kind {
         case .recording, .muted, .paused, .warning: return true
         case .idle, .starting, .saving, .recovering, .exporting: return false
         }
+    }
+
+    /// Whether the status item keeps the width it had for `previous` when it changes to this state: only between
+    /// the states of a running recording, where the time only grows. Every other state has one title of its own and
+    /// gets the width it needs, so the time of a long recording leaves no space after "Saving", nor "Starting" after
+    /// the time.
+    func keepsWidth(after previous: StatusDisplay.Kind?) -> Bool {
+        return isRunningRecording && previous?.isRunningRecording == true
     }
 }
 

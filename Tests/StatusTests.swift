@@ -9,9 +9,10 @@ import Foundation
 @MainActor
 func statusTests() async {
     typealias Input = StatusDisplay.Input
+    typealias Kind = StatusDisplay.Kind
 
     await test("status: every state has a symbol of its own that this system has") {
-        let symbols = StatusDisplay.Kind.allCases.map { kind -> String in
+        let symbols = Kind.allCases.map { kind -> Kind.Symbol in
             // One input that leads to each kind
             var input = Input()
             switch kind {
@@ -27,13 +28,16 @@ func statusTests() async {
             }
             let display = StatusDisplay(input)
             expect(display.kind == kind, "\(kind) is shown as \(display.kind)")
-            expect(NSImage(systemSymbolName: display.kind.symbol, accessibilityDescription: nil) != nil, "no symbol named \(display.kind.symbol)")
+            if case .system(let name) = display.kind.symbol {
+                expect(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil, "no symbol named \(name)")
+            }
             expect(!display.line.isEmpty && !display.detail.isEmpty, "\(kind) has a status line and a tooltip")
             expect(display.accessibilityLabel.contains(display.line), "\(kind) is spoken with its status line")
             return display.kind.symbol
         }
-        expectEqual(Set(symbols).count, StatusDisplay.Kind.allCases.count, "no two states differ by colour alone")
-        expectEqual(StatusDisplay.Kind.allCases.filter { $0.isRunningRecording }, [.recording, .muted, .paused, .warning], "the states a running recording goes between")
+        expectEqual(Set(symbols).count, Kind.allCases.count, "no two states differ by colour alone")
+        expectEqual(Kind.allCases.filter { $0.symbol == .recordDot }, [.recording], "the drawn record dot is a running recording's")
+        expectEqual(Kind.allCases.filter { $0.isRunningRecording }, [.recording, .muted, .paused, .warning], "the states a running recording goes between")
         let lines = Set([Input(state: .recording), Input(state: .recording, isPaused: true), Input(state: .stopping), Input(state: .starting), Input()].map { StatusDisplay($0).line })
         expectEqual(lines.count, 5, "nor by their words")
     }
@@ -44,7 +48,7 @@ func statusTests() async {
         expectEqual(display.kind, .recording, "recording")
         expectEqual(display.title, "12:34", "the elapsed time next to the symbol")
         expectEqual(display.line, "Recording — microphone OK", "status line")
-        expect(display.kind.tint == .red, "the red dot")
+        expect(display.kind.symbol == .recordDot && display.kind.tint == .red, "the red dot")
 
         input.length = "1:07:05"
         expectEqual(StatusDisplay(input).title, "1:07:05", "hours from the first hour")
@@ -57,7 +61,7 @@ func statusTests() async {
         input.isMicrophoneMuted = true
         display = StatusDisplay(input)
         expectEqual(display.kind, .muted, "muted")
-        expectEqual(display.kind.symbol, "mic.slash.fill", "the muted microphone")
+        expectEqual(display.kind.symbol, .system("mic.slash.fill"), "the muted microphone")
         expectEqual(display.line, "Recording — microphone muted", "status line when muted")
         expectEqual(display.title, "1:07:05", "the time goes on")
 
@@ -104,6 +108,17 @@ func statusTests() async {
         display = StatusDisplay(Input())
         expectEqual(display.kind, .idle, "idle")
         expectEqual(display.title, "", "only the symbol when idle")
+    }
+
+    await test("status: the item keeps its width only while a recording runs") {
+        for kind in Kind.allCases where kind.isRunningRecording {
+            expect(Kind.allCases.filter { $0.isRunningRecording }.allSatisfy { kind.keepsWidth(after: $0) }, "\(kind) after a running recording's state: the time only grows")
+            expect(!kind.keepsWidth(after: .starting), "\(kind) after Starting, which is wider than the first minutes")
+            expect(!kind.keepsWidth(after: nil), "\(kind) shown first")
+            expect(!Kind.saving.keepsWidth(after: kind), "Saving after \(kind): the time of a long recording would leave space after it")
+        }
+        expect(!Kind.recovering.keepsWidth(after: .saving), "a state with a title of its own has its own width")
+        expect(!Kind.starting.keepsWidth(after: .recovering), "a recording starts with its own width")
     }
 
     await test("status: the recorder's own state is what is shown") {
