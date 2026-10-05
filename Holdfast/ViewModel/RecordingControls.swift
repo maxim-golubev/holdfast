@@ -274,7 +274,7 @@ struct AutoStopButton: View {
         .controlSize(.small)
         .help("Stop the recording automatically after a number of minutes")
         .accessibilityLabel("Stop Automatically")
-        .accessibilityValue(minutes > 0 ? String(format: "After %d minutes", minutes) : "Off")
+        .accessibilityValue(minutes == 0 ? "Off" : minutes == 1 ? "After 1 minute" : String(format: "After %d minutes", minutes))
         .popover(isPresented: $isShowing, arrowEdge: .bottom) {
             HStack {
                 Text("Stop after")

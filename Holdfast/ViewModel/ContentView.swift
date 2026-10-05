@@ -110,7 +110,7 @@ struct CountdownView: View {
                 .font(.system(size: 72))
                 .monospacedDigit()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityLabel("Recording starts in \(countdownValue) seconds")
+                .accessibilityLabel(countdownValue == 1 ? "Recording starts in 1 second" : "Recording starts in \(countdownValue) seconds")
             Button {
                 AppDelegate.shared.cancelCountdown()
             } label: {
