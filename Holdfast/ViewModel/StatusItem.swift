@@ -41,7 +41,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var shown: StatusDisplay?
     private var menuIsOpen = false
     private var menuLayout: Layout?
-    /// The widest the item has been since it last was idle or starting
+    /// The widest the item has been since it last was idle or starting. During a recording only the time makes it
+    /// wider (the first hour adds digits): its symbols have one width.
     private var heldLength: CGFloat = 0
 
     private var recorder: RecorderController { RecorderController.shared }
@@ -68,7 +69,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if item.isVisible != visible { item.isVisible = visible }
         runTimer(recorder.streamType != nil)
         if display != shown, let button = item.button {
-            if display.kind != shown?.kind { button.image = StatusItemController.image(for: display) }
+            if display.kind != shown?.kind { button.image = StatusItemController.image(for: display.kind) }
             // A symbol this system does not have must not leave an empty, unclickable item
             let title = button.image == nil && display.title.isEmpty ? "Holdfast" : display.title
             let text = StatusItemController.attributed(title)
@@ -132,21 +133,48 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private static let titleBaselineOffset: CGFloat = -0.5
     private static let digitsAboveCentre: CGFloat = 0.25
 
-    private static func image(for display: StatusDisplay) -> NSImage? {
-        if display.kind == .recording { return recordGlyph }
-        guard let plain = NSImage(systemSymbolName: display.symbol, accessibilityDescription: nil) else { return nil }
+    /// The symbol of a state. Those of a running recording share one width (the widest of them) with the symbol in
+    /// the middle, so pausing, muting or a warning neither changes the item's width nor moves the time, and no space
+    /// is left after the time when a wider symbol has been shown.
+    private static func image(for kind: StatusDisplay.Kind) -> NSImage? {
+        guard let image = symbolImage(for: kind) else { return nil }
+        return kind.isRunningRecording ? centred(image, width: runningRecordingSymbolWidth) : image
+    }
+
+    private static let runningRecordingSymbolWidth: CGFloat = StatusDisplay.Kind.allCases
+        .filter { $0.isRunningRecording }
+        .compactMap { symbolImage(for: $0)?.size.width }
+        .max() ?? 0
+
+    private static func symbolImage(for kind: StatusDisplay.Kind) -> NSImage? {
+        if kind == .recording { return recordGlyph }
+        guard let plain = NSImage(systemSymbolName: kind.symbol, accessibilityDescription: nil) else { return nil }
         // Drawn at the size and weight of the text next to it
         let sized = NSImage.SymbolConfiguration(pointSize: titleFont.pointSize, weight: .medium, scale: .medium)
         var symbol = plain.withSymbolConfiguration(sized) ?? plain
-        switch display.tint {
+        switch kind.tint {
         case .standard:
             symbol.isTemplate = true
         case .red, .orange:
             // One colour for every layer of the symbol: a hierarchy of it turns parts of the symbol pale
-            let colour: NSColor = display.tint == .red ? .systemRed : .systemOrange
+            let colour: NSColor = kind.tint == .red ? .systemRed : .systemOrange
             symbol = symbol.withSymbolConfiguration(sized.applying(NSImage.SymbolConfiguration(paletteColors: [colour]))) ?? symbol
         }
         return onDigitsLine(symbol)
+    }
+
+    /// `image` in the middle of a box `width` wide, moved by whole points: what is drawn on the pixel grid (the record
+    /// symbol) stays on it
+    private static func centred(_ image: NSImage, width: CGFloat) -> NSImage {
+        guard width > image.size.width else { return image }
+        let x = ((width - image.size.width) / 2).rounded(.down)
+        let boxed = NSImage(size: NSSize(width: width, height: image.size.height), flipped: false) { _ in
+            image.draw(in: NSRect(origin: NSPoint(x: x, y: 0), size: image.size))
+            return true
+        }
+        boxed.isTemplate = image.isTemplate
+        boxed.accessibilityDescription = image.accessibilityDescription
+        return boxed
     }
 
     /// The symbol in a box of its own size, moved up or down so that the middle of what it draws is on the middle of

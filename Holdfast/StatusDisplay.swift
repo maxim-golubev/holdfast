@@ -110,9 +110,18 @@ struct StatusDisplay: Equatable {
         }
     }
 
+    /// What VoiceOver says of the button; the title next to the symbol is read after it
+    var accessibilityLabel: String { "Holdfast: " + line }
+
+    private static func percent(_ text: String, _ fraction: Double) -> String {
+        return text + " — \(Int(min(1, max(0, fraction)) * 100))%"
+    }
+}
+
+extension StatusDisplay.Kind {
     /// The SF Symbol of the state
     var symbol: String {
-        switch kind {
+        switch self {
         case .idle: return "dot.circle.and.hand.point.up.left.fill"
         case .starting: return "circle.dotted"
         case .recording: return "record.circle"
@@ -125,19 +134,21 @@ struct StatusDisplay: Equatable {
         }
     }
 
-    var tint: Tint {
-        switch kind {
+    var tint: StatusDisplay.Tint {
+        switch self {
         case .recording, .muted: return .red
         case .warning: return .orange
         case .idle, .starting, .paused, .saving, .recovering, .exporting: return .standard
         }
     }
 
-    /// What VoiceOver says of the button; the title next to the symbol is read after it
-    var accessibilityLabel: String { "Holdfast: " + line }
-
-    private static func percent(_ text: String, _ fraction: Double) -> String {
-        return text + " — \(Int(min(1, max(0, fraction)) * 100))%"
+    /// The states of a recording that runs, between which it goes back and forth: the status item gives their
+    /// symbols one width, so that its width and the place of the time do not change between them
+    var isRunningRecording: Bool {
+        switch self {
+        case .recording, .muted, .paused, .warning: return true
+        case .idle, .starting, .saving, .recovering, .exporting: return false
+        }
     }
 }
 

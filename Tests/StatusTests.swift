@@ -27,12 +27,13 @@ func statusTests() async {
             }
             let display = StatusDisplay(input)
             expect(display.kind == kind, "\(kind) is shown as \(display.kind)")
-            expect(NSImage(systemSymbolName: display.symbol, accessibilityDescription: nil) != nil, "no symbol named \(display.symbol)")
+            expect(NSImage(systemSymbolName: display.kind.symbol, accessibilityDescription: nil) != nil, "no symbol named \(display.kind.symbol)")
             expect(!display.line.isEmpty && !display.detail.isEmpty, "\(kind) has a status line and a tooltip")
             expect(display.accessibilityLabel.contains(display.line), "\(kind) is spoken with its status line")
-            return display.symbol
+            return display.kind.symbol
         }
         expectEqual(Set(symbols).count, StatusDisplay.Kind.allCases.count, "no two states differ by colour alone")
+        expectEqual(StatusDisplay.Kind.allCases.filter { $0.isRunningRecording }, [.recording, .muted, .paused, .warning], "the states a running recording goes between")
         let lines = Set([Input(state: .recording), Input(state: .recording, isPaused: true), Input(state: .stopping), Input(state: .starting), Input()].map { StatusDisplay($0).line })
         expectEqual(lines.count, 5, "nor by their words")
     }
@@ -43,7 +44,7 @@ func statusTests() async {
         expectEqual(display.kind, .recording, "recording")
         expectEqual(display.title, "12:34", "the elapsed time next to the symbol")
         expectEqual(display.line, "Recording — microphone OK", "status line")
-        expect(display.tint == .red, "the red dot")
+        expect(display.kind.tint == .red, "the red dot")
 
         input.length = "1:07:05"
         expectEqual(StatusDisplay(input).title, "1:07:05", "hours from the first hour")
@@ -56,14 +57,14 @@ func statusTests() async {
         input.isMicrophoneMuted = true
         display = StatusDisplay(input)
         expectEqual(display.kind, .muted, "muted")
-        expectEqual(display.symbol, "mic.slash.fill", "the muted microphone")
+        expectEqual(display.kind.symbol, "mic.slash.fill", "the muted microphone")
         expectEqual(display.line, "Recording — microphone muted", "status line when muted")
         expectEqual(display.title, "1:07:05", "the time goes on")
 
         input.warning = "System audio is not being recorded"
         display = StatusDisplay(input)
         expectEqual(display.kind, .warning, "a warning comes before the mute")
-        expect(display.tint == .orange, "orange")
+        expect(display.kind.tint == .orange, "orange")
         expectEqual(display.line, "System audio is not being recorded — microphone muted", "the warning is the status line, and the mute is not forgotten")
         expectEqual(display.detail, display.line, "and the tooltip")
         expectEqual(display.title, "1:07:05", "with the time")
@@ -75,7 +76,7 @@ func statusTests() async {
         display = StatusDisplay(input)
         expectEqual(display.kind, .paused, "paused comes first: nothing is being recorded on purpose")
         expectEqual(display.line, "Paused — microphone OK", "status line when paused")
-        expect(display.tint == .standard, "not the colour of a running recording")
+        expect(display.kind.tint == .standard, "not the colour of a running recording")
     }
 
     await test("status: saving, finishing and recovering show how far they are") {
