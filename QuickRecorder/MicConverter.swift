@@ -55,6 +55,37 @@ enum AudioSilence {
     }
 }
 
+/// Appends one line per event to ~/Library/Logs/QuickRecorder/recordings.log, so what happened to a recording's
+/// tracks can be read afterwards. Also printed.
+enum RecLog {
+    private static let queue = DispatchQueue(label: "reclog")
+    private static let url: URL? = {
+        guard let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs/QuickRecorder", isDirectory: true) else { return nil }
+        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        return logs.appendingPathComponent("recordings.log")
+    }()
+    private static let stamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    static func write(_ message: String) {
+        print(message)
+        queue.async {
+            guard let url = url, let data = "\(stamp.string(from: Date())) \(message)\n".data(using: .utf8) else { return }
+            if let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: url)
+            }
+        }
+    }
+}
+
 /// Turns the microphone buffers ScreenCaptureKit delivers into one fixed format on a continuous timeline.
 ///
 /// The buffers arrive in the device's own format (24 kHz mono for AirPods, for example), and that format changes when the
@@ -89,6 +120,25 @@ final class MicConverter {
     private var droppedSeconds: Double = 0
     /// How much is dropped that way before the microphone's timeline is taken to have moved
     private let longestDrop: Double = 1
+
+    /// What happened to the microphone during this recording, for the log
+    private(set) var buffersIn = 0
+    private(set) var buffersWritten = 0
+    private(set) var buffersDropped = 0
+    private(set) var buffersFailed = 0
+    private(set) var buffersAllZero = 0
+    private(set) var framesWritten: Int64 = 0
+    private(set) var silenceFrames: Int64 = 0
+    private(set) var formatChanges = 0
+    private(set) var loudestPeak: Float = 0
+
+    var summary: String {
+        let rate = Double(MicConverter.sampleRate)
+        let format = inputFormat.map { "\(Int($0.sampleRate)) Hz x\($0.channelCount)" } ?? "none"
+        return String(format: "microphone: %d buffers in, %d written (%.1f s of audio), %d dropped, %d failed, %d all-zero, %.1f s of silence filled, %d format changes, loudest peak %.1f dBFS, last device format %@",
+                      buffersIn, buffersWritten, Double(framesWritten) / rate, buffersDropped, buffersFailed, buffersAllZero,
+                      Double(silenceFrames) / rate, formatChanges, loudestPeak > 0 ? 20 * log10(Double(loudestPeak)) : -180, format)
+    }
 
     init?() {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(MicConverter.sampleRate), channels: 2, interleaved: true) else { return nil }
@@ -128,8 +178,9 @@ final class MicConverter {
     /// lag but recorded. The shift is given back as soon as the buffers are ahead of the track again.
     @discardableResult
     func convert(_ sampleBuffer: CMSampleBuffer, at pts: CMTime, append: (CMSampleBuffer) -> Bool) -> Bool {
+        buffersIn += 1
         var start = CMTimeConvertScale(CMTimeAdd(pts, shift), timescale: MicConverter.sampleRate, method: .default)
-        guard start.isValid else { return false }
+        guard start.isValid else { buffersFailed += 1; return false }
         // Frames to leave out at the front of this buffer, so that what follows starts exactly at the end of the track
         var skip: Int64 = 0
         if nextPTS.isValid {
@@ -148,10 +199,10 @@ final class MicConverter {
             } else if missing < -tolerance {
                 let length = CMTimeGetSeconds(sampleBuffer.duration)
                 droppedSeconds += length.isFinite && length > 0 ? length : 0.02
-                guard droppedSeconds > longestDrop else { return false }
+                guard droppedSeconds > longestDrop else { buffersDropped += 1; return false }
                 let lag = CMTimeSubtract(nextPTS, start)
                 shift = CMTimeAdd(shift, lag)
-                print("Microphone buffers are \(CMTimeGetSeconds(lag)) s behind the recording; they are recorded that much late from here on")
+                RecLog.write("Microphone buffers are \(CMTimeGetSeconds(lag)) s behind the recording; they are recorded that much late from here on")
             } else if aligning, missing > 0 {
                 guard writeSilence(frames: missing, append: append) else { return false }
             } else if aligning, missing < 0 {
@@ -160,13 +211,15 @@ final class MicConverter {
         } else {
             nextPTS = start
         }
-        guard var converted = resample(sampleBuffer) else { return false }
+        guard var converted = resample(sampleBuffer) else { buffersFailed += 1; return false }
         if skip > 0 {
             // A buffer that ends before the end of the track has nothing to write; the next one is tried the same way
-            guard let rest = MicConverter.dropping(skip, from: converted) else { return false }
+            guard let rest = MicConverter.dropping(skip, from: converted) else { buffersDropped += 1; return false }
             converted = rest
         }
-        guard let buffer = makeSampleBuffer(from: converted), append(buffer) else { return false }
+        guard let buffer = makeSampleBuffer(from: converted), append(buffer) else { buffersFailed += 1; return false }
+        buffersWritten += 1
+        framesWritten += Int64(converted.frameLength)
         aligning = false
         droppedSeconds = 0
         advance(by: Int64(converted.frameLength))
@@ -176,6 +229,8 @@ final class MicConverter {
             vDSP_maxmgv(samples[0], 1, &peak, vDSP_Length(converted.frameLength) * vDSP_Length(outputFormat.channelCount))
         }
         lastPeak = peak
+        if peak == 0 { buffersAllZero += 1 }
+        loudestPeak = max(loudestPeak, peak)
         return true
     }
 
@@ -211,6 +266,7 @@ final class MicConverter {
         while left > 0 {
             let count = min(left, silenceChunk)
             guard let silent = silence(frames: count), append(silent) else { return false }
+            silenceFrames += count
             advance(by: count)
             left -= count
         }
@@ -226,7 +282,10 @@ final class MicConverter {
         let format = AVAudioFormat(cmAudioFormatDescription: description)
         guard format.sampleRate > 0, format.channelCount > 0 else { return nil }
         if converter == nil || inputFormat != format {
-            if let old = inputFormat { print("Microphone format changed from \(old) to \(format)") }
+            if let old = inputFormat {
+                formatChanges += 1
+                RecLog.write("Microphone format changed from \(old) to \(format)")
+            }
             converter = AVAudioConverter(from: format, to: outputFormat)
             inputFormat = format
         }
@@ -249,7 +308,7 @@ final class MicConverter {
                 return input
             }
             if status == .error {
-                print("Microphone conversion failed: \(String(describing: error))")
+                RecLog.write("Microphone conversion failed: \(String(describing: error))")
                 return nil
             }
             return output

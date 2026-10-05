@@ -888,6 +888,7 @@ class SCContext {
             }
             input.markAsFinished()
         }
+        if let converter = micConverter { RecLog.write(converter.summary) }
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
         audioFile = nil // close audio file

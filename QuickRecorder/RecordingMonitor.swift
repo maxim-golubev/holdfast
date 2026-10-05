@@ -194,10 +194,10 @@ enum RecordingMonitor {
     /// One notification when a problem starts and one when it is over
     private static func report(_ problem: String?, was previous: String?, title: String, backTitle: String, backBody: String) {
         if let problem = problem, previous == nil {
-            print("\(title): \(problem)")
+            RecLog.write("\(title): \(problem)")
             SCContext.showNotification(title: title, body: problem, id: "quickrecorder.watchdog.\(UUID().uuidString)")
         } else if problem == nil, previous != nil {
-            print(backTitle)
+            RecLog.write(backTitle)
             SCContext.showNotification(title: backTitle, body: backBody, id: "quickrecorder.watchdog.\(UUID().uuidString)")
         }
     }
@@ -350,7 +350,7 @@ enum MicDevices {
             return devices.first(where: { $0.uniqueID == id })?.localizedName ?? id
         }
         let wantedName = name(wanted)
-        print("Microphone switch: from \"\(name(previous))\" to \"\(wantedName)\" (\(selection == "default" ? "the default input changed" : (selectedIsPresent ? "the chosen microphone is back" : "the chosen microphone is gone")))")
+        RecLog.write("Microphone switch: from \"\(name(previous))\" to \"\(wantedName)\" (\(selection == "default" ? "the default input changed" : (selectedIsPresent ? "the chosen microphone is back" : "the chosen microphone is gone")))")
         // A default input that is not among the capture devices is left to the system to pick
         let previousCaptureID = conf.microphoneCaptureDeviceID
         conf.microphoneCaptureDeviceID = devices.contains(where: { $0.uniqueID == wanted }) ? wanted : nil
@@ -361,10 +361,10 @@ enum MicDevices {
         }
         stream.updateConfiguration(conf) { error in
             guard let error = error else {
-                print("Microphone switch: now capturing \"\(wantedName)\"")
+                RecLog.write("Microphone switch: now capturing \"\(wantedName)\"")
                 return
             }
-            print("Microphone switch to \"\(wantedName)\" failed: \(error.localizedDescription)")
+            RecLog.write("Microphone switch to \"\(wantedName)\" failed: \(error.localizedDescription)")
             DispatchQueue.main.async {
                 // Back to what the stream is still capturing, then a few more tries; after those, at the next device change
                 guard SCContext.stream === stream, SCContext.micActiveDeviceID == wanted else { return }
