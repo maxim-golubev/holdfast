@@ -109,6 +109,45 @@ enum TestMovie {
         guard writer.status == .completed else { throw writer.error ?? TestError("the movie was not written") }
     }
 
+    /// Writes an AAC audio file, as an audio-only recording is written: `seconds` of a 440 Hz tone as loud as
+    /// `loudness` says
+    @discardableResult
+    static func writeAudio(to url: URL, seconds: Double, loudness: Loudness) throws -> URL {
+        let file = try AVAudioFile(forWriting: url, settings: aac)
+        let total = Int(seconds * 48000)
+        let pcm = try require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4800), "buffer")
+        let data = try require(pcm.floatChannelData, "float data")
+        var position = 0
+        while position < total {
+            let count = min(4800, total - position)
+            pcm.frameLength = AVAudioFrameCount(count)
+            for offset in 0..<count {
+                let at = Double(position + offset) / 48000
+                let value = loudness(at) * Float(sin(2 * Double.pi * 440 * at))
+                for channel in 0..<Int(file.processingFormat.channelCount) { data[channel][offset] = value }
+            }
+            try file.write(from: pcm)
+            position += count
+        }
+        return url
+    }
+
+    /// RMS level of an audio file from `start` to `end` seconds, 1 being full scale
+    static func level(of url: URL, from start: Double, to end: Double) throws -> Double {
+        let file = try AVAudioFile(forReading: url)
+        let rate = file.processingFormat.sampleRate
+        file.framePosition = AVAudioFramePosition(start * rate)
+        let count = AVAudioFrameCount((end - start) * rate)
+        let pcm = try require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count), "buffer")
+        try file.read(into: pcm, frameCount: count)
+        let data = try require(pcm.floatChannelData, "float data")
+        var sum = 0.0
+        for channel in 0..<Int(pcm.format.channelCount) {
+            for frame in 0..<Int(pcm.frameLength) { sum += Double(data[channel][frame]) * Double(data[channel][frame]) }
+        }
+        return pcm.frameLength > 0 ? (sum / Double(Int(pcm.frameLength) * Int(pcm.format.channelCount))).squareRoot() : 0
+    }
+
     static func seconds(of url: URL) async throws -> Double {
         return CMTimeGetSeconds(try await AVURLAsset(url: url).load(.duration))
     }
@@ -222,18 +261,8 @@ func mixerTests() async {
 
     await test("Conversion: a converted file is accepted only when it opens and is as long as the recording") {
         let folder = try Suite.folder("conversion")
-        /// An AAC file of `seconds` of tone, as an audio-only recording is written
         func audioFile(_ name: String, seconds: Double) throws -> URL {
-            let url = folder.appendingPathComponent(name)
-            let file = try AVAudioFile(forWriting: url, settings: TestMovie.aac)
-            let pcm = try require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48000), "buffer")
-            pcm.frameLength = 48000
-            let data = try require(pcm.floatChannelData, "float data")
-            for channel in 0..<Int(file.processingFormat.channelCount) {
-                for frame in 0..<48000 { data[channel][frame] = 0.3 * Float(sin(2 * Double.pi * 440 * Double(frame) / 48000)) }
-            }
-            for _ in 0..<Int(seconds) { try file.write(from: pcm) }
-            return url
+            return try TestMovie.writeAudio(to: folder.appendingPathComponent(name), seconds: seconds) { _ in 0.3 }
         }
         let source = try audioFile("recording.m4a", seconds: 5)
         try RecordingMixer.verifyConversion(source: source, output: try audioFile("complete.m4a", seconds: 5))
@@ -246,6 +275,52 @@ func mixerTests() async {
         try Data(repeating: 7, count: 4096).write(to: garbage)
         await expectThrows("a file that does not open") { try RecordingMixer.verifyConversion(source: source, output: garbage) }
         await expectThrows("a file that was not written") { try RecordingMixer.verifyConversion(source: source, output: folder.appendingPathComponent("missing.mp3")) }
+    }
+
+    // An audio-only recording with a microphone: system audio has a tone from 2 to 4 s of its 6, the microphone from
+    // 1 to 1.5 s and from 5.5 to 6.3 s of its 6.5, past the end of the system audio
+    let packageSystem: Loudness = { $0 >= 2 && $0 < 4 ? 0.3 : 0 }
+    let packageMicrophone: Loudness = { ($0 >= 1 && $0 < 1.5) || ($0 >= 5.5 && $0 < 6.3) ? 0.3 : 0 }
+
+    await test("Package mix: both files are mixed in step, at their volumes, to the end of the longer one") {
+        let folder = try Suite.folder("package mix")
+        let system = try TestMovie.writeAudio(to: folder.appendingPathComponent("sys.m4a"), seconds: 6, loudness: packageSystem)
+        let microphone = try TestMovie.writeAudio(to: folder.appendingPathComponent("mic.m4a"), seconds: 6.5, loudness: packageMicrophone)
+        let output = folder.appendingPathComponent("mix.m4a")
+        try RecordingMixer.mixPackage(system: system, microphone: microphone, volumes: (1, 0.5), to: output, settings: TestMovie.aac)
+        let file = try AVAudioFile(forReading: output)
+        expectClose(Double(file.length) / file.processingFormat.sampleRate, 6.5, within: 0.05, "as long as the longer file")
+        // A tone of amplitude 0.3 has an RMS level of 0.21, at half the volume 0.11
+        func level(_ start: Double, _ end: Double) throws -> Double { try TestMovie.level(of: output, from: start, to: end) }
+        expectClose(try level(0, 0.95), 0, within: 0.005, "silence before the first tone")
+        expectClose(try level(1.05, 1.45), 0.106, within: 0.02, "the microphone's first tone, at its volume, where it is in its file")
+        expectClose(try level(1.55, 1.95), 0, within: 0.005, "silence after it")
+        expectClose(try level(2.05, 3.95), 0.212, within: 0.02, "system audio's tone, where it is in its file")
+        expectClose(try level(4.05, 5.45), 0, within: 0.005, "silence after it")
+        expectClose(try level(5.55, 6.25), 0.106, within: 0.02, "the microphone past the end of the system audio")
+        expectClose(try level(6.35, 6.5), 0, within: 0.005, "and nothing after the end of the microphone's tone")
+        expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("mix.mixing.m4a").path), "nothing else is written")
+    }
+
+    await test("Package mix: a mix out of step with its files is rejected, one in step is not") {
+        let folder = try Suite.folder("package timing")
+        let system = try TestMovie.writeAudio(to: folder.appendingPathComponent("sys.m4a"), seconds: 6, loudness: packageSystem)
+        let microphone = try TestMovie.writeAudio(to: folder.appendingPathComponent("mic.m4a"), seconds: 6.5, loudness: packageMicrophone)
+        let sources = [(url: system, volume: Float(1)), (url: microphone, volume: Float(1))]
+        let together: Loudness = { max(packageSystem($0), packageMicrophone($0)) }
+        let inStep = try TestMovie.writeAudio(to: folder.appendingPathComponent("in step.m4a"), seconds: 6.5, loudness: together)
+        try RecordingMixer.checkTiming(of: inStep, sources: sources)
+        // What a mix that began 1.15 s into its files had: their sound earlier by that, and silence at the end
+        let late = try TestMovie.writeAudio(to: folder.appendingPathComponent("late.m4a"), seconds: 6.5) { $0 < 5.35 ? together($0 + 1.15) : 0 }
+        let message = await expectThrows("a mix that began late into its files") { try RecordingMixer.checkTiming(of: late, sources: sources) }
+        expect(message.contains("1.15"), "the reason gives the offset: \(message)")
+        let early = try TestMovie.writeAudio(to: folder.appendingPathComponent("early.m4a"), seconds: 6.5) { $0 >= 0.5 ? together($0 - 0.5) : 0 }
+        await expectThrows("a mix that began before its files") { try RecordingMixer.checkTiming(of: early, sources: sources) }
+        // Nothing but silence, or a sound without changes: nothing to tell from, so no failure
+        let quiet = try TestMovie.writeAudio(to: folder.appendingPathComponent("quiet.m4a"), seconds: 6) { _ in 0 }
+        try RecordingMixer.checkTiming(of: quiet, sources: [(url: quiet, volume: 1), (url: quiet, volume: 1)])
+        let steady = try TestMovie.writeAudio(to: folder.appendingPathComponent("steady.m4a"), seconds: 6) { _ in 0.3 }
+        try RecordingMixer.checkTiming(of: steady, sources: [(url: steady, volume: 1), (url: quiet, volume: 1)])
     }
 
     await test("Leftovers: a recording is inspected by opening it") {

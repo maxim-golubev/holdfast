@@ -79,7 +79,7 @@ enum RecordingSaver {
                 UserNotice.reportFailure(title: failureTitle, message: body)
             } else {
                 // The package is only read now that the microphone file is complete
-                await completion { done in finishAudioRecording(recording, at: kept, earlyReason: earlyReason, completion: done) }
+                await finishAudioRecording(recording, at: kept, earlyReason: earlyReason)
             }
         }
         SleepPreventer.shared.allowSleep()
@@ -149,55 +149,36 @@ enum RecordingSaver {
     }
 
     /// What follows an audio-only recording once its files are closed and `file` (the audio file or the package) has
-    /// left its temporary name: MP3 conversion, the mix of a .qma package, or just the report. `completion` is called
-    /// once, when the files are in their final state. A conversion or mix that fails leaves no partial file and is
-    /// reported with where the recording is. Main thread: it shows the preview and creates the audio player that
-    /// does the mix.
-    private static func finishAudioRecording(_ recording: RecordingContext, at file: URL, earlyReason: String?, completion: @escaping () -> Void) {
+    /// left its temporary name: MP3 conversion, the mix of a .qma package, or just the report. Returns when the files
+    /// are in their final state. A conversion or mix that fails leaves no partial file and is reported with where the
+    /// recording is.
+    private static func finishAudioRecording(_ recording: RecordingContext, at file: URL, earlyReason: String?) async {
         let early = earlyReason.map { $0 + " " } ?? ""
         let audioIcon = NSImage(named: "audioIcon")
         if recording.audioFormat == .mp3 && !recording.recordMic {
-            let source = file
-            let output = recording.finalURL
-            Task {
-                defer { completion() }
-                do {
-                    try await convertToMP3(source, to: output, bitrate: recording.audioQuality)
-                    // Only now that the MP3 is known to be complete
-                    try? fd.removeItem(at: source)
-                    present(output, image: audioIcon, recording: recording, earlyReason: earlyReason)
-                } catch {
-                    let reason = String(format: "Converting to MP3 failed: %@", error.localizedDescription)
-                    UserNotice.reportFailure(title: "MP3 Conversion Failed", message: early + reason + " " + keptNote(source, "Nothing is lost: the recording is kept as: %@"))
-                }
+            do {
+                try await convertToMP3(file, to: recording.finalURL, bitrate: recording.audioQuality)
+                // Only now that the MP3 is known to be complete
+                try? fd.removeItem(at: file)
+                present(recording.finalURL, image: audioIcon, recording: recording, earlyReason: earlyReason)
+            } catch {
+                let reason = String(format: "Converting to MP3 failed: %@", error.localizedDescription)
+                UserNotice.reportFailure(title: "MP3 Conversion Failed", message: early + reason + " " + keptNote(file, "Nothing is lost: the recording is kept as: %@"))
             }
         } else if recording.remuxAudio && recording.recordMic {
-            let package = file
-            func failed(_ reason: String) {
-                let body = early + String(format: "Mixing the audio failed: %@", reason) + " " + keptNote(package, "Nothing is lost: the recording is kept with separate audio files in: %@")
-                UserNotice.reportFailure(title: "Audio Mix Failed", message: body)
-            }
-            let player = AudioPlayerManager()
             do {
-                let info = try QmaInfo.read(package: package)
-                try player.loadAudioFiles(package: package, info: info)
+                let info = try QmaInfo.read(package: file)
                 // With the settings the recording was started with, not the current ones
-                player.saveFile(recording.finalURL, saveAsMP3: info.exportMP3, audioQuality: recording.audioQuality) { result in
-                    switch result {
-                    case .success(let file): present(file, image: audioIcon, recording: recording, earlyReason: earlyReason)
-                    case .failure(let error): failed(error.localizedDescription)
-                    }
-                    completion()
-                }
+                try await mixPackage(file, info: info, to: recording.finalURL, saveAsMP3: info.exportMP3, audioQuality: recording.audioQuality)
+                present(recording.finalURL, image: audioIcon, recording: recording, earlyReason: earlyReason)
             } catch {
-                failed(error.localizedDescription)
-                completion()
+                let body = early + String(format: "Mixing the audio failed: %@", error.localizedDescription) + " " + keptNote(file, "Nothing is lost: the recording is kept with separate audio files in: %@")
+                UserNotice.reportFailure(title: "Audio Mix Failed", message: body)
             }
         } else {
             // A package when there is a microphone, a single audio file otherwise
             let icon = recording.recordMic ? NSImage(named: "qmaIcon") : audioIcon
             present(file, image: icon, recording: recording, earlyReason: earlyReason)
-            completion()
         }
     }
 
@@ -252,6 +233,45 @@ enum RecordingSaver {
         window.backgroundColor = .clear
         window.contentView = NSHostingView(rootView: PreviewView(frame: previewImage, filePath: path))
         window.orderFront(nil)
+    }
+
+    /// Mixes the two files of the .qma `package`, at the volumes its `info` gives, into `output`: an audio file in the
+    /// package's format, or an MP3 when `saveAsMP3`; `output` has that extension. Everything is written under staging
+    /// names first (`RecordingFileStore.stagingURL`), and `output` appears only with the complete, checked file;
+    /// otherwise this throws and leaves nothing. A file at `output` is replaced only when `replacing` (a name confirmed
+    /// in the save panel). `audioQuality` is the bitrate of lossy formats in kbit/s. The package is only read.
+    nonisolated static func mixPackage(_ package: URL, info: QmaInfo, to output: URL, saveAsMP3: Bool, replacing: Bool = false, audioQuality: Int) async throws {
+        let ending = saveAsMP3 ? "mp3" : info.format
+        guard output.pathExtension.lowercased() == ending else {
+            throw RecordingError(String(format: "The name of the mixed file must end in .%@.", ending))
+        }
+        // The mix is about as large as one of the two files, and an MP3 is made from it next to it
+        guard RecordingFileStore.hasRoomForCopy(of: package, in: output.deletingLastPathComponent()) else {
+            throw RecordingError("Not enough free disk space to mix the audio tracks.")
+        }
+        let mixed = RecordingFileStore.stagingURL(for: output, ending: info.format)
+        try RecordingFileStore.checkFree(staging: mixed)
+        let settings = MovieWriter.audioSettings(format: info.encoder, quality: audioQuality, videoFormat: nil)
+        do {
+            // Rendering blocks for as long as it takes, so on a thread of its own rather than one of the pool's
+            try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    done.resume(with: Result {
+                        try RecordingMixer.mixPackage(system: info.systemAudio(in: package), microphone: info.microphone(in: package),
+                                                      volumes: (info.sysVol, info.micVol), to: mixed, settings: settings)
+                    })
+                }
+            }
+            if saveAsMP3 {
+                try await convertToMP3(mixed, to: output, bitrate: audioQuality, replacing: replacing)
+                try? fd.removeItem(at: mixed)
+            } else {
+                try RecordingFileStore.publish(mixed, as: output, replacing: replacing)
+            }
+        } catch {
+            try? fd.removeItem(at: mixed)
+            throw error
+        }
     }
 
     /// Converts the audio file `source` to MP3 at `bitrate` kbit/s into `output`. The MP3 is written under its

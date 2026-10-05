@@ -158,7 +158,7 @@ struct qmaPlayerView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { w?.titlebarAppearsTransparent = true }
         }, onWindowDeactivate: { w in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { w?.titlebarAppearsTransparent = true }
-        }, onWindowClose: { audioPlayerManager.windowClosed() }))
+        }, onWindowClose: { audioPlayerManager.reset() }))
     }
     
     /// The playing position in seconds, for accessibility: setting it seeks
@@ -374,21 +374,20 @@ class AudioPlayerManager: ObservableObject {
     private var scheduled = false
     private var audioFile1: AVAudioFile?
     private var audioFile2: AVAudioFile?
-    private var exportMP3 = false
-    private var fileFormat = "m4a"
-    private var fileEncoder = "aac"
     private var packageURL: URL?
-    private var panel = NSSavePanel()
-    /// The window closed while an export was rendering through the players: they are reset when it is done
-    private var resetAfterExport = false
+    /// What the package says about itself; the volumes set here go into its export
+    private var info: QmaInfo?
+    /// The export's save panel while it is open, and the extension of an export that is not an MP3
+    private var exportPanel: NSSavePanel?
+    private var exportEnding = "m4a"
     
     init() {
         setupAudioEngine()
     }
     
-    /// Also after an export, when the nodes are attached already
+    /// The engine plays the two files. An export does not use it: it mixes with an engine of its own.
     private func setupAudioEngine() {
-        for node in [playerNode1, playerNode2, mixerNode] where node.engine == nil { engine.attach(node) }
+        for node in [playerNode1, playerNode2, mixerNode] { engine.attach(node) }
         
         guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: false) else {
             print("Audio engine: no output format")
@@ -407,9 +406,7 @@ class AudioPlayerManager: ObservableObject {
     
     /// Opens the system audio and microphone files of the package, at the volumes it was saved with
     func loadAudioFiles(package: URL, info: QmaInfo) throws {
-        fileFormat = info.format
-        fileEncoder = info.encoder
-        exportMP3 = info.exportMP3
+        self.info = info
         packageURL = package
         let system = try AVAudioFile(forReading: info.systemAudio(in: package))
         let microphone = try AVAudioFile(forReading: info.microphone(in: package))
@@ -507,137 +504,56 @@ class AudioPlayerManager: ObservableObject {
         audioFile2 = nil
     }
 
-    /// The player's window closed. An export renders through the same players, which would play silence from
-    /// here on if they were stopped now, so they are reset when it ends instead.
-    func windowClosed() {
-        if exporting { resetAfterExport = true } else { reset() }
-    }
-    
+    /// Mixes the package at the volumes set here into a file the save panel asks for: in the package's format, or an
+    /// MP3 when its checkbox is on. Quitting waits for it; the status item shows "Exporting" meanwhile.
     func export() {
-        guard let packageURL = packageURL else { return }
+        guard let packageURL = packageURL, var info = info else { return }
         stop()
-        let format = exportMP3 ? "mp3" : self.fileFormat
-        showSavePanel(defaultFileName: "\(packageURL.deletingPathExtension().appendingPathExtension(format).lastPathComponent)", format: format, exportMP3: exportMP3) { url, saveAsMP3 in
-            guard let url = url else { return }
-            // Quitting waits for it
+        info.sysVol = sysVol
+        info.micVol = micVol
+        exportEnding = info.format
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.title = "Export Recording"
+        panel.allowsOtherFileTypes = false
+        let checkBox = NSButton(checkboxWithTitle: "Export as MP3", target: self, action: #selector(exportFormatChanged(_:)))
+        checkBox.state = info.exportMP3 ? .on : .off
+        let accessory = NSView(frame: NSRect(origin: .zero, size: checkBox.frame.size))
+        accessory.addSubview(checkBox)
+        panel.accessoryView = accessory
+        exportPanel = panel
+        panel.nameFieldStringValue = packageURL.deletingPathExtension().appendingPathExtension(exportEnding).lastPathComponent
+        exportFormatChanged(checkBox)
+        panel.begin { response in
+            self.exportPanel = nil
+            // The panel has asked whether to replace a file of that name, and `allowedContentTypes` makes it the
+            // name that is written
+            guard response == .OK, let output = panel.url else { return }
+            let saveAsMP3 = checkBox.state == .on
             withRecorder { $0.exportStarted() }
-            // The panel has asked whether to replace a file of that name
-            self.saveFile(url, saveAsMP3: saveAsMP3, replacing: true) { result in
-                switch result {
-                case .success(let file):
-                    UserNotice.showNotification(title: "Recording Exported", body: String(format: "File saved to: %@", file.path), id: "holdfast.completed.\(UUID().uuidString)")
-                case .failure(let error):
+            self.exporting = true
+            Task { @MainActor in
+                do {
+                    try await RecordingSaver.mixPackage(packageURL, info: info, to: output, saveAsMP3: saveAsMP3, replacing: true, audioQuality: AppSettings.audioQuality.rawValue)
+                    UserNotice.showNotification(title: "Recording Exported", body: String(format: "File saved to: %@", output.path), id: "holdfast.completed.\(UUID().uuidString)")
+                } catch {
                     UserNotice.reportFailure(title: "Export Failed", message: error.localizedDescription)
                 }
+                self.exporting = false
                 RecorderController.shared.exportEnded()
             }
         }
     }
-    
-    /// Mixes the two files at their volumes into `output`, in the package's format, or into an MP3 when
-    /// `saveAsMP3`; `output` has that extension. Everything is written under staging names first
-    /// (`RecordingFileStore.stagingURL`), and `output` appears only with the complete, checked file. A file at
-    /// `output` is replaced only when `replacing` (a name the user confirmed in the save panel). `completion` gets
-    /// `output`, or why there is none, once, on the main thread; a failure leaves no file behind. `audioQuality`
-    /// defaults to the current setting; finishing a recording passes the one it was started with. Main thread.
-    func saveFile(_ output: URL, saveAsMP3: Bool = false, replacing: Bool = false,
-                  audioQuality: Int = AppSettings.audioQuality.rawValue,
-                  completion: @escaping @MainActor (Result<URL, Error>) -> Void) {
-        let mixed = RecordingFileStore.stagingURL(for: output, ending: fileFormat)
-        exporting = true
-        let finish: (Result<URL, Error>) -> Void = { result in
-            DispatchQueue.main.async {
-                self.exporting = false
-                if self.resetAfterExport {
-                    self.resetAfterExport = false
-                    self.reset()
-                }
-                completion(result)
-            }
-        }
-        let ending = saveAsMP3 ? "mp3" : fileFormat
-        guard let package = packageURL else {
-            return finish(.failure(RecordingError("The audio files of the recording could not be opened.")))
-        }
-        guard output.pathExtension.lowercased() == ending else {
-            return finish(.failure(RecordingError(String(format: "The name of the exported file must end in .%@.", ending))))
-        }
-        // The mix is about as large as one of the two files, and an MP3 is made from it next to it
-        guard RecordingFileStore.hasRoomForCopy(of: package, in: output.deletingLastPathComponent()) else {
-            return finish(.failure(RecordingError("Not enough free disk space to mix the audio tracks.")))
-        }
-        do {
-            try RecordingFileStore.checkFree(staging: mixed)
-        } catch {
-            return finish(.failure(error))
-        }
-        Thread.detachNewThread {
-            do {
-                try self.render(to: mixed, audioQuality: audioQuality)
-            } catch {
-                try? fd.removeItem(at: mixed)
-                finish(.failure(error))
-                return
-            }
-            Task {
-                do {
-                    if saveAsMP3 {
-                        try await RecordingSaver.convertToMP3(mixed, to: output, bitrate: audioQuality, replacing: replacing)
-                        try? fd.removeItem(at: mixed)
-                    } else {
-                        try RecordingFileStore.publish(mixed, as: output, replacing: replacing)
-                    }
-                    finish(.success(output))
-                } catch {
-                    try? fd.removeItem(at: mixed)
-                    finish(.failure(error))
-                }
-            }
-        }
-    }
 
-    /// Plays both files through the engine offline into `url`, up to the end of the longer one: the microphone
-    /// file runs on past the system audio by what the stop padded it with. Returns when the file is closed and
-    /// opens with that length (`RecordingMixer.verifyConversion`).
-    private func render(to url: URL, audioQuality: Int) throws {
-        guard let audioFile1 = audioFile1, let audioFile2 = audioFile2 else {
-            throw RecordingError("The audio files of the recording could not be opened.")
-        }
-        func seconds(_ file: AVAudioFile) -> Double { Double(file.length) / file.processingFormat.sampleRate }
-        let longer = seconds(audioFile2) > seconds(audioFile1) ? audioFile2 : audioFile1
-        playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
-        playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
-        let audioSettings = MovieWriter.audioSettings(format: fileEncoder, quality: audioQuality, videoFormat: nil)
-        let outputFormat = playerNode1.outputFormat(forBus: 0)
-        let outputFile = try AVAudioFile(forWriting: url, settings: audioSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
-        engine.stop()
-        try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 4096)
-        defer {
-            // Played to the end; stopped, they start from the beginning again
-            playerNode1.stop()
-            playerNode2.stop()
-            engine.disableManualRenderingMode()
-            engine.stop()
-            setupAudioEngine()
-        }
-        try engine.start()
-        playerNode1.play()
-        playerNode2.play()
-        let duration = AVAudioFramePosition((seconds(longer) * engine.manualRenderingFormat.sampleRate).rounded())
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: engine.manualRenderingMaximumFrameCount) else {
-            throw RecordingError("No buffer to mix the audio into.")
-        }
-        while engine.manualRenderingSampleTime < duration {
-            let frames = min(buffer.frameCapacity, AVAudioFrameCount(duration - engine.manualRenderingSampleTime))
-            // Players render silence once their file has ended, so anything but success would never move on
-            guard try engine.renderOffline(frames, to: buffer) == .success else {
-                throw RecordingError("The audio could not be mixed.")
-            }
-            try outputFile.write(from: buffer)
-        }
-        // Closed here, not when it is released, so that a file that could not be finished fails the check below
-        outputFile.close()
-        try RecordingMixer.verifyConversion(source: longer.url, output: url)
+    /// The panel stays open with what was typed and chosen in it; only the extension of the name changes
+    @objc private func exportFormatChanged(_ checkBox: NSButton) {
+        guard let panel = exportPanel else { return }
+        let ending = checkBox.state == .on ? "mp3" : exportEnding
+        panel.allowedContentTypes = UTType(filenameExtension: ending).map { [$0] } ?? []
+        // Only an extension of the export goes: the time in a recording's name has dots too
+        var name = panel.nameFieldStringValue
+        if let old = [exportEnding, "mp3"].first(where: { name.lowercased().hasSuffix("." + $0) }) { name.removeLast(old.count + 1) }
+        panel.nameFieldStringValue = name + "." + ending
     }
     
     private func updateSysVol() {
@@ -646,41 +562,6 @@ class AudioPlayerManager: ObservableObject {
     
     private func updateMicVol() {
         playerNode2.volume = micVol
-    }
-    
-    /// `format` is the extension of what is exported. The panel puts it on the name and asks before replacing a file
-    /// of that name, which is then the file that is written.
-    private func showSavePanel(defaultFileName: String, format: String, exportMP3: Bool, completion: @escaping (URL?, Bool) -> Void) {
-        panel.isReleasedWhenClosed = true
-        panel.nameFieldStringValue = defaultFileName
-        panel.allowedContentTypes = UTType(filenameExtension: format).map { [$0] } ?? []
-        panel.allowsOtherFileTypes = false
-        panel.canCreateDirectories = true
-        panel.title = "Export Recording"
-        
-        let checkBox = NSButton(checkboxWithTitle: "Export as MP3", target: self, action: #selector(checkBoxToggled(_:)))
-        checkBox.state = exportMP3 ? .on : .off
-        
-        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: checkBox.frame.width, height: checkBox.frame.height))
-        accessoryView.addSubview(checkBox)
-        
-        panel.accessoryView = accessoryView
-        
-        panel.begin { response in
-            if response == .OK {
-                let exportAsMP3 = (checkBox.state == .on)
-                completion(self.panel.url, exportAsMP3)
-            } else {
-                completion(nil, false)
-            }
-        }
-    }
-    
-    @objc private func checkBoxToggled(_ sender: NSButton) {
-        panel.close()
-        panel = NSSavePanel()
-        exportMP3.toggle()
-        export()
     }
 }
 

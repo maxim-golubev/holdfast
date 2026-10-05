@@ -203,6 +203,114 @@ enum RecordingMixer {
         return failure
     }
 
+    // MARK: - The two files of a .qma package
+
+    /// Mixes the system audio and microphone files of a .qma package, each at its volume, into the audio file
+    /// `output` (written with `settings`), up to the end of the longer file: the microphone file runs on past the
+    /// system audio by what the stop padded it with. Returns once `output` is closed, as long as that file and in
+    /// step with both (`checkTiming`); throws otherwise, and `output` is then incomplete or wrong. Blocks while it
+    /// renders, so not on the main thread.
+    static func mixPackage(system: URL, microphone: URL, volumes: (system: Float, microphone: Float), to output: URL, settings: [String: Any]) throws {
+        let sources = [(url: system, volume: volumes.system), (url: microphone, volume: volumes.microphone)]
+        let files = try sources.map { try AVAudioFile(forReading: $0.url) }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2) else {
+            throw RecordingError("The audio could not be mixed.")
+        }
+        // An engine of its own, offline from the start. One that has run in real time has read ahead into the files
+        // scheduled on it and drops that read-ahead when it is switched to offline rendering: the mix then began
+        // about 1.15 s into both files and ended in as much silence, at the right length.
+        let engine = AVAudioEngine()
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
+        var players = [AVAudioPlayerNode]()
+        for (file, source) in zip(files, sources) {
+            let player = AVAudioPlayerNode()
+            engine.attach(player)
+            // The mixer converts each file's own rate and channels
+            engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
+            player.volume = source.volume
+            player.scheduleFile(file, at: nil)
+            players.append(player)
+        }
+        try engine.start()
+        defer { engine.stop() }
+        players.forEach { $0.play() }
+
+        func seconds(_ file: AVAudioFile) -> Double { Double(file.length) / file.processingFormat.sampleRate }
+        guard let longer = files.max(by: { seconds($0) < seconds($1) }),
+              let buffer = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: engine.manualRenderingMaximumFrameCount) else {
+            throw RecordingError("The audio could not be mixed.")
+        }
+        let outputFile = try AVAudioFile(forWriting: output, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let duration = AVAudioFramePosition((seconds(longer) * engine.manualRenderingFormat.sampleRate).rounded())
+        while engine.manualRenderingSampleTime < duration {
+            let frames = min(buffer.frameCapacity, AVAudioFrameCount(duration - engine.manualRenderingSampleTime))
+            // Players render silence once their file has ended, so anything but success would never move on
+            guard try engine.renderOffline(frames, to: buffer) == .success else {
+                throw RecordingError("The audio could not be mixed.")
+            }
+            try outputFile.write(from: buffer)
+        }
+        // Closed here, not when it is released, so that a file that could not be finished fails the checks below
+        outputFile.close()
+        try verifyConversion(source: longer.url, output: output)
+        try checkTiming(of: output, sources: sources)
+    }
+
+    /// How far into the files `checkTiming` looks, and in what steps
+    private static let timingSeconds = 30.0
+    private static let timingStep = 0.01
+
+    /// Throws when the mix `output` is out of step with the files it was mixed from (`sources`, each with the volume
+    /// it was mixed at). A mix that starts late or early into its files still has their length, so only its sound
+    /// tells: the loudness of its first 30 s, in 10 ms steps, must match what the sources add up to without an
+    /// offset better than none. Sources without changes in loudness there pass, as there is nothing to tell from.
+    static func checkTiming(of output: URL, sources: [(url: URL, volume: Float)]) throws {
+        let mixed = try envelope(of: output)
+        let parts = try sources.map { source in try envelope(of: source.url).map { $0 * Double(source.volume) } }
+        let count = max(mixed.count, parts.map(\.count).max() ?? 0)
+        // Loudness adds up as power: the sources are not expected to cancel each other out
+        let expected = (0..<count).map { step in parts.reduce(0) { sum, part in step < part.count ? sum + part[step] * part[step] : sum }.squareRoot() }
+        /// Mean difference between the mix, moved by `offset` steps, and what is expected
+        func difference(at offset: Int) -> Double {
+            let first = max(0, -offset)
+            let end = min(expected.count, mixed.count - offset)
+            guard first < end else { return .infinity }
+            return (first..<end).reduce(0) { $0 + abs(mixed[$1 + offset] - expected[$1]) } / Double(end - first)
+        }
+        let maximumOffset = Int(2 / timingStep)
+        let differences = (-maximumOffset...maximumOffset).map { (offset: $0, difference: difference(at: $0)) }
+        guard let best = differences.min(by: { $0.difference < $1.difference }) else { return }
+        // Up to 20 ms is the encoder's doing; a match elsewhere that is better by half is no chance
+        if abs(best.offset) > 2 && best.difference < difference(at: 0) / 2 {
+            throw RecordingError(String(format: "The mixed audio is out of step with the recording by %.2f s.", Double(abs(best.offset)) * timingStep))
+        }
+    }
+
+    /// The loudness (RMS of all channels) of the first `timingSeconds` of an audio file, one value per `timingStep`
+    private static func envelope(of url: URL) throws -> [Double] {
+        let file = try AVAudioFile(forReading: url)
+        let rate = file.processingFormat.sampleRate
+        let step = AVAudioFrameCount(max(1, (rate * timingStep).rounded()))
+        let frames = min(file.length, AVAudioFramePosition(rate * timingSeconds))
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: step) else {
+            throw RecordingError("The audio cannot be read to check the mix.")
+        }
+        var levels = [Double]()
+        while file.framePosition < frames {
+            buffer.frameLength = 0
+            try file.read(into: buffer, frameCount: min(step, AVAudioFrameCount(frames - file.framePosition)))
+            guard buffer.frameLength > 0, let data = buffer.floatChannelData else { break }
+            let channels = Int(buffer.format.channelCount)
+            let length = Int(buffer.frameLength)
+            var sum = 0.0
+            for channel in 0..<channels {
+                for frame in 0..<length { sum += Double(data[channel][frame]) * Double(data[channel][frame]) }
+            }
+            levels.append((sum / Double(channels * length)).squareRoot())
+        }
+        return levels
+    }
+
     // MARK: - Verification
 
     /// Throws unless `output` is a complete mix of `source`: one video and one audio track, as long as the source

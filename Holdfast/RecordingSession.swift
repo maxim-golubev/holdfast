@@ -433,8 +433,7 @@ final class RecordingSession: @unchecked Sendable {
 }
 
 /// Suspends until `body` calls the closure it is given, on any thread. Calls after the first do nothing.
-/// `body` itself runs on the main thread, like the caller: what it starts may build windows (the preview, the
-/// audio player of the mix). Work that takes time has to leave the main thread inside `body`.
+/// `body` itself runs on the main thread, like the caller; work that takes time has to leave it inside `body`.
 @MainActor
 func completion(of body: @escaping (@escaping () -> Void) -> Void) async {
     await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
