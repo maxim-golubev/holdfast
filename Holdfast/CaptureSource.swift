@@ -85,11 +85,18 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
 
     // MARK: - What is captured
 
-    /// The content filter for `target`. Throws when what was selected is not there.
+    /// The content filter for `target`. Throws when what was selected is not there. Main thread.
+    ///
+    /// The filters list windows of `content`, which was fetched before the start. "Leave Holdfast's Own Windows
+    /// Out" therefore leaves out the app, not a list of its windows: a window it opens during the recording (an
+    /// alert, a player) is left out too. Of an app that is excluded or not included, a window listed as an exception
+    /// is shown, which is how the cursor highlight and the magnifier stay in the picture.
     static func filter(for target: inout CaptureTarget, content: SCShareableContent) throws -> SCContentFilter {
         let screen = target.display
-        let ownApp = ScreenContent.getSelf()
-        let ownWindows = ScreenContent.getSelfWindows()
+        let ownApp = content.applications.first(where: { $0.bundleIdentifier == Bundle.main.bundleIdentifier })
+        // Holdfast's windows that are drawn to be recorded, by window number: no title is needed
+        let highlightWindow = content.windows.filter({ Int($0.windowID) == mousePointer.windowNumber })
+        let magnifierWindow = content.windows.filter({ Int($0.windowID) == screenMagnifier.windowNumber })
         let dockApp = content.applications.first(where: { $0.bundleIdentifier.description == "com.apple.dock" })
         let wallpaper = content.windows.filter({
             guard let title = $0.title else { return false }
@@ -104,7 +111,6 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
             $0.owningApplication?.bundleIdentifier == "com.apple.finder"
             && $0.title == "" && $0.frame == screen.frame })
         let controlCenterApps = content.applications.filter({ $0.bundleIdentifier == "com.apple.controlcenter" })
-        let mouseWindow = content.windows.filter({ $0.title == WindowTitle.mousePointer && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
         let appBlackList = AppSettings.hiddenApps.map({ $0.bundleID })
         let excludedApps = content.applications.filter({ appBlackList.contains($0.bundleIdentifier) })
 
@@ -112,7 +118,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         case .window, .windows:
             guard var included = target.windows else { throw RecordingError("There is nothing to record.") }
             if included.count > 1 {
-                if AppSettings.highlightMouse { included += mouseWindow }
+                if AppSettings.highlightMouse { included += highlightWindow }
                 if dockApp != nil { included += wallpaper }
                 let filter = SCContentFilter(display: screen, including: included)
                 filter.includeMenuBar = AppSettings.includeMenuBar
@@ -124,12 +130,18 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
                 throw RecordingError("The window to record is not there any more.")
             }
         case .screen, .screenarea:
-            var excluded = [SCRunningApplication]()
+            var excluded = excludedApps
             var except = [SCWindow]()
-            excluded += excludedApps
             if AppSettings.hideCCenter { excluded += controlCenterApps }
-            if AppSettings.hideSelf { if let ownWindows = ownWindows { except += ownWindows }}
-            if AppSettings.hideDesktopFiles { except += desktopFiles }
+            if AppSettings.hideSelf, let ownApp = ownApp {
+                excluded.append(ownApp)
+                except += highlightWindow + magnifierWindow
+            }
+            // Exceptions of an app that is not excluded are hidden. Of an excluded Finder they would be shown,
+            // and its desktop files are left out with it.
+            if AppSettings.hideDesktopFiles && !excluded.contains(where: { $0.bundleIdentifier == "com.apple.finder" }) {
+                except += desktopFiles
+            }
             let filter = SCContentFilter(display: screen, excludingApplications: excluded, exceptingWindows: except)
             filter.includeMenuBar = AppSettings.includeMenuBar
             return filter
@@ -139,10 +151,15 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
                 throw RecordingError("The application to record is not running any more.")
             }
             var except = [SCWindow]()
-            if let ownApp = ownApp { included.append(ownApp) }
+            if AppSettings.hideSelf {
+                // Holdfast is not included: exceptions of an app that is not included are shown
+                except += highlightWindow + magnifierWindow
+            } else if let ownApp = ownApp, !included.contains(ownApp) {
+                included.append(ownApp)
+            }
+            // Exceptions of an included app are hidden
             let withFinder = included.map{ $0.bundleIdentifier }.contains("com.apple.finder")
             if withFinder && AppSettings.hideDesktopFiles { except += desktopFiles }
-            if AppSettings.hideSelf { if let ownWindows = ownWindows { except += ownWindows }}
             if let dock = dockApp { included.append(dock); except += dockWindow }
             let filter = SCContentFilter(display: screen, including: included, exceptingWindows: except)
             filter.includeMenuBar = AppSettings.includeMenuBar

@@ -62,15 +62,6 @@ enum ScreenContent {
         return availableContent?.applications.first(where: { Bundle.main.bundleIdentifier == $0.bundleIdentifier })
     }
     
-    static func getSelfWindows() -> [SCWindow]? {
-        return availableContent?.windows.filter( {
-            guard let title = $0.title else { return false }
-            return $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
-            && title != WindowTitle.mousePointer
-            && title != WindowTitle.screenMagnifier
-        })
-    }
-    
     /// The windows on screen that can be recorded, without the app's own when "hideSelf" is on
     static func getWindows() -> [SCWindow] {
         guard let content = availableContent else { return [] }

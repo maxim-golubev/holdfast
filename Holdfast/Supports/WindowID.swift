@@ -31,10 +31,3 @@ extension NSApplication {
         windows.filter { window in window.identifier.map { identifiers.contains($0) } ?? false }
     }
 }
-
-/// ScreenCaptureKit lists the app's own windows as `SCWindow`, which has a title but no identifier. These two
-/// are told apart there by their titles, so the titles are constants shared by the window and the comparison.
-enum WindowTitle {
-    static let mousePointer = "Mouse Pointer"
-    static let screenMagnifier = "Screen Magnifier"
-}

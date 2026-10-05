@@ -243,13 +243,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         for window in [mousePointer, screenMagnifier, countdownPanel] {
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         }
-        mousePointer.title = WindowTitle.mousePointer
+        mousePointer.title = "Mouse Pointer"
         mousePointer.level = .screenSaver
         mousePointer.ignoresMouseEvents = true
         mousePointer.isReleasedWhenClosed = false
         mousePointer.backgroundColor = NSColor.clear
         
-        screenMagnifier.title = WindowTitle.screenMagnifier
+        screenMagnifier.title = "Screen Magnifier"
         screenMagnifier.level = .floating
         screenMagnifier.ignoresMouseEvents = true
         screenMagnifier.isReleasedWhenClosed = false
