@@ -69,7 +69,14 @@ final class FakeWriter: RecordingWriter {
     private func onQueue() { dispatchPrecondition(condition: .onQueue(queue)) }
     func startCapturing() { onQueue(); isCapturing = true; journal.note("writer.start") }
     func togglePause() -> Bool { onQueue(); isPaused.toggle(); return isPaused }
-    func setMicrophoneMuted(_ muted: Bool) { onQueue(); isMicrophoneMuted = muted; journal.note(muted ? "writer.mute" : "writer.unmute") }
+    /// A writer whose microphone track cannot be muted (the real one without a converter)
+    var refusesMute = false
+    func setMicrophoneMuted(_ muted: Bool) {
+        onQueue()
+        guard !refusesMute else { return }
+        isMicrophoneMuted = muted
+        journal.note(muted ? "writer.mute" : "writer.unmute")
+    }
     func write(_ sample: CaptureSample) { onQueue(); written += 1 }
     func checkWriter() -> Bool { onQueue(); return true }
     func timelineTime(_ raw: CMTime) -> CMTime { onQueue(); return raw }
@@ -419,6 +426,13 @@ func sessionTests() async {
         rig.controller.toggleMicrophoneMute()
         expect(rig.controller.isMicrophoneMuted, "muted again")
         expect(rig.controller.state == .recording, "the recording goes on meanwhile")
+        rig.controller.toggleMicrophoneMute()
+        writer.refusesMute = true
+        expect(!rig.controller.setMicrophoneMuted(true), "a mute the writer did not apply is not reported as done")
+        expect(!rig.controller.isMicrophoneMuted, "and not shown")
+        expect(rig.controller.setMicrophoneMuted(false), "unmuting what is not muted is no error")
+        writer.refusesMute = false
+        expect(rig.controller.setMicrophoneMuted(true), "muted once more")
         rig.controller.stop()
         expect(!rig.controller.setMicrophoneMuted(false), "nothing to change once the recording is stopped")
         expect(await rig.idle(), "idle")

@@ -280,7 +280,8 @@ final class RecordingSession: @unchecked Sendable {
 
     /// Mutes the microphone track of the running recording (silence in place of the microphone, see
     /// `MovieWriter.setMicrophoneMuted`) or gives it its audio back. False when there is nothing to mute: no
-    /// recording that runs, or one without a microphone track.
+    /// recording that runs, or one without a microphone track. What is shown and returned is what the writer
+    /// did, not what it was asked for.
     @MainActor
     @discardableResult
     func setMicrophoneMuted(_ muted: Bool) -> Bool {
@@ -288,7 +289,7 @@ final class RecordingSession: @unchecked Sendable {
         let done: Bool = queue.sync {
             guard let writer = queueWriter else { return false }
             writer.setMicrophoneMuted(muted)
-            return true
+            return writer.isMicrophoneMuted == muted
         }
         guard done else { return false }
         if isMicrophoneMuted != muted {

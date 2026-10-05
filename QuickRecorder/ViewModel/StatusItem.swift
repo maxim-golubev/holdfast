@@ -16,13 +16,23 @@ import AppKit
 final class StatusItemController: NSObject, NSMenuDelegate {
     static let shared = StatusItemController()
 
-    /// What the open menu was filled from. It is filled again when one of these changes while it is open.
-    private struct MenuContents: Equatable {
-        let state: RecordingState
-        let isPaused: Bool
-        let isMicrophoneMuted: Bool
-        let canMuteMicrophone: Bool
-        let line: String
+    /// Which set of items the menu has. Within one set the items are changed in place; the sets differ in
+    /// what is under the pointer, so an open menu is never turned from one into another.
+    private enum Layout {
+        case recording, saving, idle
+
+        init(_ state: RecordingState) {
+            switch state {
+            case .starting, .recording: self = .recording
+            case .stopping, .finalizing: self = .saving
+            case .idle: self = .idle
+            }
+        }
+    }
+
+    /// The items whose text changes while the menu is open
+    private enum Tag: Int {
+        case pause = 1, mute, line, lineSeparator
     }
 
     private var item: NSStatusItem?
@@ -30,7 +40,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var timer: Timer?
     private var shown: StatusDisplay?
     private var menuIsOpen = false
-    private var menuContents: MenuContents?
+    private var menuLayout: Layout?
 
     private var recorder: RecorderController { RecorderController.shared }
 
@@ -65,7 +75,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             button.setAccessibilityLabel(display.accessibilityLabel)
             shown = display
         }
-        if menuIsOpen, contents(display) != menuContents { fill(menu) }
+        guard menuIsOpen else { return }
+        if Layout(recorder.state) == menuLayout {
+            update(menu, display)
+        } else {
+            // Its commands are no longer the right ones. Closed, not refilled: a click that is on its way must
+            // not land on an item that has just taken the place of another
+            menu.cancelTracking()
+        }
     }
 
     /// The same commands as the status item's menu, for the Dock icon: there when the status item is out of
@@ -124,58 +141,47 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menuIsOpen = false
     }
 
-    private func contents(_ display: StatusDisplay) -> MenuContents {
-        return MenuContents(state: recorder.state, isPaused: recorder.isPaused, isMicrophoneMuted: recorder.isMicrophoneMuted,
-                            canMuteMicrophone: recorder.canMuteMicrophone, line: display.line)
-    }
-
     /// While a recording starts or runs: Stop first and largest, Pause, Mute, then the status line. While it is
     /// being saved: the status line. Otherwise what starts a recording, the settings and Quit.
     private func fill(_ menu: NSMenu, forDock: Bool = false) {
         let display = StatusDisplay(recorder.statusInput)
-        if !forDock { menuContents = contents(display) }
+        let layout = Layout(recorder.state)
+        if !forDock { menuLayout = layout }
         menu.removeAllItems()
 
         @discardableResult
-        func add(_ title: String, symbol: String, _ action: Selector, enabled: Bool = true) -> NSMenuItem {
+        func add(_ title: String, symbol: String?, _ action: Selector, tag: Tag? = nil) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
-            item.isEnabled = enabled
-            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            if let symbol = symbol { item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+            if let tag = tag { item.tag = tag.rawValue }
             menu.addItem(item)
             return item
         }
         func addStatusLine() {
             let line = NSMenuItem(title: display.line, action: nil, keyEquivalent: "")
             line.isEnabled = false
+            line.tag = Tag.line.rawValue
             menu.addItem(line)
         }
 
-        let state = recorder.state
-        switch state {
-        case .starting, .recording:
+        switch layout {
+        case .recording:
             let stop = add("Stop Recording".local, symbol: "stop.circle.fill", #selector(stopRecording))
             stop.attributedTitle = NSAttributedString(string: stop.title, attributes: [.font: NSFont.systemFont(ofSize: 16, weight: .semibold)])
             stop.image = stop.image?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
-            if recorder.isPaused {
-                add("Resume Recording".local, symbol: "play.circle", #selector(togglePause), enabled: state == .recording)
-            } else {
-                add("Pause Recording".local, symbol: "pause.circle", #selector(togglePause), enabled: state == .recording)
-            }
-            if recorder.isMicrophoneMuted {
-                add("Unmute Microphone".local, symbol: "mic", #selector(toggleMicrophoneMute), enabled: recorder.canMuteMicrophone)
-            } else {
-                add("Mute Microphone".local, symbol: "mic.slash", #selector(toggleMicrophoneMute), enabled: recorder.canMuteMicrophone)
-            }
+            add("", symbol: nil, #selector(togglePause), tag: .pause)
+            add("", symbol: nil, #selector(toggleMicrophoneMute), tag: .mute)
             menu.addItem(.separator())
             addStatusLine()
-        case .stopping, .finalizing:
+        case .saving:
             addStatusLine()
         case .idle:
-            if display.kind == .recovering {
-                addStatusLine()
-                menu.addItem(.separator())
-            }
+            // Shown while a recovery runs
+            addStatusLine()
+            let separator = NSMenuItem.separator()
+            separator.tag = Tag.lineSeparator.rawValue
+            menu.addItem(separator)
             add("Open Main Panel".local, symbol: "rectangle.on.rectangle", #selector(openMainPanel))
             menu.addItem(.separator())
             add("Record System Audio".local, symbol: "waveform", #selector(recordSystemAudio))
@@ -187,10 +193,44 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             add("Settings…".local, symbol: "gearshape", #selector(openSettings))
         }
         // Not next to Stop, where it could be hit by accident; the Dock has its own
-        if !forDock, state != .starting, state != .recording {
+        if !forDock, layout != .recording {
             menu.addItem(.separator())
             add("Quit QuickRecorder".local, symbol: "xmark.circle", #selector(quit))
         }
+        update(menu, display)
+    }
+
+    /// Sets what changes within a layout, on the items that are there: no item is removed or added, so the one
+    /// under the pointer stays where it is while the menu is open.
+    private func update(_ menu: NSMenu, _ display: StatusDisplay) {
+        func set(_ tag: Tag, title: String, symbol: String, enabled: Bool) {
+            guard let item = menu.item(withTag: tag.rawValue) else { return }
+            if item.title != title {
+                item.title = title
+                item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            }
+            if item.isEnabled != enabled { item.isEnabled = enabled }
+        }
+        func show(_ tag: Tag, _ visible: Bool) {
+            guard let item = menu.item(withTag: tag.rawValue), item.isHidden == visible else { return }
+            item.isHidden = !visible
+        }
+
+        let state = recorder.state
+        if recorder.isPaused {
+            set(.pause, title: "Resume Recording".local, symbol: "play.circle", enabled: state == .recording)
+        } else {
+            set(.pause, title: "Pause Recording".local, symbol: "pause.circle", enabled: state == .recording)
+        }
+        if recorder.isMicrophoneMuted {
+            set(.mute, title: "Unmute Microphone".local, symbol: "mic", enabled: recorder.canMuteMicrophone)
+        } else {
+            set(.mute, title: "Mute Microphone".local, symbol: "mic.slash", enabled: recorder.canMuteMicrophone)
+        }
+        if let line = menu.item(withTag: Tag.line.rawValue), line.title != display.line { line.title = display.line }
+        let lineShown = state != .idle || display.kind == .recovering
+        show(.line, lineShown)
+        show(.lineSeparator, lineShown)
     }
 
     // MARK: - Commands
