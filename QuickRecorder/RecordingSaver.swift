@@ -66,7 +66,7 @@ enum RecordingSaver {
                         showPreview(path: url.path, image: frame)
                     }
                     if recording.trimAfterRecord {
-                        AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, only: false)
+                        AppDelegate.shared.openTrimmer(url)
                     }
                 }
             }
@@ -156,7 +156,7 @@ enum RecordingSaver {
             UserNotice.showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, final.path), id: "quickrecorder.completed.\(UUID().uuidString)")
         }
         if recording.trimAfterRecord {
-            AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: final), title: final.lastPathComponent, only: false)
+            AppDelegate.shared.openTrimmer(final)
         } else if recording.showPreview {
             showPreview(path: final.path, image: frame)
         }

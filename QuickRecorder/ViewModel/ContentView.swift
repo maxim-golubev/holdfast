@@ -12,7 +12,6 @@ import ScreenCaptureKit
 /// The main panel: what to record, the microphone, Settings. Shown as a floating panel that is as large as
 /// this view asks for (`AppDelegate.showMainPanel`).
 struct ContentView: View {
-    @AppStorage(AppSettings.$recordMic) private var recordMic: Bool
     @AppStorage(AppSettings.$showOnDock) private var showOnDock: Bool
     @AppStorage(AppSettings.$showMenubar) private var showMenubar: Bool
 
@@ -33,7 +32,6 @@ struct ContentView: View {
                 MicPicker()
                     .labelsHidden()
                     .frame(maxWidth: 220)
-                    .disabled(!recordMic)
                 Spacer(minLength: 16)
                 Button {
                     closeMainWindow()
@@ -297,6 +295,12 @@ extension AppDelegate {
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(self)
         window.orderFrontRegardless()
+    }
+
+    /// The trimmer's window. Every way of opening the trimmer goes through here, because its view has no size
+    /// of its own and the window has to be given one.
+    func openTrimmer(_ url: URL, random: Bool = false) {
+        createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, size: VideoTrimmerView.windowSize, random: random, only: false)
     }
 }
 

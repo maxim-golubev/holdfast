@@ -188,7 +188,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             if trimingList.contains(url) { continue }
-            createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, size: VideoTrimmerView.windowSize, random: true, only: false)
+            openTrimmer(url, random: true)
             closeMainWindow()
         }
     }

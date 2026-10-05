@@ -8,6 +8,7 @@
 
 import SwiftUI
 import AVFoundation
+import Combine
 
 /// A control's title with its symbol, which has the same width in every row so that the titles line up
 struct ControlLabel: View {
@@ -30,6 +31,19 @@ struct ControlLabel: View {
 
 // MARK: - Microphone
 
+extension MicSelection {
+    /// Fires on the main thread when a capture device is connected or disconnected, so that what a view shows
+    /// of the microphones follows them. These are notifications only; nothing is opened.
+    static var devicesChanged: AnyPublisher<Void, Never> {
+        let center = NotificationCenter.default
+        return center.publisher(for: AVCaptureDevice.wasConnectedNotification)
+            .merge(with: center.publisher(for: AVCaptureDevice.wasDisconnectedNotification))
+            .map { _ in () }
+            .receive(on: RunLoop.main)
+            .eraseToAnyPublisher()
+    }
+}
+
 /// "Record Microphone". Asks for the permission when it is switched on, in the view the user switched it in.
 struct MicToggle: View {
     @AppStorage(AppSettings.$recordMic) private var recordMic: Bool
@@ -45,13 +59,16 @@ struct MicToggle: View {
         .disabled(!hasDevices)
         .help(hasDevices ? "Record the microphone along with the recording" : "No microphone is connected")
         .onAppear { hasDevices = !MicSelection.getMicrophone().isEmpty }
+        .onReceive(MicSelection.devicesChanged) { hasDevices = !MicSelection.getMicrophone().isEmpty }
     }
 }
 
 /// The microphone menu. The selection is the device's uniqueID, or "default" for the system default input.
-/// A selected device that is not connected stays selected and is listed as unavailable.
+/// A selected device that is not connected stays selected and is listed as unavailable. The menu is disabled
+/// while "Record Microphone" is off, wherever it is shown.
 struct MicPicker: View {
     @State private var devices = MicSelection.getMicrophone()
+    @AppStorage(AppSettings.$recordMic) private var recordMic: Bool
     @AppStorage(AppSettings.$micDeviceID) private var micDeviceID: String
     @AppStorage(AppSettings.$micName) private var micName: String
 
@@ -70,11 +87,13 @@ struct MicPicker: View {
                 Text(String(format: "%@ (unavailable)", micName == "default" ? micDeviceID : micName)).tag(micDeviceID)
             }
         }
+        .disabled(!recordMic)
         .help("The microphone to record. \"System Default\" follows the input chosen in System Settings.")
         .onAppear {
             devices = MicSelection.getMicrophone()
             micDeviceID = MicSelection.selectedMicID()
         }
+        .onReceive(MicSelection.devicesChanged) { devices = MicSelection.getMicrophone() }
         .onChange(of: micDeviceID) { _, id in
             // The name is stored next to the ID so that the device can still be named while it is absent
             if id == "default" {
@@ -237,6 +256,12 @@ extension SymbolButton where Icon == AnyView {
 struct AutoStopButton: View {
     @Binding var minutes: Int
     @State private var isShowing = false
+    static let range = 0...1440
+
+    /// What the field and the stepper edit: a typed number outside the range becomes its nearest end
+    private var limited: Binding<Int> {
+        Binding(get: { minutes }, set: { minutes = min(max($0, AutoStopButton.range.lowerBound), AutoStopButton.range.upperBound) })
+    }
 
     var body: some View {
         Button {
@@ -252,10 +277,10 @@ struct AutoStopButton: View {
         .popover(isPresented: $isShowing, arrowEdge: .bottom) {
             HStack {
                 Text("Stop after")
-                TextField("Minutes", value: $minutes, format: .number.grouping(.never))
+                TextField("Minutes", value: limited, format: .number.grouping(.never))
                     .textFieldStyle(.roundedBorder)
                     .frame(minWidth: 50)
-                Stepper("Minutes", value: $minutes, in: 0...1440)
+                Stepper("Minutes", value: limited, in: AutoStopButton.range)
                 Text("minutes")
             }
             .labelsHidden()

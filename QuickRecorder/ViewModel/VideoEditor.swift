@@ -139,7 +139,7 @@ struct RecorderPlayerView: NSViewRepresentable {
 }
 
 struct VideoTrimmerView: View {
-    /// The size its window opens with; the player takes whatever it is given
+    /// The size its window opens with; the player takes whatever it is given. Open it with `AppDelegate.openTrimmer`.
     static let windowSize = NSSize(width: 780, height: 555)
     let videoURL: URL
     @StateObject var playerViewModel: RecorderPlayerModel = .init()

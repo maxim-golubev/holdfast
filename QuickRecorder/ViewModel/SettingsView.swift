@@ -215,6 +215,7 @@ struct AudioSettings: View {
         .onAppear { checkMicrophone() }
         .onChange(of: micDeviceID) { checkMicrophone() }
         .onChange(of: recordMic) { checkMicrophone() }
+        .onReceive(MicSelection.devicesChanged) { checkMicrophone() }
     }
 
     private func checkMicrophone() {

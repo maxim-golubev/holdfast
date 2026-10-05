@@ -114,7 +114,7 @@ struct PreviewView: View {
             if !trimAfterRecord {
                 Button("Trim") {
                     if fd.fileExists(atPath: filePath) {
-                        AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: filePath.url), title: filePath.lastPathComponent, size: VideoTrimmerView.windowSize, only: false)
+                        AppDelegate.shared.openTrimmer(filePath.url)
                     }
                     closeWindow()
                 }
