@@ -355,15 +355,11 @@ func closeAreaOverlay() {
     for w in NSApp.windows(.areaOverlay) { w.close() }
 }
 
-/// Closes every window that has a title, except the status item's, the audio documents' and the one with the
-/// identifier `except`. Windows that must survive this (the preview, alerts) have no title. The click-a-window
-/// picker ends with its windows.
-func closeAllWindow(except: NSUserInterfaceItemIdentifier? = nil) {
+/// Closes every window that has a title, except the status item's and the audio documents'. Windows that must
+/// survive this (the preview, alerts) have no title. The click-a-window picker ends with its windows.
+func closeAllWindow() {
     WindowHighlighter.shared.stopMouseMonitor()
-    for w in NSApp.windows.filter({
-        $0.title != "Item-0" && $0.title != ""
-        && !$0.title.lowercased().contains(".qma")
-        && (except == nil || $0.identifier != except) }) { w.close() }
+    for w in NSApp.windows.filter({ $0.title != "Item-0" && $0.title != "" && !$0.title.lowercased().contains(".qma") }) { w.close() }
 }
 
 /// A tip that is shown until "Don't Remind Me Again" is chosen. Return is OK: it shows the tip again next time.

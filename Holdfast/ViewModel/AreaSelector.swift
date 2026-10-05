@@ -74,8 +74,9 @@ struct resizeView: View {
         }.onAppear{ focusedField = .width }
     }
     
+    /// Draws the area again at the typed size. Only the selector's drawing goes: Settings or a trimmer stay.
     func resize() {
-        closeAllWindow(except: .areaPanel)
+        for w in NSApp.windows(.areaSelector) { w.close() }
         AppDelegate.shared.showAreaSelector(size: NSSize(width: areaWidth, height: areaHeight), noPanel: true)
     }
 }
