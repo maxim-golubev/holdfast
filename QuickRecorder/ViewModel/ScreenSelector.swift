@@ -60,7 +60,7 @@ struct ScreenSelector: View {
         closeAllWindow()
         if let screen = selected {
             appDelegate.createCountdownPanel(screen: screen) {
-                RecorderController.shared.start(type: "display", screens: screen, windows: nil, applications: nil, autoStop: autoStop)
+                RecorderController.shared.start(type: .screen, screens: screen, windows: nil, applications: nil, autoStop: autoStop)
             }
         }
     }

@@ -6,10 +6,10 @@
 import AVFoundation
 import Foundation
 
-/// Everything about one recording that must not change while it runs or while it is being finished: where it is
-/// written and the settings it was started with. Built once in `RecorderController.start`. The stop and what
-/// follows it (audio mix, preview, notifications) work from this value, so changing a setting in the meantime
-/// cannot redirect them to another file.
+/// Where one recording is written and the settings its stop and what follows it (audio mix, preview,
+/// notifications) work from, so changing a setting in the meantime cannot redirect them to another file. Built
+/// once in `RecorderController.start`. The settings of the stream and the encoder are not here: `CaptureSource`
+/// and `MovieWriter.prepareVideo` read them from `AppSettings` once, while the recording starts.
 struct RecordingContext {
     let audioOnly: Bool
     /// Whether this recording has a microphone track, which the "recordMic" setting alone does not decide
@@ -60,7 +60,7 @@ struct RecordingContext {
         }
     }
 
-    /// The one place the settings of a recording are read from `AppSettings`. What depends on how this recording
+    /// Reads the settings kept for the recording from `AppSettings`. What depends on how this recording
     /// was started is handed in: `recordMic` is whether it got a microphone, `saveDirectory` the folder
     /// `RecorderController.start` has checked.
     init(audioOnly: Bool, recordMic: Bool, fastStart: Bool, saveDirectory: String) {

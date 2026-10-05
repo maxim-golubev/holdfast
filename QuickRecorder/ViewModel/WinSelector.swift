@@ -132,7 +132,7 @@ struct WinSelector: View {
         guard let display = display else { return }
         closeAllWindow()
         appDelegate.createCountdownPanel(screen: display) {
-            RecorderController.shared.start(type: (selected.count<2 ? "window" : "windows") , screens: display, windows: selected, applications: nil, autoStop: autoStop)
+            RecorderController.shared.start(type: selected.count < 2 ? .window : .windows, screens: display, windows: selected, applications: nil, autoStop: autoStop)
         }
     }
 }

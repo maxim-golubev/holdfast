@@ -7,18 +7,13 @@
 
 import AppKit
 import SwiftUI
-import AVFAudio
 import AVFoundation
 import ScreenCaptureKit
 import UserNotifications
 import KeyboardShortcuts
-import ServiceManagement
-import VideoToolbox
 
-var scPerm = false
 let fd = FileManager.default
 var mouseMonitor: Any?
-var keyMonitor: Any?
 let mousePointer = NSWindow(contentRect: NSRect(x: -70, y: -70, width: 70, height: 70), styleMask: [.borderless], backing: .buffered, defer: false)
 let screenMagnifier = NSWindow(contentRect: NSRect(x: -402, y: -402, width: 402, height: 348), styleMask: [.borderless], backing: .buffered, defer: false)
 let countdownPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 120), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
@@ -65,7 +60,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         AppDelegate.created = self
     }
     
-    var isResizing = false
     private var isMagnifierCapturing = false
     private var pendingMagnifierEvent: NSEvent?
     /// The monitor that drives the mouse highlight and the magnifier of a recording. Not `mouseMonitor`, which
@@ -194,7 +188,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     func applicationWillFinishLaunching(_ notification: Notification) {
-        scPerm = ScreenContent.updateAvailableContentSync() != nil
+        _ = ScreenContent.updateAvailableContentSync()
         
         let process = NSWorkspace.shared.runningApplications.filter({ $0.bundleIdentifier == Bundle.main.bundleIdentifier })
         if process.count > 1 {
@@ -238,10 +232,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         previewWindow.isReleasedWhenClosed = false
         previewWindow.backgroundColor = .clear
         
-        KeyboardShortcuts.onKeyDown(for: .showPanel) {
-            _ = self.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
-            if withRecorder({ !$0.hasStream }) { NSApp.activate(ignoringOtherApps: true) }
-        }
+        KeyboardShortcuts.onKeyDown(for: .showPanel) { [self] in openMainPanel() }
         KeyboardShortcuts.onKeyDown(for: .saveFrame) { withRecorder { if $0.hasStream { $0.session?.savePicture() } } }
         KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { [self] in
             guard withRecorder({ $0.hasStream }) else { return }
@@ -252,34 +243,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         KeyboardShortcuts.onKeyDown(for: .stop) { [self] in if !cancelCountdown() { withRecorder { $0.stop() } } }
         KeyboardShortcuts.onKeyDown(for: .pauseResume) { withRecorder { if $0.hasStream { $0.togglePause() } } }
         KeyboardShortcuts.onKeyDown(for: .muteMicrophone) { withRecorder { $0.toggleMicrophoneMute() } }
-        KeyboardShortcuts.onKeyDown(for: .startWithAudio) {
-            withRecorder { recorder in
-                guard recorder.canStart() else { return }
+        KeyboardShortcuts.onKeyDown(for: .startWithAudio) { [self] in
+            startWithFreshContent { recorder in
                 closeAllWindow()
-                recorder.start(type: "audio", screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
+                recorder.start(type: .systemaudio, screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
             }
         }
-        KeyboardShortcuts.onKeyDown(for: .startWithScreen) {
-            withRecorder { recorder in
-                guard recorder.canStart() else { return }
+        KeyboardShortcuts.onKeyDown(for: .startWithScreen) { [self] in
+            startWithFreshContent { recorder in
                 closeAllWindow()
-                recorder.start(type: "display", screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
+                recorder.start(type: .screen, screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
             }
         }
-        KeyboardShortcuts.onKeyDown(for: .startWithArea) {[self] in
+        KeyboardShortcuts.onKeyDown(for: .startWithArea) { [self] in
             guard withRecorder({ $0.canStart() }) else { return }
             closeAllWindow()
-            showAreaSelector(size: NSSize(width: 600, height: 450))
+            chooseArea()
         }
-        KeyboardShortcuts.onKeyDown(for: .startWithWindow) {
-            withRecorder { recorder in
-                guard recorder.canStart() else { return }
+        KeyboardShortcuts.onKeyDown(for: .startWithWindow) { [self] in
+            // Asked now: by the time the list is there, another application may be in front
+            let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            startWithFreshContent { recorder in
                 closeAllWindow()
-                let frontmostApp = NSWorkspace.shared.frontmostApplication
-                if let pid = frontmostApp?.processIdentifier {
-                    guard let scWindow = ScreenContent.getWindows().first(where: { $0.owningApplication?.processID == pid && $0.title != "" && $0.isOnScreen }) else { return }
-                    recorder.start(type: "window", screens: ScreenContent.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)
+                guard let pid = pid, let scWindow = ScreenContent.getWindows().first(where: { $0.owningApplication?.processID == pid && $0.title != "" && $0.isOnScreen }) else {
+                    UserNotice.showAlertLater(title: "Failed to Record".local, message: "No window of the frontmost application was found.".local)
+                    return
                 }
+                recorder.start(type: .window, screens: ScreenContent.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)
             }
         }
         withRecorder { _ in StatusItemController.shared.install() }
@@ -291,6 +281,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if AppSettings.showOnDock { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
     }
     
+    /// A start that works from the list of screens and windows without a selector having fetched it: the list is
+    /// fetched first, because the one from the launch does not know a display connected or a window opened since.
+    /// `start` runs on the main thread, if a recording can still be started by then.
+    func startWithFreshContent(_ start: @escaping @MainActor (RecorderController) -> Void) {
+        guard withRecorder({ $0.canStart() }) else { return }
+        ScreenContent.updateAvailableContent {
+            DispatchQueue.main.async {
+                withRecorder { recorder in
+                    guard recorder.canStart() else { return }
+                    start(recorder)
+                }
+            }
+        }
+    }
+
+    /// "Open Main Panel" in the menus and its hotkey: shows the panel unless it is there or a recording has its
+    /// stream, whatever other windows are open.
+    func openMainPanel() {
+        guard withRecorder({ !$0.hasStream }) else { return }
+        if !NSApp.windows(.mainPanel).contains(where: { $0.isVisible }) { showMainPanel() }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// A click on the Dock icon: the main panel, unless another window of the app is open
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if withRecorder({ !$0.hasStream }) {
             let w1 = NSApp.windows.filter({ !$0.title.contains("Item-0") && !$0.title.isEmpty && $0.isVisible })
@@ -318,53 +332,45 @@ func closeAreaOverlay() {
 }
 
 /// Closes every window that has a title, except the status item's, the audio documents' and the one with the
-/// identifier `except`. Windows that must survive this (the preview, alerts) have no title.
+/// identifier `except`. Windows that must survive this (the preview, alerts) have no title. The click-a-window
+/// picker ends with its windows.
 func closeAllWindow(except: NSUserInterfaceItemIdentifier? = nil) {
+    WindowHighlighter.shared.stopMouseMonitor()
     for w in NSApp.windows.filter({
         $0.title != "Item-0" && $0.title != ""
         && !$0.title.lowercased().contains(".qma")
         && (except == nil || $0.identifier != except) }) { w.close() }
 }
 
-func tips(_ message: String, title: String? = nil, id: String, buttonTitle: String = "OK", switchButton: Bool = false, width: Int? = nil, action: (() -> Void)? = nil) {
+/// A tip that is shown until "Don't remind me again" is chosen
+func tips(_ message: String, id: String) {
     let never = AppSettings.dismissedTips
-    if !never.contains(id) {
-        if switchButton {
-            let alert = createAlert(title: title ?? Bundle.main.appName + " Tips".local, message: message, button1: buttonTitle, button2: "Don't remind me again", width: width).runModal()
-            if alert == .alertSecondButtonReturn { AppSettings.dismissedTips = never + [id] }
-            if alert == .alertFirstButtonReturn { action?() }
-        } else {
-            let alert = createAlert(title: title ?? Bundle.main.appName + " Tips".local, message: message, button1: "Don't remind me again", button2: buttonTitle, width: width).runModal()
-            if alert == .alertFirstButtonReturn { AppSettings.dismissedTips = never + [id] }
-            if alert == .alertSecondButtonReturn { action?() }
-        }
-    }
+    if never.contains(id) { return }
+    let alert = createAlert(title: Bundle.main.appName + " Tips".local, message: message, button1: "Don't remind me again", button2: "OK").runModal()
+    if alert == .alertFirstButtonReturn { AppSettings.dismissedTips = never + [id] }
 }
 
-func createAlert(level: NSAlert.Style = .warning, title: String, message: String, button1: String, button2: String = "", width: Int? = nil) -> NSAlert {
+func createAlert(level: NSAlert.Style = .warning, title: String, message: String, button1: String, button2: String = "") -> NSAlert {
     let alert = NSAlert()
     alert.messageText = title.local
     alert.informativeText = message.local
     alert.addButton(withTitle: button1.local)
     if button2 != "" { alert.addButton(withTitle: button2.local) }
     alert.alertStyle = level
-    if let width = width {
-        alert.accessoryView = NSView(frame: NSMakeRect(0, 0, Double(width), 0))
-    }
     return alert
 }
 
-func showAlertSyncOnMainThread(level: NSAlert.Style = .warning, title: String, message: String, button1: String, button2: String = "", width: Int? = nil) -> NSApplication.ModalResponse {
+func showAlertSyncOnMainThread(level: NSAlert.Style = .warning, title: String, message: String, button1: String, button2: String = "") -> NSApplication.ModalResponse {
     // Waiting for the main queue on the main thread would never return
     if Thread.isMainThread {
-        return createAlert(level: level, title: title, message: message, button1: button1, button2: button2, width: width).runModal()
+        return createAlert(level: level, title: title, message: message, button1: button1, button2: button2).runModal()
     }
     var response: NSApplication.ModalResponse = .abort
     let semaphore = DispatchSemaphore(value: 0)
     
     // A run loop block: an alert inside a main queue block would hold up everything queued behind it while it is open
     UserNotice.onMainRunLoop {
-        let alert = createAlert(level: level, title: title, message: message, button1: button1, button2: button2, width: width)
+        let alert = createAlert(level: level, title: title, message: message, button1: button1, button2: button2)
         response = alert.runModal()
         semaphore.signal()
     }

@@ -9,6 +9,10 @@ import SwiftUI
 import ScreenCaptureKit
 import Quartz
 
+/// The Esc monitor of the area selector, and whether its area is being dragged or resized with the mouse
+private var keyMonitor: Any?
+private var isResizing = false
+
 struct DashWindow: View {
     var body: some View {
         ZStack {
@@ -32,7 +36,6 @@ struct resizeView: View {
     @AppStorage(AppSettings.$areaHeight) private var areaHeight: Int
     @AppStorage(AppSettings.$highRes)    private var highRes: Int
     
-    var appDelegate = AppDelegate.shared
     let screen: SCDisplay
     
     var body: some View {
@@ -44,7 +47,7 @@ struct resizeView: View {
                         .frame(width: 60)
                         .focused($focusedField, equals: .width)
                         .onChange(of: areaWidth) { _, newValue in
-                            if !appDelegate.isResizing {
+                            if !isResizing {
                                 areaWidth = min(max(newValue, 1), screen.width)
                                 resize()
                             }
@@ -54,7 +57,7 @@ struct resizeView: View {
                         .frame(width: 60)
                         .focused($focusedField, equals: .height)
                         .onChange(of: areaHeight) { _, newValue in
-                            if !appDelegate.isResizing {
+                            if !isResizing {
                                 areaHeight = min(max(newValue, 1), screen.height)
                                 resize()
                             }
@@ -147,23 +150,10 @@ struct AreaSelector: View {
         guard let area = ScreenContent.screenArea, let nsScreen = screen.nsScreen else { return }
         closeAllWindow()
         appDelegate.stopGlobalMouseMonitor()
-        // The dashed frame lies just outside the recorded area
-        let border: CGFloat = 4
-        let frame = NSRect(x: Int(area.origin.x + nsScreen.frame.minX - border),
-                           y: Int(area.origin.y + nsScreen.frame.minY - border),
-                           width: Int(area.width + 2 * border), height: Int(area.height + 2 * border))
-        let window = NSWindow(contentRect: frame, styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
-        window.hasShadow = false
-        window.level = .screenSaver
-        window.ignoresMouseEvents = true
-        window.isReleasedWhenClosed = false
-        window.title = "Area Overlayer".local
-        window.identifier = .areaOverlay
-        window.backgroundColor = NSColor.clear
-        window.contentView = NSHostingView(rootView: DashWindow())
-        window.orderFront(self)
+        // The area is relative to its screen
+        appDelegate.showAreaOverlay(around: area.offsetBy(dx: nsScreen.frame.minX, dy: nsScreen.frame.minY), border: 4)
         appDelegate.createCountdownPanel(screen: screen) {
-            RecorderController.shared.start(type: "area", screens: screen, windows: nil, applications: nil, autoStop: autoStop)
+            RecorderController.shared.start(type: .screenarea, screens: screen, windows: nil, applications: nil, autoStop: autoStop)
         }
     }
 }
@@ -198,7 +188,7 @@ class ScreenshotOverlayView: NSView {
     }
 
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     override func viewDidMoveToWindow() {
@@ -323,7 +313,7 @@ class ScreenshotOverlayView: NSView {
         lastMouseLocation = location
         activeHandle = handleForPoint(location)
         if let rect = selectionRect, NSPointInRect(location, rect) { dragIng = true }
-        AppDelegate.shared.isResizing = true
+        isResizing = true
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -379,7 +369,6 @@ class ScreenshotOverlayView: NSView {
             }
         } else {
             if dragIng {
-                dragIng = true
                 // How far the pointer moved
                 let deltaX = currentLocation.x - initialLocation.x
                 let deltaY = currentLocation.y - initialLocation.y
@@ -392,7 +381,6 @@ class ScreenshotOverlayView: NSView {
                 }
                 initialLocation = currentLocation
             } else {
-                //dragIng = false
                 // Draw a new rectangle
                 guard let maxFrame = maxFrame else { return }
                 let origin = NSPoint(x: max(maxFrame.origin.x, min(initialLocation.x, currentLocation.x)), y: max(maxFrame.origin.y, min(initialLocation.y, currentLocation.y)))
@@ -406,7 +394,6 @@ class ScreenshotOverlayView: NSView {
                     AppSettings.areaWidth = Int(selection.width)
                     AppSettings.areaHeight = Int(selection.height)
                 }
-                //initialLocation = currentLocation
             }
             self.initialLocation = initialLocation
         }
@@ -417,7 +404,7 @@ class ScreenshotOverlayView: NSView {
         initialLocation = nil
         activeHandle = .none
         dragIng = false
-        AppDelegate.shared.isResizing = false
+        isResizing = false
         if let rect = selectionRect {
             ScreenContent.screenArea = rect
         }
@@ -442,7 +429,7 @@ class ScreenshotWindow: NSPanel {
     }
     
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     func myKeyDownEvent(event: NSEvent) -> NSEvent? {
@@ -463,8 +450,4 @@ class ScreenshotWindow: NSPanel {
 enum ResizeHandle: CaseIterable {
     case none
     case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
-    
-    static var allCases: [ResizeHandle] {
-        return [.none, .topLeft, .top, .topRight, .right, .bottomRight, .bottom, .bottomLeft, .left]
-    }
 }

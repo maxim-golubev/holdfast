@@ -152,10 +152,16 @@ extension AppDelegate {
     // What the tiles of the main panel and the items of the status item's menu do
 
     func recordSystemAudio() {
-        guard let display = ScreenContent.getSCDisplayWithMouse() else { return }
         closeMainWindow()
-        createCountdownPanel(screen: display) {
-            withRecorder { $0.start(type: "audio", screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil) }
+        startWithFreshContent { [self] _ in
+            // The display is only where the countdown is shown and what the stream is attached to
+            guard let display = ScreenContent.getSCDisplayWithMouse() else {
+                UserNotice.showAlertLater(title: "Failed to Record".local, message: "No display to record was found.".local)
+                return
+            }
+            createCountdownPanel(screen: display) {
+                withRecorder { $0.start(type: .systemaudio, screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil) }
+            }
         }
     }
 
@@ -250,6 +256,23 @@ extension AppDelegate {
         }
     }
     
+    /// The dashed frame around the area that is about to be recorded, `border` points outside `rect` (global
+    /// screen coordinates). `closeAreaOverlay` takes it away.
+    func showAreaOverlay(around rect: NSRect, border: CGFloat) {
+        let frame = NSRect(x: Int(rect.origin.x - border), y: Int(rect.origin.y - border),
+                           width: Int(rect.width + 2 * border), height: Int(rect.height + 2 * border))
+        let window = NSWindow(contentRect: frame, styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
+        window.hasShadow = false
+        window.level = .screenSaver
+        window.ignoresMouseEvents = true
+        window.isReleasedWhenClosed = false
+        window.title = "Area Overlayer".local
+        window.identifier = .areaOverlay
+        window.backgroundColor = NSColor.clear
+        window.contentView = NSHostingView(rootView: DashWindow())
+        window.orderFront(self)
+    }
+
     /// Cancels a countdown that has not started its recording yet. Returns false if no countdown was running.
     @discardableResult
     func cancelCountdown() -> Bool {

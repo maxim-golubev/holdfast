@@ -9,9 +9,8 @@ import Foundation
 /// tracks can be read afterwards. Also printed.
 enum RecLog {
     private static let queue = DispatchQueue(label: "reclog")
-    /// The log file, for the "Open Recordings Log" button
-    static var fileURL: URL? { url }
-    private static let url: URL? = {
+    /// The log file, also for the "Open Recordings Log" button
+    static let url: URL? = {
         guard let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
             .appendingPathComponent("Logs/QuickRecorder", isDirectory: true) else { return nil }
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)

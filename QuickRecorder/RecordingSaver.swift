@@ -230,8 +230,7 @@ enum RecordingSaver {
         }
     }
 
-    nonisolated static func m4a2mp3(inputUrl: URL, outputUrl: URL, bitrate: Int = AppSettings.audioQuality.rawValue) async throws {
-        let progress = Progress()
+    nonisolated static func m4a2mp3(inputUrl: URL, outputUrl: URL, bitrate: Int) async throws {
         let lameEncoder = try SwiftLameEncoder(
             sourceUrl: inputUrl,
             configuration: .init(
@@ -239,8 +238,7 @@ enum RecordingSaver {
                 bitrateMode: .constant(Int32(bitrate)),
                 quality: .nearBest
             ),
-            destinationUrl: outputUrl,
-            progress: progress // optional
+            destinationUrl: outputUrl
         )
         try await lameEncoder.encode(priority: .userInitiated)
     }

@@ -9,11 +9,9 @@ import Foundation
 /// What a recording needs from the app around it: the status bar, the windows, alerts and notifications, and the
 /// work on the finished file. The app's is `RecorderEnvironment.app`; the tests use their own.
 struct RecorderEnvironment {
-    /// The state changed, the recovery began or ended, or quitting was asked for
-    var refreshStatusItem: @MainActor () -> Void = {}
-    /// Something else the status item shows has changed (pause, mute, warning, microphone level, progress)
+    /// Something the status item shows has changed: the state, the recovery, a request to quit, pause, mute,
+    /// warning, microphone level, progress
     var statusChanged: @MainActor (RecorderController) -> Void = { _ in }
-    var becameIdle: @MainActor () -> Void = {}
     /// A start was asked for while the previous recording is still being saved
     var startRefused: @MainActor () -> Void = {}
     /// A start was refused or did not lead to a recording: what a selector left on screen goes
@@ -51,7 +49,7 @@ final class RecorderController {
     init(queue: DispatchQueue, environment: RecorderEnvironment) {
         self.queue = queue
         self.environment = environment
-        recovery.runningChanged = { environment.refreshStatusItem() }
+        recovery.runningChanged = { [unowned self] in environment.statusChanged(self) }
         recovery.progressChanged = { [unowned self] in environment.statusChanged(self) }
         recovery.report = environment.report
     }
@@ -135,8 +133,8 @@ final class RecorderController {
     }
 
     /// Called by the status item's timer: stops the recording when it has run for the minutes it was started with
-    func stopIfDue(at now: Date) {
-        guard let session = session, streamType != nil, session.autoStopIsDue(at: now) else { return }
+    func stopIfDue() {
+        guard let session = session, streamType != nil, session.autoStopIsDue() else { return }
         session.stop()
     }
 
@@ -155,7 +153,7 @@ final class RecorderController {
         stop()
         if !quitRequested {
             quitRequested = true
-            environment.refreshStatusItem()
+            environment.statusChanged(self)
             whenIdle { [self] in
                 recovery.whenDone { [self] in
                     environment.whenAlertsDismissed(reply)
@@ -170,9 +168,7 @@ final class RecorderController {
         print("Recording state: \(old) -> \(changed.state)")
         if changed.state == .idle { session = nil }
         environment.statusChanged(self)
-        environment.refreshStatusItem()
         guard state == .idle else { return }
-        environment.becameIdle()
         let handlers = idleHandlers
         idleHandlers = []
         handlers.forEach { $0() }

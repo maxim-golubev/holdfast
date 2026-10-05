@@ -126,12 +126,6 @@ final class MicConverter {
         aligning = true
     }
 
-    /// How far the track is behind `pts`, in seconds. Zero before the timeline has started.
-    func lag(behind pts: CMTime) -> Double {
-        guard nextPTS.isValid, pts.isValid else { return 0 }
-        return CMTimeGetSeconds(CMTimeSubtract(pts, nextPTS))
-    }
-
     /// Converts one microphone buffer whose (pause adjusted) start time is `pts` and hands the result to `append`,
     /// which returns false when the writer did not take the buffer. Returns true when the buffer's audio was written.
     ///

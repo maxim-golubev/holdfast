@@ -12,7 +12,7 @@ import Foundation
 /// It has the recording's writer keep every track of the file advancing when its source delivers nothing:
 /// silence for the microphone and for system audio, the last frame again for video. A track that stops would hold back the fragments of all the others
 /// and leave a hole that players handle badly. It is also the watchdog that tells the user while a source is not
-/// being recorded. Everything here is only used on the sample queue, and the methods that others call trap elsewhere.
+/// being recorded. Everything here is only used on the sample queue; the methods the session calls and the timer trap elsewhere.
 final class RecordingMonitor {
     private static let interval: Double = 0.5
     /// How long a source may deliver nothing before its track is continued without it. The tracks are filled up to
@@ -93,15 +93,14 @@ final class RecordingMonitor {
         resumeWaited = false
     }
 
+    /// From the writer, on the path of a delivered buffer, which does not trap (see `RecordingSession.received`)
     func microphoneWritten(upTo end: CMTime, peak: Float) {
-        dispatchPrecondition(condition: .onQueue(queue))
         micHeard = end
         if peak > 0 { micSound = end }
         micPeak = max(micPeak, peak)
     }
 
     func systemAudioWritten(upTo end: CMTime) {
-        dispatchPrecondition(condition: .onQueue(queue))
         audioHeard = end
     }
 

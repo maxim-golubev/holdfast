@@ -123,7 +123,12 @@ final class Rig {
         environment.startRefused = { [journal] in journal.note("refused") }
         environment.startAbandoned = { [journal] in journal.note("abandoned") }
         environment.tearDown = { [journal] in journal.note("tearDown") }
-        environment.becameIdle = { [journal] in journal.note("idle") }
+        var wasIdle = true
+        environment.statusChanged = { [journal] recorder in
+            let isIdle = recorder.state == .idle
+            if isIdle && !wasIdle { journal.note("idle") }
+            wasIdle = isIdle
+        }
         environment.save = { [journal, saves] session, _, _, reason, cancelled in
             journal.note("save")
             saves.all.append((reason, cancelled))
@@ -398,11 +403,15 @@ func sessionTests() async {
         expect(rig.controller.isPaused && writer.isPaused, "paused")
         rig.controller.togglePause()
         expect(!rig.controller.isPaused && !writer.isPaused, "resumed")
-        expect(!session.autoStopIsDue(at: Date()), "no automatic stop without a stop time")
+        expect(!session.autoStopIsDue(), "no automatic stop without a stop time")
         rig.controller.stop()
         expect(await rig.idle(), "idle")
         rig.controller.togglePause()
         expect(!rig.controller.isPaused, "nothing to pause when idle")
+        let (starting, _, startingWriter) = try rig.start(enter: false)
+        rig.controller.togglePause()
+        expect(!rig.controller.isPaused && !startingWriter.isPaused, "no pause while the capture is still starting")
+        starting.abandonStart()
     }
 
     await test("session: the microphone is muted for one recording, and only one that has a microphone") {

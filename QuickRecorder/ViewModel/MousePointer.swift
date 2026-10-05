@@ -5,8 +5,6 @@
 //  Created by apple on 2024/4/21.
 //
 import SwiftUI
-import Foundation
-import Cocoa
 
 struct MousePointerView: View {
     @AppStorage(AppSettings.$showMouse) private var showMouse: Bool

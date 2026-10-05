@@ -6,10 +6,8 @@
 //
 
 import Foundation
-import UserNotifications
 import ScreenCaptureKit
 import AVFoundation
-import AVFAudio
 import VideoToolbox
 
 // Starting a recording in the app: what is checked and decided on the main thread (`start`), then the capture
@@ -30,17 +28,7 @@ extension RecorderController {
     /// recording or still being saved cannot get in.
     /// `recordMic` overrides the "recordMic" setting for this recording only. `autoStop` is the number of minutes
     /// after which this recording stops by itself (0: never); it is not set anywhere else.
-    func start(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil, autoStop: Int = 0) {
-        let streamType: StreamType
-        switch type {
-        case "window":  streamType = .window
-        case "windows":  streamType = .windows
-        case "display": streamType = .screen
-        case "application": streamType = .application
-        case "area": streamType = .screenarea
-        case "audio":   streamType = .systemaudio
-            default: return // if we don't even know what to record I don't think we should even try
-        }
+    func start(type streamType: StreamType, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil, autoStop: Int = 0) {
         guard let session = begin(streamType, autoStop: autoStop) else { return }
         // Every reason not to start ends here, with one alert
         func failToRecord(_ message: String) {
@@ -228,15 +216,13 @@ extension RecorderEnvironment {
     static var app: RecorderEnvironment {
         var app = RecorderEnvironment()
         // The status item reads the recorder itself, whatever it was that changed
-        app.refreshStatusItem = { StatusItemController.shared.refresh() }
         app.statusChanged = { _ in StatusItemController.shared.refresh() }
         app.startRefused = {
             UserNotice.showAlertLater(title: "Failed to Record".local, message: "The previous recording is still being saved. Start the new one when \"Saving…\" has gone from the menu bar.".local)
         }
         app.startAbandoned = { closeAreaOverlay() }
         app.tearDown = {
-            mousePointer.orderOut(nil)
-            screenMagnifier.orderOut(nil)
+            // Both also take the mouse highlight and the magnifier off the screen
             AppDelegate.shared.stopGlobalMouseMonitor()
             AppDelegate.shared.stopRecordingMouseMonitor()
             closeAreaOverlay()

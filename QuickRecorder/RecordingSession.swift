@@ -63,7 +63,7 @@ extension MovieWriter: RecordingWriter {}
 /// It lives on two threads, and each member belongs to one of them. The `@MainActor` members are the state machine
 /// and what the UI reads. The writer and the monitor belong to the sample queue, the queue the capture delivers
 /// its buffers on: they are only reached through `queueWriter` and the monitor's own methods, which trap anywhere
-/// else. From the main thread the queue is entered with `queue.sync`; the queue never waits for the main thread.
+/// else, except on the path of a delivered buffer (`received`), which only assumes the queue. From the main thread the queue is entered with `queue.sync`; the queue never waits for the main thread.
 /// That discipline, not the compiler, is what makes it safe to hand a session from one thread to the other.
 final class RecordingSession: @unchecked Sendable {
     /// What the status bar shows about the recording besides its state
@@ -247,7 +247,9 @@ final class RecordingSession: @unchecked Sendable {
 
     /// On the sample queue: a buffer of the capture. The writer puts it on the timeline and into its track.
     func received(_ sample: CaptureSample) {
-        let writer = queueWriter
+        // Read directly: nothing on the path of a delivered buffer traps, it trusts ScreenCaptureKit to deliver
+        // on the queue it was given
+        let writer = self.writer
         if wantsPicture, sample.buffer.imageBuffer != nil {
             wantsPicture = false
             environment.savePicture(sample.buffer, writer?.recording.saveDirectory)
@@ -261,9 +263,11 @@ final class RecordingSession: @unchecked Sendable {
         queue.async { self.wantsPicture = true }
     }
 
-    /// Pauses the recording, or resumes it
+    /// Pauses the running recording, or resumes it. Like the mute, only in the `recording` state: not while the
+    /// capture is still starting or the writer is being finished.
     @MainActor
     func togglePause() {
+        guard state == .recording else { return }
         let paused: Bool? = queue.sync {
             guard let writer = queueWriter else { return nil }
             monitor.pauseToggled()
@@ -323,10 +327,12 @@ final class RecordingSession: @unchecked Sendable {
         return Timeline.lengthText(timePassed)
     }
 
-    /// Whether the recording has run for its `autoStop` minutes at `now`
+    /// Whether the recording has run for its `autoStop` minutes: the time the status item shows, so never while
+    /// paused, and time spent paused does not count
     @MainActor
-    func autoStopIsDue(at now: Date) -> Bool {
-        return autoStop != 0 && Date.now.timeIntervalSince(startTime ?? now) / 60 >= Double(autoStop)
+    func autoStopIsDue() -> Bool {
+        guard autoStop != 0, !isPaused, let startTime = startTime else { return false }
+        return Date.now.timeIntervalSince(startTime) / 60 >= Double(autoStop)
     }
 
     /// From the audio mix, while the recording is being finalized

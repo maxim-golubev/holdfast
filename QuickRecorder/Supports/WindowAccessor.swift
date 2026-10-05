@@ -1,6 +1,6 @@
 //
 //  WindowAccessor.swift
-//  xHistory
+//  QuickRecorder
 //
 //  Created by apple on 2024/11/7.
 //

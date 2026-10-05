@@ -59,8 +59,12 @@ enum ScreenContent {
         SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { content, error in
             if let error = error {
                 switch error {
-                case SCStreamError.userDeclined: requestPermissions()
-                default: print("Error: failed to fetch available content: ".local, error.localizedDescription)
+                case SCStreamError.userDeclined:
+                    requestPermissions()
+                default:
+                    // The caller goes on with the list it has; a start that needs what is missing says so
+                    print("Error: failed to fetch available content: ".local, error.localizedDescription)
+                    completion()
                 }
                 return
             }
@@ -83,21 +87,19 @@ enum ScreenContent {
         })
     }
     
-    static func getWindows(isOnScreen: Bool = true, hideSelf: Bool = true) -> [SCWindow] {
+    /// The windows on screen that can be recorded, without the app's own when "hideSelf" is on
+    static func getWindows() -> [SCWindow] {
         guard let content = availableContent else { return [] }
         var windows = content.windows.filter {
-            guard let app =  $0.owningApplication,
-                  let title = $0.title else {//, !title.isEmpty else {
-                return false
-            }
+            guard let app = $0.owningApplication, let title = $0.title else { return false }
             return !excludedApps.contains(app.bundleIdentifier)
             && !title.contains("Item-0")
             && title != "Window"
             && $0.frame.width > 40
             && $0.frame.height > 40
+            && $0.isOnScreen
         }
-        if isOnScreen { windows = windows.filter({$0.isOnScreen == true}) }
-        if hideSelf && AppSettings.hideSelf { windows = windows.filter({$0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier}) }
+        if AppSettings.hideSelf { windows = windows.filter({$0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier}) }
         return windows
     }
     
@@ -163,13 +165,7 @@ enum ScreenContent {
     static func getWallpaper(_ display: SCDisplay) -> NSImage? {
         guard let screen = display.nsScreen else { return nil }
         guard let url = NSWorkspace.shared.desktopImageURL(for: screen) else { return nil }
-        do {
-            var wallpaper: NSImage?
-            try wallpaper = NSImage(data: Data(contentsOf: url))
-            if let w = wallpaper { return w }
-        } catch {
-            print("load wallpaper error: \(error)")
-        }
-        return nil
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return NSImage(data: data)
     }
 }

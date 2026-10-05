@@ -1,6 +1,6 @@
 //
 //  WindowHighlighter.swift
-//  Topit
+//  QuickRecorder
 //
 //  Created by apple on 2024/11/26.
 //
@@ -66,26 +66,14 @@ struct HighlightMask: View {
             guard let screen = display, let nsScreen = display?.nsScreen, var area = window?.frame else { return }
             area = CGRectTransform(cgRect: area)
             ScreenContent.screenArea = NSRect(x: area.origin.x - nsScreen.frame.minX, y: area.origin.y - nsScreen.frame.minY, width:area.width, height: area.height)
-            let frame = NSRect(x: Int(area.origin.x - 3),
-                               y: Int(area.origin.y - 3),
-                               width: Int(area.width + 6), height: Int(area.height + 6))
-            let dashWindow = NSWindow(contentRect: frame, styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
-            dashWindow.hasShadow = false
-            dashWindow.level = .screenSaver
-            dashWindow.ignoresMouseEvents = true
-            dashWindow.isReleasedWhenClosed = false
-            dashWindow.title = "Area Overlayer".local
-            dashWindow.identifier = .areaOverlay
-            dashWindow.backgroundColor = NSColor.clear
-            dashWindow.contentView = NSHostingView(rootView: DashWindow())
-            dashWindow.orderFront(self)
+            appDelegate.showAreaOverlay(around: area, border: 3)
             appDelegate.createCountdownPanel(screen: screen) {
-                RecorderController.shared.start(type: "area", screens: display, windows: nil, applications: nil, autoStop: autoStop)
+                RecorderController.shared.start(type: .screenarea, screens: display, windows: nil, applications: nil, autoStop: autoStop)
             }
         default:
             if let d = display, let w = window {
                 appDelegate.createCountdownPanel(screen: d) {
-                    RecorderController.shared.start(type: "window" , screens: d, windows: [w], applications: nil, autoStop: autoStop)
+                    RecorderController.shared.start(type: .window, screens: d, windows: [w], applications: nil, autoStop: autoStop)
                 }
             }
         }
@@ -96,6 +84,7 @@ class WindowHighlighter {
     static let shared = WindowHighlighter()
     var mouseMonitor: Any?
     var mouseMonitorL: Any?
+    private var keyMonitor: Any?
     var targetWindowID: Int?
     var mask: EscPanel?
     var Mode: Int = 1
@@ -115,6 +104,8 @@ class WindowHighlighter {
                 id = "qr.how-to-select.note"
             }
             tips(message, id: id)
+            // The tip's alert had the keyboard
+            self.makeCoverKey()
         }
         
         for screen in NSScreen.screens {
@@ -130,6 +121,15 @@ class WindowHighlighter {
             cover.identifier = .screenCover
             cover.orderFront(self)
         }
+        makeCoverKey()
+        // Esc while one of the app's windows has the keyboard, the picker's own included
+        if keyMonitor == nil {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard event.keyCode == 53 else { return event }
+                self?.cancel()
+                return nil
+            }
+        }
         
         if mouseMonitor == nil {
             mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { _ in self.updateMask() }
@@ -142,9 +142,27 @@ class WindowHighlighter {
         }
     }
         
+    /// Esc: the picker ends and nothing is chosen
+    func cancel() {
+        mask?.close()
+        stopMouseMonitor()
+    }
+    
+    /// The covers ignore the mouse and are over other applications' windows, so Esc only reaches the picker
+    /// while one of its panels has the keyboard: the mask when there is one, a cover otherwise.
+    private func makeCoverKey() {
+        let covers = NSApp.windows(.screenCover).filter({ $0.isVisible })
+        let mouse = NSEvent.mouseLocation
+        (covers.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? covers.first)?.makeKey()
+    }
+    
+    /// Main thread. Ends the picker: its covers and its monitors go. The mask stays, a click on it shows its sheet.
     func stopMouseMonitor() {
-        DispatchQueue.main.async {
-            for w in NSApp.windows(.screenCover) { w.close() }
+        for w in NSApp.windows(.screenCover) { w.close() }
+        targetWindowID = nil
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
         }
         if let monitor = mouseMonitor {
             NSEvent.removeMonitor(monitor)
@@ -158,8 +176,11 @@ class WindowHighlighter {
     
     func updateMask() {
         guard let targetWindow = getWindowUnderMouse() else {
-            mask?.close()
-            targetWindowID = nil
+            if targetWindowID != nil {
+                mask?.close()
+                targetWindowID = nil
+                makeCoverKey()
+            }
             return
         }
         
@@ -238,22 +259,12 @@ class WindowHighlighter {
         return bounds
     }
     
-    func CGRectTransform(cgRect: CGRect) -> NSRect {
-        let x = cgRect.origin.x
-        let y = cgRect.origin.y
-        let w = cgRect.width
-        let h = cgRect.height
-        if let main = NSScreen.screens.first(where: { $0.isMainScreen }) {
-            return NSRect(x: x, y: main.frame.height - y - h, width: w, height: h)
-        }
-        return cgRect
-    }
 }
 
 class EscPanel: NSPanel {
     override func cancelOperation(_ sender: Any?) {
         self.close()
-        WindowHighlighter.shared.stopMouseMonitor()
+        WindowHighlighter.shared.cancel()
     }
     override var canBecomeKey: Bool {
         return true

@@ -1,5 +1,3 @@
-import UniformTypeIdentifiers
-import UserNotifications
 import SwiftUI
 import AVKit
 
@@ -13,7 +11,6 @@ class RecorderPlayerModel: NSObject, ObservableObject {
     var playerItem: AVPlayerItem?
     var nsWindow: NSWindow?
     private var observesStatus = false
-    private var timeJumpObserver: NSObjectProtocol?
     
     override init() {
         self.playerView = AVPlayerView()
@@ -21,7 +18,7 @@ class RecorderPlayerModel: NSObject, ObservableObject {
         self.playerView.player = AVPlayer()
     }
     
-    func loadVideo(fromUrl: URL, completion: @escaping () -> Void) {
+    func loadVideo(fromUrl: URL) {
         fileUrl = fromUrl
         asset = AVAsset(url: fromUrl)
         guard let asset = asset else { return }
@@ -34,20 +31,14 @@ class RecorderPlayerModel: NSObject, ObservableObject {
         
         playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.new], context: nil)
         observesStatus = true
-        
-        timeJumpObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemTimeJumped, object: playerItem, queue: nil) { [weak self] _ in
-            if self?.playerView.canBeginTrimming == true { completion() }
-        }
     }
     
-    /// Takes the status observer and the notification observer off the current item. Safe to call more than once.
+    /// Takes the status observer off the current item. Safe to call more than once.
     private func removeObservers() {
         if observesStatus, let playerItem = playerItem {
             playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
         }
         observesStatus = false
-        if let observer = timeJumpObserver { NotificationCenter.default.removeObserver(observer) }
-        timeJumpObserver = nil
     }
     
     deinit { removeObservers() }
@@ -71,17 +62,18 @@ class RecorderPlayerModel: NSObject, ObservableObject {
                             let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough)
                             let dateFormatter = DateFormatter()
                             let fileEnding = fileUrl.pathExtension.lowercased()
-                            var fileType: AVFileType?
+                            let fileType: AVFileType
                             switch fileEnding {
-                                case VideoFormat.mov.rawValue: fileType = AVFileType.mov
-                                case VideoFormat.mp4.rawValue: fileType = AVFileType.mp4
-                                default: assertionFailure("loaded unknown video format".local)
+                            case VideoFormat.mov.rawValue: fileType = .mov
+                            case VideoFormat.mp4.rawValue: fileType = .mp4
+                            default:
+                                // An export needs a file type, and only these two are written
+                                UserNotice.showNotification(title: "Clip Not Saved".local, body: String(format: "Only MOV and MP4 files can be trimmed: %@".local, fileUrl.lastPathComponent), id: "quickrecorder.error.\(UUID().uuidString)")
+                                self.nsWindow?.close()
+                                return
                             }
                             dateFormatter.dateFormat = "y-MM-dd HH.mm.ss"
-                            var path: String?
-                            path = fileUrl.deletingPathExtension().path
-                            guard let path = path else { return }
-                            let filePath = path.removingPercentEncoding! + " (Cropped in ".local + "\(dateFormatter.string(from: Date())))." + fileEnding
+                            let filePath = fileUrl.deletingPathExtension().path + " (Cropped in ".local + "\(dateFormatter.string(from: Date())))." + fileEnding
                             exportSession?.outputURL = filePath.url
                             exportSession?.outputFileType = fileType
                             exportSession?.timeRange = timeRange
@@ -90,15 +82,7 @@ class RecorderPlayerModel: NSObject, ObservableObject {
                                     print("Error: \(error.localizedDescription)")
                                 } else {
                                     print("Trimmed video exported successfully.")
-                                    let content = UNMutableNotificationContent()
-                                    content.title = "Clip Saved".local
-                                    content.body = String(format: "File saved to: %@".local, filePath)
-                                    content.sound = UNNotificationSound.default
-                                    let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
-                                    let request = UNNotificationRequest(identifier: "quickrecorder.completed.\(UUID().uuidString)", content: content, trigger: trigger)
-                                    UNUserNotificationCenter.current().add(request) { error in
-                                        if let error = error { print("Notification failed to send：\(error.localizedDescription)") }
-                                    }
+                                    UserNotice.showNotification(title: "Clip Saved".local, body: String(format: "File saved to: %@".local, filePath), id: "quickrecorder.completed.\(UUID().uuidString)")
                                 }
                             }
                             self.nsWindow?.close()
@@ -155,7 +139,7 @@ struct VideoTrimmerView: View {
             }
             ZStack {
                 RecorderPlayerView(playerView: playerViewModel.playerView)
-                    .onAppear {playerViewModel.loadVideo(fromUrl: videoURL) {}}
+                    .onAppear { playerViewModel.loadVideo(fromUrl: videoURL) }
                     .padding(4)
                     .background(
                         Rectangle()

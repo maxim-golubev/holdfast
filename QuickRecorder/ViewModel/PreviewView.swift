@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import Combine
 
 struct PreviewView: View {
     let frame: NSImage
@@ -31,12 +30,7 @@ struct PreviewView: View {
                         .resizable().scaledToFit()
                         .shadow(color: .black.opacity(0.2), radius: 3, y: 1.5)
                     if isHovered2 {
-                        Button(action: {
-                            if fd.fileExists(atPath: filePath) {
-                                NSWorkspace.shared.open(filePath.url)
-                                closeWindow()
-                            }
-                        }, label: {
+                        Button(action: openRecording, label: {
                             ZStack {
                                 Image(systemName: "circle.fill")
                                     .font(.system(size: 49))
@@ -47,7 +41,10 @@ struct PreviewView: View {
                                     .foregroundStyle(.white)
                                     .shadow(radius: 4)
                             }
-                        }).buttonStyle(.plain)
+                        })
+                        .buttonStyle(.plain)
+                        .help("Open the recording")
+                        .accessibilityLabel("Open Recording")
                     }
                 }
                 .onHover(perform: { isHovered2 = $0 })
@@ -66,9 +63,17 @@ struct PreviewView: View {
                             .font(.system(size: 10, weight: .black))
                             .foregroundStyle(.white)
                     }
-                }).padding(4)
+                })
+                .help("Close this preview")
+                .accessibilityLabel("Close Preview")
+                .padding(4)
             }
         }
+        // The two buttons are only there under the pointer, so VoiceOver gets what they do as actions
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Recording Preview")
+        .accessibilityAction(named: "Open Recording", openRecording)
+        .accessibilityAction(named: "Close Preview") { closeWindow() }
         .opacity(opacity)
         .onHover(perform: { isHovered = $0 })
         .background(WindowAccessor(onWindowOpen: { w in nsWindow = w }))
@@ -123,6 +128,13 @@ struct PreviewView: View {
         }
     }
     
+    private func openRecording() {
+        if fd.fileExists(atPath: filePath) {
+            NSWorkspace.shared.open(filePath.url)
+            closeWindow()
+        }
+    }
+    
     private func closeWindow() {
         withAnimation(.easeIn(duration: 0.2)) { opacity = 0.0 }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -131,7 +143,7 @@ struct PreviewView: View {
     }
     
     private func showSharingServicePicker(for url: URL) {
-        if let window = nsWindow {
+        if let window = nsWindow, let view = window.contentView {
             isSharing = true
             sharingDelegate.onDidChooseService = { service in
                 isSharing = false
@@ -145,7 +157,7 @@ struct PreviewView: View {
             }
             let sharingPicker = NSSharingServicePicker(items: [url])
             sharingPicker.delegate = sharingDelegate
-            sharingPicker.show(relativeTo: .zero, of: window.contentView!, preferredEdge: .minY)
+            sharingPicker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
         }
     }
 }

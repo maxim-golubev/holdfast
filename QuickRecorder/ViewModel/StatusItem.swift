@@ -10,7 +10,7 @@ import AppKit
 /// here measures a width or looks at where a click landed.
 ///
 /// It shows what `RecorderController` is doing and is told of every change through `RecorderEnvironment.app`
-/// (`refresh`). While a recording starts or runs a timer refreshes the elapsed time twice a second, and carries
+/// (`statusChanged` calls `refresh`). While a recording starts or runs a timer refreshes the elapsed time twice a second, and carries
 /// out the recording's automatic stop.
 @MainActor
 final class StatusItemController: NSObject, NSMenuDelegate {
@@ -123,7 +123,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private func tick() {
-        recorder.stopIfDue(at: Date.now)
+        recorder.stopIfDue()
         refresh()
     }
 
@@ -248,8 +248,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     @objc private func openMainPanel() {
-        _ = AppDelegate.shared.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
-        NSApp.activate(ignoringOtherApps: true)
+        AppDelegate.shared.openMainPanel()
     }
 
     /// The menu may have been open while the recorder left the idle state

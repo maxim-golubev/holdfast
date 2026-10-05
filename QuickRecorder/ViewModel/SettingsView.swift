@@ -199,7 +199,7 @@ struct AudioSettings: View {
                     Text("FLAC (Lossless)").tag(AudioFormat.flac)
                     Text("Opus").tag(AudioFormat.opus)
                 } label: {
-                    RowLabel("Format", "MP3 is for audio-only recordings; the audio of a video is AAC then.")
+                    RowLabel("Format", "MP3 is for audio-only recordings and Opus needs a MOV file; otherwise the audio of a video is AAC.")
                 }
                 Picker("Quality", selection: $audioQuality) {
                     if isLossless { Text("Lossless").tag(audioQuality) }
@@ -282,7 +282,7 @@ struct OutputSettings: View {
 
     /// The log, or its folder while nothing has been written yet
     private func openLog() {
-        guard let log = RecLog.fileURL else { return }
+        guard let log = RecLog.url else { return }
         let target = FileManager.default.fileExists(atPath: log.path) ? log : log.deletingLastPathComponent()
         NSWorkspace.shared.open(target)
     }

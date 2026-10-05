@@ -1,5 +1,5 @@
 //
-//  qmaPlayer.swift
+//  QmaPlayer.swift
 //  QuickRecorder
 //
 //  Created by apple on 2024/6/28.
@@ -25,7 +25,7 @@ struct qmaPlayerView: View {
                 Button {} label: {
                     PlayerSlider(percentage: $audioPlayerManager.progress, audioLength: $audioPlayerManager.audioLength){ editing in
                         if !editing {
-                            let newTime = audioPlayerManager.progress * audioPlayerManager.getPlayerDuration()
+                            let newTime = audioPlayerManager.progress * audioPlayerManager.audioLength
                             audioPlayerManager.seek(to: newTime)
                             audioPlayerManager.shouldPlay = false
                         } else {
@@ -55,6 +55,7 @@ struct qmaPlayerView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Stop Play")
+                    .accessibilityLabel("Stop")
                     .frame(width: 30, height: 30)
                     .disabled(audioPlayerManager.exporting)
                     .onHover { hovering in overStop = hovering }
@@ -76,6 +77,7 @@ struct qmaPlayerView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Play / Pause")
+                    .accessibilityLabel(audioPlayerManager.isPlaying ? "Pause" : "Play")
                     .frame(width: 35, height: 35)
                     .padding(.leading, 2)
                     .disabled(audioPlayerManager.exporting)
@@ -97,6 +99,7 @@ struct qmaPlayerView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Save Changes")
+                    .accessibilityLabel("Save Changes")
                     .frame(width: 30, height: 30)
                     .disabled(audioPlayerManager.exporting)
                     .onHover { hovering in overSave = hovering }
@@ -123,6 +126,7 @@ struct qmaPlayerView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Export")
+                    .accessibilityLabel("Export")
                     .frame(width: 30, height: 30)
                     .disabled(audioPlayerManager.exporting)
                     .onHover { hovering in overExport = hovering }
@@ -133,14 +137,14 @@ struct qmaPlayerView: View {
                         HStack(spacing: 2) {
                             Image(systemName: "speaker.wave.2.fill")
                             Text("\(Int(audioPlayerManager.sysVol * 100))%").foregroundColor(.secondary).frame(width: 40)
-                            VolumeSlider(percentage: $audioPlayerManager.sysVol, maxValue: 4){ editing in }
+                            VolumeSlider(percentage: $audioPlayerManager.sysVol, maxValue: 4)
                                 .frame(height: 16)
                                 .disabled(audioPlayerManager.exporting)
                         }
                         HStack(spacing: 2) {
                             Image(systemName: "mic.fill")
                             Text("\(Int(audioPlayerManager.micVol * 100))%").foregroundColor(.secondary).frame(width: 40)
-                            VolumeSlider(percentage: $audioPlayerManager.micVol, maxValue: 4){ editing in }
+                            VolumeSlider(percentage: $audioPlayerManager.micVol, maxValue: 4)
                                 .frame(height: 16)
                                 .disabled(audioPlayerManager.exporting)
                         }
@@ -198,8 +202,6 @@ struct VolumeSlider: View {
     @State private var isDragging = false
     @State private var isHover = false
 
-    var onEditingChanged: (Bool) -> Void // Callback for editing changes
-
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
@@ -221,14 +223,11 @@ struct VolumeSlider: View {
                 .gesture(DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         self.percentage = min(max(0, Float(value.location.x / geometry.size.width) * maxValue), maxValue)
-                        self.isDragging = true // Indicate dragging
-                        self.onEditingChanged(true) // Notify that editing started
+                        self.isDragging = true
                     }
                     .onEnded { value in
-                        // Update the bound percentage value when dragging ends
                         self.percentage = min(max(0, Float(value.location.x / geometry.size.width) * maxValue), maxValue)
-                        self.isDragging = false // Indicate dragging ended
-                        self.onEditingChanged(false) // Notify that editing ended
+                        self.isDragging = false
                     }
                 )
         }
@@ -318,30 +317,24 @@ struct qmaPackageHandle: FileDocument {
     }
 
     init(configuration: ReadConfiguration) throws {
-        guard let fileWrappers = configuration.file.fileWrappers else {
+        try self.init(wrappers: configuration.file.fileWrappers)
+    }
+
+    /// The package at `url`, for code that has no document
+    static func load(from url: URL) throws -> qmaPackageHandle {
+        return try qmaPackageHandle(wrappers: FileWrapper(url: url, options: .immediate).fileWrappers)
+    }
+
+    private init(wrappers: [String: FileWrapper]?) throws {
+        guard let wrappers = wrappers,
+              let infoData = wrappers["info.json"]?.regularFileContents,
+              let info = try? JSONDecoder().decode(Info.self, from: infoData),
+              let sysAudio = wrappers["sys.\(info.format)"]?.regularFileContents,
+              let micAudio = wrappers["mic.\(info.format)"]?.regularFileContents else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        
-        guard let infoFileWrapper = fileWrappers["info.json"],
-              let infoData = infoFileWrapper.regularFileContents,
-              let info = try? JSONDecoder().decode(Info.self, from: infoData) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        
         self.info = info
-        
-        guard let sysAudioFileWrapper = fileWrappers["sys.\(info.format)"],
-              let sysAudio = sysAudioFileWrapper.regularFileContents else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        
         self.sysAudio = sysAudio
-        
-        guard let micAudioFileWrapper = fileWrappers["mic.\(info.format)"],
-              let micAudio = micAudioFileWrapper.regularFileContents else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        
         self.micAudio = micAudio
     }
 
@@ -363,29 +356,6 @@ struct qmaPackageHandle: FileDocument {
         ])
         
         return fileWrapper
-    }
-}
-
-extension qmaPackageHandle {
-    static func load(from url: URL) throws -> qmaPackageHandle {
-        let fileWrapper = try FileWrapper(url: url, options: .immediate)
-        guard let infoFileWrapper = fileWrapper.fileWrappers?["info.json"],
-              let infoData = infoFileWrapper.regularFileContents else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        let info = try JSONDecoder().decode(Info.self, from: infoData)
-
-        guard let sysAudioFileWrapper = fileWrapper.fileWrappers?["sys.\(info.format)"],
-              let sysAudio = sysAudioFileWrapper.regularFileContents else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-
-        guard let micAudioFileWrapper = fileWrapper.fileWrappers?["mic.\(info.format)"],
-              let micAudio = micAudioFileWrapper.regularFileContents else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-
-        return qmaPackageHandle(info: info, sysAudio: sysAudio, micAudio: micAudio)
     }
 }
 
@@ -431,7 +401,10 @@ class AudioPlayerManager: ObservableObject {
         engine.attach(playerNode2)
         engine.attach(mixerNode)
         
-        let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: false)!
+        guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: false) else {
+            print("Audio engine: no output format")
+            return
+        }
         engine.connect(playerNode1, to: mixerNode, format: outputFormat)
         engine.connect(playerNode2, to: mixerNode, format: outputFormat)
         engine.connect(mixerNode, to: engine.mainMixerNode, format: outputFormat)
@@ -537,10 +510,6 @@ class AudioPlayerManager: ObservableObject {
         timer = nil
     }
     
-    func getPlayerDuration() -> TimeInterval {
-        return audioLength
-    }
-    
     func reset() {
         stop()
         playerNode1.reset()
@@ -591,7 +560,9 @@ class AudioPlayerManager: ObservableObject {
                 self.playerNode2.play()
                 
                 let duration = audioFile1.length
-                let buffer = AVAudioPCMBuffer(pcmFormat: self.engine.manualRenderingFormat, frameCapacity: self.engine.manualRenderingMaximumFrameCount)!
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: self.engine.manualRenderingFormat, frameCapacity: self.engine.manualRenderingMaximumFrameCount) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
                 
                 while self.engine.manualRenderingSampleTime < duration {
                     let framesToRender = min(UInt32(buffer.frameCapacity), UInt32(duration - self.engine.manualRenderingSampleTime))
@@ -613,13 +584,13 @@ class AudioPlayerManager: ObservableObject {
                 self.setupAudioEngine()
                 
                 let title = "Recording Completed".local
-                var body = String(format: "File saved to: %@".local, url.path.removingPercentEncoding!)
+                var body = String(format: "File saved to: %@".local, url.path)
                 let id = "quickrecorder.completed.\(UUID().uuidString)"
                 
                 if saveAsMP3 {
                     let oldURL = url
                     let newURl = url.deletingLastPathComponent().appendingPathComponent(lastComp).deletingPathExtension().appendingPathExtension("mp3")
-                    body = String(format: "File saved to: %@".local, newURl.path.removingPercentEncoding!)
+                    body = String(format: "File saved to: %@".local, newURl.path)
                     convertingToMP3 = true
                     let savedBody = body
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -687,7 +658,7 @@ class AudioPlayerManager: ObservableObject {
 }
 
 extension UTType {
-    static let qma = UTType(exportedAs: (Bundle.main.bundleIdentifier ?? "com.maximgolubev.QuickRecorder") + ".qma")
+    static let qma = UTType(exportedAs: (Bundle.main.bundleIdentifier ?? "QuickRecorder") + ".qma")
 }
 
 struct ActivityIndicator: View {

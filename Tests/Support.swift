@@ -128,6 +128,14 @@ func samples(_ count: Int64) -> CMTime {
     return CMTime(value: count, timescale: 48000)
 }
 
+extension MicConverter {
+    /// How far the track is behind `pts`, in seconds. Zero before the timeline has started.
+    func lag(behind pts: CMTime) -> Double {
+        guard end.isValid, pts.isValid else { return 0 }
+        return CMTimeGetSeconds(CMTimeSubtract(pts, end))
+    }
+}
+
 // MARK: - Audio
 
 /// A tone as a device would deliver it: 32 bit float, one buffer per channel. Amplitude 0 is digital silence.
