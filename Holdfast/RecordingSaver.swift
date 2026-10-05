@@ -20,12 +20,8 @@ enum RecordingSaver {
         // Held until the files are final, whether or not the recording itself kept the display awake
         SleepPreventer.shared.preventSleep(reason: "Finishing a recording", display: false)
         let frame = taken.frame
-        var writer = taken.writer
-        if !taken.sessionStarted {
-            // Nothing arrived, so there is nothing to close: the empty file is removed and the report below says so
-            writer?.cancelWriting()
-            writer = nil
-        }
+        // Nil when nothing arrived: the writer has removed its empty file or package, and the report below says so
+        let writer = taken.writer
         // A writer that already failed has nothing to finish
         var closed = false
         if let writer = writer, writer.status == .writing {
@@ -40,30 +36,26 @@ enum RecordingSaver {
             UserNotice.reportFailure(title: "Recording Stopped Early", message: earlyReason ?? "")
         } else if !taken.sessionStarted && cancelled {
             // Stopped before the first frame or the first audio arrived. Nothing was lost, so nothing is reported as failed.
-            try? fd.removeItem(at: recording.rawURL)
             UserNotice.showNotification(title: "Recording Cancelled", body: "The recording was stopped before anything was recorded.", id: "holdfast.cancelled.\(UUID().uuidString)")
+        } else if !taken.sessionStarted {
+            // Stopped, early or by the user, before the first frame (or the first system audio of an audio-only recording)
+            let nothing = recording.audioOnly ? "No audio arrived, so nothing was recorded and no file was kept." : "Nothing was recorded, so no file was kept."
+            UserNotice.reportFailure(title: nothingTitle, message: (earlyReason.map { $0 + " " } ?? "") + nothing)
         } else if !recording.audioOnly {
             if !closed {
                 print("Video writing failed with status: \(String(describing: writer?.status)), error: \(String(describing: writer?.error))")
                 var body = earlyReason ?? ""
                 if let error = writer?.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
-                let fileLeft = fd.fileExists(atPath: recording.rawURL.path)
-                if writer == nil && !fileLeft {
-                    // Stopped, early or by the user, before the first frame: the empty file went with its writer
-                    body += (body.isEmpty ? "" : " ") + "Nothing was recorded, so no file was kept."
-                    UserNotice.reportFailure(title: nothingTitle, message: body)
+                if body.isEmpty { body = "Unknown error." }
+                if fd.fileExists(atPath: recording.rawURL.path) {
+                    // The file is written in fragments, so it plays up to the last few seconds without having been closed.
+                    // It leaves its temporary name; no mix is attempted on it.
+                    let kept = recording.unmixedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
+                    body += " " + String(format: "The file could not be closed. What was written before that was kept as: %@", kept.path)
                 } else {
-                    if body.isEmpty { body = "Unknown error." }
-                    if fileLeft {
-                        // The file is written in fragments, so it plays up to the last few seconds without having been closed.
-                        // It leaves its temporary name; no mix is attempted on it.
-                        let kept = recording.unmixedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
-                        body += " " + String(format: "The file could not be closed. What was written before that was kept as: %@", kept.path)
-                    } else {
-                        body += " " + movedNote(for: recording.rawURL)
-                    }
-                    UserNotice.reportFailure(title: failureTitle, message: body)
+                    body += " " + movedNote(for: recording.rawURL)
                 }
+                UserNotice.reportFailure(title: failureTitle, message: body)
             } else {
                 if recording.mixesAudio {
                     // Where the recording ends up is only known after the mix
@@ -72,11 +64,6 @@ enum RecordingSaver {
                     present(recording.finalURL, image: frame, recording: recording, earlyReason: earlyReason)
                 }
             }
-        } else if !taken.sessionStarted {
-            // No audio arrived, so the files are empty
-            try? fd.removeItem(at: recording.rawURL)
-            let body = (earlyReason.map { $0 + " " } ?? "") + "No audio arrived, so nothing was recorded and no file was kept."
-            UserNotice.reportFailure(title: nothingTitle, message: body)
         } else {
             // The files are as complete as they will get: they leave their temporary name
             let kept = recording.closedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL

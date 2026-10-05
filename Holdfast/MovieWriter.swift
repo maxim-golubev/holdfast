@@ -42,7 +42,7 @@ final class MovieWriter {
 
     /// What is left for the stop path once the inputs are finished
     struct Finished {
-        /// Nil when no file was created, or for an audio-only recording without a microphone
+        /// Nil when the session never started (no file is left), or for an audio-only recording without a microphone
         let writer: AVAssetWriter?
         /// Small picture of the first frame, for the preview
         let frame: NSImage?
@@ -551,7 +551,8 @@ final class MovieWriter {
 
     /// After the capture has stopped. Ends the recording on the queue the buffers are appended on: the microphone
     /// track is brought to the length of the recording and the inputs are marked as finished here, so no append can
-    /// run alongside or after that. What it returns is what is left to do off the queue: closing the file.
+    /// run alongside or after that. What it returns is what is left to do off the queue: closing the file. When the
+    /// session never started, the empty file or package is removed here and there is nothing to close.
     func finish() -> Finished {
         isCapturing = false
         let sessionStarted = sessionStart != nil
@@ -574,6 +575,11 @@ final class MovieWriter {
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
         audioFile = nil // close audio file
+        if !sessionStarted {
+            // Nothing was appended, so there is nothing to close, and an empty file is not a recording. Once the
+            // inputs are finished `cancelWriting` leaves the file behind, so `cancel` removes what was created.
+            cancel()
+        }
         let frame = firstFrame
         self.writer = nil
         videoInput = nil
@@ -581,7 +587,7 @@ final class MovieWriter {
         micInput = nil
         firstFrame = nil
         lastVideoFrame = nil
-        return Finished(writer: writer, frame: frame, sessionStarted: sessionStarted)
+        return Finished(writer: sessionStarted ? writer : nil, frame: frame, sessionStarted: sessionStarted)
     }
 
     // MARK: - Frames

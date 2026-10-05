@@ -299,9 +299,10 @@ func writerTests() async {
     }
 
     await test("Writer: without a complete frame there is no session, and a failure is reported once") {
-        let run = try TestRecording(folder: "writer-empty")
+        let run = try TestRecording(folder: "writer-empty", settings: ["remuxAudio": true, "recordWinSound": true])
         let writer = run.writer
         try writer.prepareVideo(width: 320, height: 240)
+        expect(writer.hasSystemAudio && writer.hasMicrophoneTrack, "video with both audio tracks, as a mixed meeting recording")
         writer.startCapturing()
         try run.feed(from: 0, to: 0.5, video: false)
         try run.frame(0.5, complete: false)
@@ -319,7 +320,9 @@ func writerTests() async {
         let finished = writer.finish()
         expect(!finished.sessionStarted, "the stop path is told that nothing was recorded")
         expect(finished.frame == nil, "no picture")
-        expect(finished.writer != nil, "the file is handed over for the stop path to discard")
+        expect(finished.writer == nil, "nothing to close")
+        // Once its inputs are finished, a cancelled AVAssetWriter leaves its empty file behind
+        expect(!FileManager.default.fileExists(atPath: run.recording.rawURL.path), "the empty file is removed")
         expect(MovieWriter.writeFailure(nil).hasPrefix("The recording could not be written"), "text of a write failure")
     }
 
@@ -344,6 +347,17 @@ func writerTests() async {
             expect(!FileManager.default.fileExists(atPath: run.recording.rawURL.path), "no file for \(width) x \(height)")
             expect(run.writer.finish().writer == nil, "nothing to close for \(width) x \(height)")
         }
+    }
+
+    await test("Writer: an audio-only recording stopped before any system audio leaves no package") {
+        let run = try TestRecording(folder: "writer-audio-empty", audioOnly: true)
+        try run.writer.prepareAudio()
+        run.writer.startCapturing()
+        try run.microphone(0)
+        expect(FileManager.default.fileExists(atPath: run.recording.rawURL.path), "the package exists while recording")
+        let finished = run.writer.finish()
+        expect(!finished.sessionStarted && finished.writer == nil, "nothing to close")
+        expect(!FileManager.default.fileExists(atPath: run.recording.rawURL.path), "the empty package is removed")
     }
 
     await test("Writer: a file already at the recording's name is neither written over nor removed") {
