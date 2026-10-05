@@ -30,6 +30,22 @@ extension RecorderController {
     /// after which this recording stops by itself (0: never); it is not set anywhere else. `area` is what an area
     /// recording captures, relative to `display`.
     func start(type streamType: StreamType, display: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil, autoStop: Int = 0, area: NSRect? = nil) {
+        let startNow = { [self] in
+            startAsked(type: streamType, display: display, windows: windows, applications: applications, fastStart: fastStart, recordMic: micOverride, autoStop: autoStop, area: area)
+        }
+        // A microphone that was switched on without the switch (a script command, the setting written by one) has
+        // not been asked for yet. Asked now, before anything starts: a refusal is then the "Microphone Not
+        // Available" choice, not a recording whose microphone track stays silent.
+        guard (micOverride ?? AppSettings.recordMic) && AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined else {
+            return startNow()
+        }
+        AVCaptureDevice.requestAccess(for: .audio) { _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { startNow() } }
+        }
+    }
+
+    /// `start` once the microphone permission is known
+    private func startAsked(type streamType: StreamType, display: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool, recordMic micOverride: Bool?, autoStop: Int, area: NSRect?) {
         guard let session = begin(streamType, autoStop: autoStop) else { return }
         // Every reason not to start ends here, with one alert
         func failToRecord(_ message: String) {
