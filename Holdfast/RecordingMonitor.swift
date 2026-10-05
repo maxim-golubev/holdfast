@@ -26,8 +26,9 @@ final class RecordingMonitor {
     private let queue: DispatchQueue
     /// A problem began or is over: title and text of the notification. Called on the sample queue.
     var notify: (String, String) -> Void = { _, _ in }
-    /// What the status bar shows changed: the warning and the microphone level. Called on the sample queue.
-    var show: (String?, Int?) -> Void = { _, _ in }
+    /// What the status bar shows changed: the warning, and whether the microphone is silent (nil without one).
+    /// Called on the sample queue.
+    var show: (String?, Bool?) -> Void = { _, _ in }
     /// The writer of the recording, while it is being watched
     private var writer: RecordingWriter?
     private var timer: DispatchSourceTimer?
@@ -48,7 +49,7 @@ final class RecordingMonitor {
     private var micWarning: String?
     private var audioWarning: String?
     private var shownWarning: String?
-    private var shownLevel: Int?
+    private var shownSilent: Bool?
 
     init(queue: DispatchQueue) {
         self.queue = queue
@@ -92,7 +93,7 @@ final class RecordingMonitor {
         audioHeard = nil
         micWarning = nil
         audioWarning = nil
-        show(warning: nil, level: nil)
+        show(warning: nil, silent: nil)
     }
 
     /// The recording was paused or resumed: after a resume the monitor waits a tick for the first buffer again
@@ -139,7 +140,7 @@ final class RecordingMonitor {
             }
             report(problem, was: startWarning, title: startTitle, backTitle: "", backBody: "")
             startWarning = problem
-            if problem != nil { show(warning: startTitle, level: nil) }
+            if problem != nil { show(warning: startTitle, silent: nil) }
             return
         }
         if startWarning != nil {
@@ -177,7 +178,7 @@ final class RecordingMonitor {
         guard writer.isCapturing else { return }
 
         var micProblem: String?
-        var level: Int?
+        var micSilent: Bool?
         if writer.hasMicrophoneTrack, writer.isMicrophoneMuted {
             // Silence the user asked for is no problem to report. The time muted does not count towards a
             // warning afterwards either, and a warning that was up goes without a "Microphone Is Back".
@@ -185,14 +186,15 @@ final class RecordingMonitor {
             micSound = now
             micWarning = nil
             micPeak = 0
-            level = 0
+            micSilent = true
         } else if writer.hasMicrophoneTrack {
             if seconds(from: micHeard ?? sessionStart, to: now) > silentSeconds {
                 micProblem = String(format: "No audio has arrived from the microphone for %d seconds. The recording continues with silence in its place until the microphone comes back.".local, Int(silentSeconds))
             } else if seconds(from: micSound ?? sessionStart, to: now) > zeroSeconds {
                 micProblem = String(format: "The microphone has delivered nothing but silence for %d seconds. Check that it is not muted or in use by another app.".local, Int(zeroSeconds))
             }
-            level = micPeak >= 0.01 ? 2 : (micPeak > 0 ? 1 : 0)
+            // Nothing, or nothing but digital zeros, since the last tick
+            micSilent = micPeak == 0
             micPeak = 0
         }
         var audioProblem: String?
@@ -209,7 +211,7 @@ final class RecordingMonitor {
         var warning: String?
         if micProblem != nil { warning = "Microphone is not being recorded".local }
         if audioProblem != nil { warning = (warning.map { $0 + ". " } ?? "") + "System audio is not being recorded".local }
-        show(warning: warning, level: level)
+        show(warning: warning, silent: micSilent)
     }
 
     /// One notification when a problem starts and one when it is over
@@ -223,10 +225,10 @@ final class RecordingMonitor {
         }
     }
 
-    private func show(warning: String?, level: Int?) {
-        guard warning != shownWarning || level != shownLevel else { return }
+    private func show(warning: String?, silent: Bool?) {
+        guard warning != shownWarning || silent != shownSilent else { return }
         shownWarning = warning
-        shownLevel = level
-        show(warning, level)
+        shownSilent = silent
+        show(warning, silent)
     }
 }

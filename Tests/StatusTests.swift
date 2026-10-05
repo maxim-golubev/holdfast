@@ -37,7 +37,7 @@ func statusTests() async {
     }
 
     await test("status: a recording shows its time, its microphone and its warning") {
-        var input = Input(state: .recording, hasMicrophone: true, micLevel: 2, length: "12:34")
+        var input = Input(state: .recording, hasMicrophone: true, micSilent: false, length: "12:34")
         var display = StatusDisplay(input)
         expectEqual(display.kind, .recording, "recording")
         expectEqual(display.title, "12:34", "the elapsed time next to the symbol")
@@ -46,7 +46,7 @@ func statusTests() async {
 
         input.length = "1:07:05"
         expectEqual(StatusDisplay(input).title, "1:07:05", "hours from the first hour")
-        input.micLevel = 0
+        input.micSilent = true
         expectEqual(StatusDisplay(input).line, "Recording — microphone silent", "nothing from the microphone right now")
         input.hasMicrophone = false
         expectEqual(StatusDisplay(input).line, "Recording — no microphone", "a recording without a microphone track says so")
@@ -70,7 +70,7 @@ func statusTests() async {
         expectEqual(StatusDisplay(input).line, "System audio is not being recorded", "the warning alone")
 
         input.isPaused = true
-        input.micLevel = 1
+        input.micSilent = false
         display = StatusDisplay(input)
         expectEqual(display.kind, .paused, "paused comes first: nothing is being recorded on purpose")
         expectEqual(display.line, "Paused — microphone OK", "status line when paused")

@@ -52,7 +52,7 @@ final class MonitorRun {
     private(set) var notified = [String]()
     private(set) var lastText = ""
     private(set) var warning: String?
-    private(set) var level: Int?
+    private(set) var silent: Bool?
     /// An uptime far from zero, as the system's is
     private let zero: UInt64 = 1_000_000_000_000
 
@@ -61,7 +61,7 @@ final class MonitorRun {
         monitor = RecordingMonitor(queue: queue)
         writer.clockAnchor = (time(0), zero)
         monitor.notify = { [unowned self] title, text in notified.append(title); lastText = text }
-        monitor.show = { [unowned self] shown, shownLevel in warning = shown; level = shownLevel }
+        monitor.show = { [unowned self] shown, shownSilent in warning = shown; silent = shownSilent }
         queue.sync { monitor.watch(writer, from: zero) }
     }
 
@@ -105,7 +105,7 @@ func monitorTests() async {
         let run = try MonitorRun("monitor-mic-silent")
         run.ticks(after: 0, through: 5) { run.microphone(upTo: $0) }
         expectEqual(run.notified, [], "nothing to report while the microphone delivers")
-        expectEqual(run.level, 2, "its level is shown")
+        expectEqual(run.silent, false, "it is shown as not silent")
         // The last microphone audio ends at 5 s
         run.ticks(after: 5, through: 10)
         expectEqual(run.notified, [], "5 s without microphone audio is not yet a problem")
@@ -127,7 +127,7 @@ func monitorTests() async {
         run.microphone(upTo: 1)
         run.ticks(after: 0, through: 21) { run.microphone(upTo: $0, peak: $0 <= 1 ? 0.3 : 0) }
         expectEqual(run.notified, [], "20 s of zeros is not yet a problem")
-        expectEqual(run.level, 0, "but shows as silent")
+        expectEqual(run.silent, true, "but shows as silent")
         run.microphone(upTo: 21.5, peak: 0)
         run.tick(at: 21.5)
         expectEqual(run.notified, [micTitle], "more than 20 s is")
@@ -135,7 +135,7 @@ func monitorTests() async {
         run.microphone(upTo: 22, peak: 0.005)
         run.tick(at: 22)
         expectEqual(run.notified, [micTitle, "Microphone Is Back"], "any sound ends it")
-        expectEqual(run.level, 1, "a quiet microphone shows as quiet")
+        expectEqual(run.silent, false, "a quiet microphone is not silent")
     }
 
     await test("monitor: system audio that stops is filled, reported after 5 s and when it is back") {

@@ -498,7 +498,7 @@ func sessionTests() async {
         let monitor = RecordingMonitor(queue: queue)
         let shown = Journal()
         monitor.notify = { title, _ in journal.note("notify: " + title) }
-        monitor.show = { warning, level in shown.note("\(warning ?? "none") \(level.map(String.init) ?? "-")") }
+        monitor.show = { warning, silent in shown.note("\(warning ?? "none") \(silent.map { $0 ? "silent" : "sound" } ?? "-")") }
         // A session that started 100 s ago, from whose microphone nothing was ever written
         writer.sessionStart = time(0)
         writer.clockAnchor = (time(100), DispatchTime.now().uptimeNanoseconds)
@@ -507,15 +507,15 @@ func sessionTests() async {
             monitor.start(writer)
         }
         expect(await waitUntil { journal.count("notify: Microphone Is Not Being Recorded") == 1 }, "a microphone that delivers nothing is reported")
-        expectEqual(shown.all.last, "Microphone is not being recorded 0", "and shown")
+        expectEqual(shown.all.last, "Microphone is not being recorded silent", "and shown")
         queue.sync { writer.setMicrophoneMuted(true) }
-        expect(await waitUntil { shown.all.last == "none 0" }, "muted: the warning goes")
+        expect(await waitUntil { shown.all.last == "none silent" }, "muted: the warning goes")
         try? await Task.sleep(nanoseconds: 1_200_000_000)
         expectEqual(journal.all.filter { $0.hasPrefix("notify") }, ["notify: Microphone Is Not Being Recorded"], "nothing is reported while muted, and no \"Microphone Is Back\"")
         queue.sync { writer.setMicrophoneMuted(false) }
         try? await Task.sleep(nanoseconds: 1_200_000_000)
         expectEqual(journal.all.filter { $0.hasPrefix("notify") }.count, 1, "the time muted does not count towards a warning after it")
-        expectEqual(shown.all.last, "none 0", "no warning right after the mute")
+        expectEqual(shown.all.last, "none silent", "no warning right after the mute")
         queue.sync { monitor.stop() }
     }
 }

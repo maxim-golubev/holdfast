@@ -26,8 +26,8 @@ struct StatusDisplay: Equatable {
         var isPaused = false
         var hasMicrophone = false
         var isMicrophoneMuted = false
-        /// `RecordingSession.Health.micLevel`
-        var micLevel: Int?
+        /// `RecordingSession.Health.micSilent`
+        var micSilent: Bool?
         var warning: String?
         var mixProgress: Double?
         var isRecovering = false
@@ -60,7 +60,7 @@ struct StatusDisplay: Equatable {
                 microphone = "no microphone".local
             } else if input.isMicrophoneMuted {
                 microphone = "microphone muted".local
-            } else if input.micLevel == 0 {
+            } else if input.micSilent == true {
                 microphone = "microphone silent".local
             } else {
                 microphone = "microphone OK".local
@@ -137,7 +137,7 @@ extension RecorderController {
     /// What the status item shows of the recorder now
     var statusInput: StatusDisplay.Input {
         return StatusDisplay.Input(state: state, isPaused: isPaused, hasMicrophone: session?.hasMicrophone ?? false,
-                                   isMicrophoneMuted: isMicrophoneMuted, micLevel: health.micLevel, warning: health.warning,
+                                   isMicrophoneMuted: isMicrophoneMuted, micSilent: health.micSilent, warning: health.warning,
                                    mixProgress: health.mixProgress, isRecovering: recovery.isRunning,
                                    recoveryProgress: recovery.progress, isQuitting: quitRequested, length: recordingLength())
     }

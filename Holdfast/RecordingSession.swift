@@ -70,8 +70,8 @@ final class RecordingSession: @unchecked Sendable {
     struct Health: Equatable {
         /// Set while a track is not being recorded
         var warning: String?
-        /// Nil without a microphone track. 0: digital silence or nothing at all, 1: quiet, 2: sound.
-        var micLevel: Int?
+        /// Nil without a microphone track; true while it delivers nothing or digital silence
+        var micSilent: Bool?
         /// From 0 to 1 while the audio tracks are being mixed
         var mixProgress: Double?
     }
@@ -153,11 +153,11 @@ final class RecordingSession: @unchecked Sendable {
         self.statusChanged = statusChanged
         monitor = RecordingMonitor(queue: queue)
         monitor.notify = environment.notify
-        monitor.show = { [weak self] warning, level in
+        monitor.show = { [weak self] warning, silent in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.health.warning = warning
-                self.health.micLevel = level
+                self.health.micSilent = silent
                 self.statusChanged(self)
             }
         }
