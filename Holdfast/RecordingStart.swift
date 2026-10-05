@@ -28,7 +28,7 @@ extension RecorderController {
     /// recording or still being saved cannot get in.
     /// `recordMic` overrides the "recordMic" setting for this recording only. `autoStop` is the number of minutes
     /// after which this recording stops by itself (0: never); it is not set anywhere else.
-    func start(type streamType: StreamType, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil, autoStop: Int = 0) {
+    func start(type streamType: StreamType, display: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil, autoStop: Int = 0) {
         guard let session = begin(streamType, autoStop: autoStop) else { return }
         // Every reason not to start ends here, with one alert
         func failToRecord(_ message: String) {
@@ -46,8 +46,8 @@ extension RecorderController {
         guard let content = ScreenContent.availableContent else {
             return failToRecord("The list of screens and windows is not available. Check the screen recording permission.".local)
         }
-        guard let screens = screens else { return failToRecord("No display to record was found.".local) }
-        let listedDisplay = content.displays.first(where: { $0 == screens })
+        guard let display = display else { return failToRecord("No display to record was found.".local) }
+        let listedDisplay = content.displays.first(where: { $0 == display })
 
         var listedWindows: [SCWindow]?
         if let windows = windows {

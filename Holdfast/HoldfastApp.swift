@@ -263,13 +263,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         KeyboardShortcuts.onKeyDown(for: .startWithAudio) { [self] in
             startWithFreshContent { recorder in
                 closeAllWindow()
-                recorder.start(type: .systemaudio, screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
+                recorder.start(type: .systemaudio, display: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
             }
         }
         KeyboardShortcuts.onKeyDown(for: .startWithScreen) { [self] in
             startWithFreshContent { recorder in
                 closeAllWindow()
-                recorder.start(type: .screen, screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
+                recorder.start(type: .screen, display: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
             }
         }
         KeyboardShortcuts.onKeyDown(for: .startWithArea) { [self] in
@@ -286,7 +286,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                     UserNotice.showAlertLater(title: "Failed to Record".local, message: "No window of the frontmost application was found.".local)
                     return
                 }
-                recorder.start(type: .window, screens: ScreenContent.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)
+                recorder.start(type: .window, display: ScreenContent.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)
             }
         }
         withRecorder { _ in StatusItemController.shared.install() }

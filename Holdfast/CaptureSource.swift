@@ -69,8 +69,8 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     /// The content filter for `target`. Throws when what was selected is not there.
     static func filter(for target: inout CaptureTarget, content: SCShareableContent) throws -> SCContentFilter {
         let screen = target.display
-        let qrSelf = ScreenContent.getSelf()
-        let qrWindows = ScreenContent.getSelfWindows()
+        let ownApp = ScreenContent.getSelf()
+        let ownWindows = ScreenContent.getSelfWindows()
         let dockApp = content.applications.first(where: { $0.bundleIdentifier.description == "com.apple.dock" })
         let wallpaper = content.windows.filter({
             guard let title = $0.title else { return false }
@@ -83,7 +83,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         let desktopFiles = content.windows.filter({
             $0.owningApplication?.bundleIdentifier == "com.apple.finder"
             && $0.title == "" && $0.frame == screen.frame })
-        let controlCenterWindow = content.applications.filter({ $0.bundleIdentifier == "com.apple.controlcenter" })
+        let controlCenterApps = content.applications.filter({ $0.bundleIdentifier == "com.apple.controlcenter" })
         let mouseWindow = content.windows.filter({ $0.title == WindowTitle.mousePointer && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
         let appBlackList = AppSettings.hiddenApps.map({ $0.bundleID })
         let excludedApps = content.applications.filter({ appBlackList.contains($0.bundleIdentifier) })
@@ -107,8 +107,8 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
             var excluded = [SCRunningApplication]()
             var except = [SCWindow]()
             excluded += excludedApps
-            if AppSettings.hideCCenter { excluded += controlCenterWindow }
-            if AppSettings.hideSelf { if let qrWindows = qrWindows { except += qrWindows }}
+            if AppSettings.hideCCenter { excluded += controlCenterApps }
+            if AppSettings.hideSelf { if let ownWindows = ownWindows { except += ownWindows }}
             if AppSettings.hideDesktopFiles { except += desktopFiles }
             let filter = SCContentFilter(display: screen, excludingApplications: excluded, exceptingWindows: except)
             filter.includeMenuBar = AppSettings.includeMenuBar
@@ -116,10 +116,10 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         case .application:
             var included = target.applications ?? []
             var except = [SCWindow]()
-            if let qrSelf = qrSelf { included.append(qrSelf) }
+            if let ownApp = ownApp { included.append(ownApp) }
             let withFinder = included.map{ $0.bundleIdentifier }.contains("com.apple.finder")
             if withFinder && AppSettings.hideDesktopFiles { except += desktopFiles }
-            if AppSettings.hideSelf { if let qrWindows = qrWindows { except += qrWindows }}
+            if AppSettings.hideSelf { if let ownWindows = ownWindows { except += ownWindows }}
             if let dock = dockApp { included.append(dock); except += dockWindow }
             let filter = SCContentFilter(display: screen, including: included, exceptingWindows: except)
             filter.includeMenuBar = AppSettings.includeMenuBar

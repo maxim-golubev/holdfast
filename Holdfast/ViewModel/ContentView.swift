@@ -160,7 +160,7 @@ extension AppDelegate {
                 return
             }
             createCountdownPanel(screen: display) {
-                withRecorder { $0.start(type: .systemaudio, screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil) }
+                withRecorder { $0.start(type: .systemaudio, display: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil) }
             }
         }
     }

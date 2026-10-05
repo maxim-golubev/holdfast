@@ -156,7 +156,7 @@ struct AreaSelector: View {
         // The area is relative to its screen
         appDelegate.showAreaOverlay(around: area.offsetBy(dx: nsScreen.frame.minX, dy: nsScreen.frame.minY), border: 4)
         appDelegate.createCountdownPanel(screen: screen) {
-            RecorderController.shared.start(type: .screenarea, screens: screen, windows: nil, applications: nil, autoStop: autoStop)
+            RecorderController.shared.start(type: .screenarea, display: screen, windows: nil, applications: nil, autoStop: autoStop)
         }
     }
 }

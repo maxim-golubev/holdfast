@@ -36,7 +36,7 @@ class selectScreen: NSScriptCommand {
                     } else {
                         let screen = screens[index]
                         AppDelegate.shared.createCountdownPanel(screen: screen) {
-                            RecorderController.shared.start(type: .screen, screens: screen, windows: nil, applications: nil)
+                            RecorderController.shared.start(type: .screen, display: screen, windows: nil, applications: nil)
                         }
                     }
                 } else {
@@ -86,7 +86,7 @@ class selectApps: NSScriptCommand {
                         createAlert(title: "Error".local, message: "This app exists in multiple screens, please select it manually!".local, button1: "OK".local).runModal()
                     } else {
                         AppDelegate.shared.createCountdownPanel(screen: screen) {
-                            RecorderController.shared.start(type: .application, screens: screen, windows: nil, applications: [app])
+                            RecorderController.shared.start(type: .application, display: screen, windows: nil, applications: [app])
                         }
                     }
                 } else {
@@ -130,7 +130,7 @@ class selectWindows: NSScriptCommand {
                     if let display = ScreenContent.getSCDisplayWithMouse() {
                         // The countdown is shown where the pointer is when the window is there too
                         AppDelegate.shared.createCountdownPanel(screen: s.contains(display) ? display : screen) {
-                            RecorderController.shared.start(type: .window, screens: screen, windows: [window], applications: nil)
+                            RecorderController.shared.start(type: .window, display: screen, windows: [window], applications: nil)
                         }
                     }
                 } else {
@@ -150,7 +150,7 @@ class recordAudio: NSScriptCommand {
                 // The "mic" argument applies to this recording only; the "recordMic" setting is left alone
                 let mic = self.evaluatedArguments?["mic"] as? Bool
                 closeAllWindow()
-                RecorderController.shared.start(type: .systemaudio, screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, recordMic: mic)
+                RecorderController.shared.start(type: .systemaudio, display: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, recordMic: mic)
             }
         }
         return nil

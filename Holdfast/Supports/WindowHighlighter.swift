@@ -68,12 +68,12 @@ struct HighlightMask: View {
             ScreenContent.screenArea = NSRect(x: area.origin.x - nsScreen.frame.minX, y: area.origin.y - nsScreen.frame.minY, width:area.width, height: area.height)
             appDelegate.showAreaOverlay(around: area, border: 3)
             appDelegate.createCountdownPanel(screen: screen) {
-                RecorderController.shared.start(type: .screenarea, screens: display, windows: nil, applications: nil, autoStop: autoStop)
+                RecorderController.shared.start(type: .screenarea, display: display, windows: nil, applications: nil, autoStop: autoStop)
             }
         default:
             if let d = display, let w = window {
                 appDelegate.createCountdownPanel(screen: d) {
-                    RecorderController.shared.start(type: .window, screens: d, windows: [w], applications: nil, autoStop: autoStop)
+                    RecorderController.shared.start(type: .window, display: d, windows: [w], applications: nil, autoStop: autoStop)
                 }
             }
         }
