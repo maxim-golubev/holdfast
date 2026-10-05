@@ -153,9 +153,13 @@ struct qmaPlayerView: View {
             }.padding().padding(.top, -14)
         }
         .onAppear {
-            audioPlayerManager.loadAudioFiles(format: document.info.format, package: fileURL, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
-                audioPlayerManager.sysVol = document.info.sysVol
-                audioPlayerManager.micVol = document.info.micVol
+            do {
+                try audioPlayerManager.loadAudioFiles(format: document.info.format, package: fileURL, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
+            } catch {
+                UserNotice.showAlertLater(title: "Recording Not Opened", message: String(format: "The audio files of %@ could not be opened: %@", fileURL.lastPathComponent, error.localizedDescription))
+            }
+            audioPlayerManager.sysVol = document.info.sysVol
+            audioPlayerManager.micVol = document.info.micVol
         }
         .background(WindowAccessor(onWindowOpen: { w in
             guard let w = w else { return }
@@ -384,22 +388,19 @@ class AudioPlayerManager: ObservableObject {
     private var lastStartFramePosition = AVAudioFramePosition(0.0)
     private var audioFile1: AVAudioFile?
     private var audioFile2: AVAudioFile?
-    private var isSeeking = false
     private var exportMP3 = false
     private var fileFormat = "m4a"
     private var fileEncoder = "aac"
     private var packageURL: URL?
-    private var seekTime: Double = 0
     private var panel = NSSavePanel()
     
     init() {
         setupAudioEngine()
     }
     
+    /// Also after an export, when the nodes are attached already
     private func setupAudioEngine() {
-        engine.attach(playerNode1)
-        engine.attach(playerNode2)
-        engine.attach(mixerNode)
+        for node in [playerNode1, playerNode2, mixerNode] where node.engine == nil { engine.attach(node) }
         
         guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: false) else {
             print("Audio engine: no output format")
@@ -416,22 +417,19 @@ class AudioPlayerManager: ObservableObject {
         }
     }
     
-    func loadAudioFiles(format: String, package: URL, encoder: String, saveMP3: Bool) {
-        do {
-            fileFormat = format
-            fileEncoder = encoder
-            exportMP3 = saveMP3
-            packageURL = package
-            audioFile1 = try AVAudioFile(forReading: package.appendingPathComponent("sys.\(format)"))
-            audioFile2 = try AVAudioFile(forReading: package.appendingPathComponent("mic.\(format)"))
-            
-            audioLength = Double(audioFile1?.length ?? 0) / (audioFile1?.processingFormat.sampleRate ?? 48000.0)
-            
-            updateSysVol()
-            updateMicVol()
-        } catch {
-            print("Error loading audio data: \(error)")
-        }
+    /// Opens the system audio and microphone files of the package
+    func loadAudioFiles(format: String, package: URL, encoder: String, saveMP3: Bool) throws {
+        fileFormat = format
+        fileEncoder = encoder
+        exportMP3 = saveMP3
+        packageURL = package
+        let system = try AVAudioFile(forReading: package.appendingPathComponent("sys.\(format)"))
+        let microphone = try AVAudioFile(forReading: package.appendingPathComponent("mic.\(format)"))
+        audioFile1 = system
+        audioFile2 = microphone
+        audioLength = Double(system.length) / system.processingFormat.sampleRate
+        updateSysVol()
+        updateMicVol()
     }
     
     func play() {
@@ -467,10 +465,7 @@ class AudioPlayerManager: ObservableObject {
         playerNode2.stop()
         stopProgressTimer()
         
-        seekTime = time
-        isSeeking = true
-        
-        let startFrame = AVAudioFramePosition(seekTime * audioFile1.processingFormat.sampleRate)
+        let startFrame = AVAudioFramePosition(time * audioFile1.processingFormat.sampleRate)
         let frameCount = AVAudioFrameCount(audioFile1.length - startFrame)
         
         if frameCount > 0 {
@@ -523,96 +518,92 @@ class AudioPlayerManager: ObservableObject {
         stop()
         let format = exportMP3 ? "mp3" : self.fileFormat
         showSavePanel(defaultFileName: "\(packageURL.deletingPathExtension().appendingPathExtension(format).lastPathComponent)", exportMP3: exportMP3) { url, saveAsMP3 in
-            if let url = url { self.saveFile(url, saveAsMP3: saveAsMP3) }
+            guard let url = url else { return }
+            self.saveFile(url, saveAsMP3: saveAsMP3) { result in
+                switch result {
+                case .success(let file):
+                    UserNotice.showNotification(title: "Recording Exported", body: String(format: "File saved to: %@".local, file.path), id: "holdfast.completed.\(UUID().uuidString)")
+                case .failure(let error):
+                    UserNotice.reportFailure(title: "Export Failed", message: error.localizedDescription)
+                }
+            }
         }
     }
     
-    /// `audioQuality` defaults to the current setting; finishing a recording passes the one it was started with.
-    /// `completion` is called once, when the export has ended, whether it worked or not.
+    /// Mixes the two files at their volumes into `url`, whose extension becomes the package's format, and converts
+    /// that to MP3 when `saveAsMP3`. `completion` gets the file that was written, or why there is none, once, on the
+    /// main thread; a failure leaves no partial file behind. `audioQuality` defaults to the current setting;
+    /// finishing a recording passes the one it was started with. Main thread.
     func saveFile(_ url: URL, saveAsMP3: Bool = false,
                   audioQuality: Int = AppSettings.audioQuality.rawValue,
-                  completion: (() -> Void)? = nil) {
-        var url = url
-        if url.pathExtension == "mp3" { url = url.deletingPathExtension() }
-        if url.pathExtension != self.fileFormat { url = url.appendingPathExtension(self.fileFormat) }
-        let lastComp = url.lastPathComponent
-        if self.exportMP3 { url = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent) }
-        
-        Thread.detachNewThread {
-            // The MP3 conversion outlives this thread and reports the end itself
-            var convertingToMP3 = false
-            defer { if !convertingToMP3 { completion?() } }
-            DispatchQueue.main.async { self.exporting = true }
-            do {
-                guard let audioFile1 = self.audioFile1, let audioFile2 = self.audioFile2 else { return }
-                self.playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
-                self.playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
-                
-                let audioSettings = MovieWriter.audioSettings(format: self.fileEncoder, quality: audioQuality, videoFormat: nil)
-                let outputFormat = self.playerNode1.outputFormat(forBus: 0)
-                let outputFile = try AVAudioFile(forWriting: url, settings: audioSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
-                self.engine.stop()
-                try self.engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 4096)
-                try self.engine.start()
-                
-                self.playerNode1.play()
-                self.playerNode2.play()
-                
-                let duration = audioFile1.length
-                guard let buffer = AVAudioPCMBuffer(pcmFormat: self.engine.manualRenderingFormat, frameCapacity: self.engine.manualRenderingMaximumFrameCount) else {
-                    throw CocoaError(.fileWriteUnknown)
-                }
-                
-                while self.engine.manualRenderingSampleTime < duration {
-                    let framesToRender = min(UInt32(buffer.frameCapacity), UInt32(duration - self.engine.manualRenderingSampleTime))
-                    let status = try self.engine.renderOffline(framesToRender, to: buffer)
-                    switch status {
-                    case .success:
-                        try outputFile.write(from: buffer)
-                    case .insufficientDataFromInputNode, .cannotDoInCurrentContext:
-                        // Handle the cases where rendering cannot proceed
-                        break
-                    default:
-                        // Handle other cases if needed
-                        break
-                    }
-                }
-                
-                self.engine.disableManualRenderingMode()
-                self.engine.stop()
-                self.setupAudioEngine()
-                
-                let title = "Recording Completed".local
-                var body = String(format: "File saved to: %@".local, url.path)
-                let id = "holdfast.completed.\(UUID().uuidString)"
-                
-                if saveAsMP3 {
-                    let oldURL = url
-                    let newURl = url.deletingLastPathComponent().appendingPathComponent(lastComp).deletingPathExtension().appendingPathExtension("mp3")
-                    body = String(format: "File saved to: %@".local, newURl.path)
-                    convertingToMP3 = true
-                    let savedBody = body
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        Task {
-                            defer { completion?() }
-                            do {
-                                try await RecordingSaver.m4a2mp3(inputUrl: oldURL, outputUrl: newURl, bitrate: audioQuality)
-                                try? fd.removeItem(at: oldURL)
-                                // Only now is there a file to report
-                                UserNotice.showNotification(title: title, body: savedBody, id: id)
-                            } catch {
-                                UserNotice.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "holdfast.error.\(UUID().uuidString)")
-                                return
-                            }
-                        }
-                    }
-                }
-                
-                if !saveAsMP3 { UserNotice.showNotification(title: title, body: body, id: id) }
-            } catch {
-                UserNotice.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "holdfast.error.\(UUID().uuidString)")
+                  completion: @escaping @MainActor (Result<URL, Error>) -> Void) {
+        var named = url
+        if named.pathExtension == "mp3" { named = named.deletingPathExtension() }
+        if named.pathExtension != fileFormat { named = named.appendingPathExtension(fileFormat) }
+        let mp3 = named.deletingPathExtension().appendingPathExtension("mp3")
+        // What is converted to MP3 is mixed into a hidden file first
+        let mixed = saveAsMP3 ? named.deletingLastPathComponent().appendingPathComponent("." + named.lastPathComponent) : named
+        exporting = true
+        let finish: (Result<URL, Error>) -> Void = { result in
+            DispatchQueue.main.async {
+                self.exporting = false
+                completion(result)
             }
-            DispatchQueue.main.async { self.exporting = false }
+        }
+        Thread.detachNewThread {
+            do {
+                try self.render(to: mixed, audioQuality: audioQuality)
+            } catch {
+                try? fd.removeItem(at: mixed)
+                finish(.failure(error))
+                return
+            }
+            guard saveAsMP3 else { finish(.success(mixed)); return }
+            Task {
+                do {
+                    try await RecordingSaver.m4a2mp3(inputUrl: mixed, outputUrl: mp3, bitrate: audioQuality)
+                    try? fd.removeItem(at: mixed)
+                    finish(.success(mp3))
+                } catch {
+                    try? fd.removeItem(at: mp3)
+                    try? fd.removeItem(at: mixed)
+                    finish(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Plays both files through the engine offline into `url`. The file is complete and closed when it returns.
+    private func render(to url: URL, audioQuality: Int) throws {
+        guard let audioFile1 = audioFile1, let audioFile2 = audioFile2 else {
+            throw RecordingError("The audio files of the recording could not be opened.")
+        }
+        playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
+        playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
+        let audioSettings = MovieWriter.audioSettings(format: fileEncoder, quality: audioQuality, videoFormat: nil)
+        let outputFormat = playerNode1.outputFormat(forBus: 0)
+        let outputFile = try AVAudioFile(forWriting: url, settings: audioSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        engine.stop()
+        try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 4096)
+        defer {
+            engine.disableManualRenderingMode()
+            engine.stop()
+            setupAudioEngine()
+        }
+        try engine.start()
+        playerNode1.play()
+        playerNode2.play()
+        let duration = audioFile1.length
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: engine.manualRenderingMaximumFrameCount) else {
+            throw RecordingError("No buffer to mix the audio into.")
+        }
+        while engine.manualRenderingSampleTime < duration {
+            let frames = min(buffer.frameCapacity, AVAudioFrameCount(duration - engine.manualRenderingSampleTime))
+            // Players render silence once their file has ended, so anything but success would never move on
+            guard try engine.renderOffline(frames, to: buffer) == .success else {
+                throw RecordingError("The audio could not be mixed.")
+            }
+            try outputFile.write(from: buffer)
         }
     }
     

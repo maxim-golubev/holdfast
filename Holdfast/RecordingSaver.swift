@@ -33,7 +33,6 @@ enum RecordingSaver {
             closed = writer.status == .completed
         }
         let failureTitle = earlyReason == nil ? "Failed to save file".local : "Recording Stopped Early".local
-        let savedSoFar = String(format: "The recording up to that point is saved as: %@".local, recording.finalURL.path)
         if !taken.sessionStarted && cancelled {
             // Stopped before the first frame or the first audio arrived. Nothing was lost, so nothing is reported as failed.
             try? fd.removeItem(at: recording.rawURL)
@@ -58,16 +57,7 @@ enum RecordingSaver {
                     // Where the recording ends up is only known after the mix
                     await mix(session, recording: recording, frame: frame, earlyReason: earlyReason)
                 } else {
-                    if let reason = earlyReason { UserNotice.reportFailure(title: failureTitle, message: reason + " " + savedSoFar) }
-                    let url = recording.finalURL
-                    if !recording.showPreview {
-                        UserNotice.showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, url.path), id: "holdfast.completed.\(UUID().uuidString)")
-                    } else {
-                        showPreview(path: url.path, image: frame)
-                    }
-                    if recording.trimAfterRecord {
-                        AppDelegate.shared.openTrimmer(url)
-                    }
+                    present(recording.finalURL, image: frame, recording: recording, earlyReason: earlyReason)
                 }
             }
         } else if !taken.sessionStarted {
@@ -83,8 +73,7 @@ enum RecordingSaver {
             UserNotice.reportFailure(title: failureTitle, message: body)
         } else {
             // The package is only read now that the microphone file is complete
-            if let reason = earlyReason { UserNotice.reportFailure(title: failureTitle, message: reason + " " + savedSoFar) }
-            await completion { done in finishAudioRecording(recording, completion: done) }
+            await completion { done in finishAudioRecording(recording, earlyReason: earlyReason, completion: done) }
         }
         SleepPreventer.shared.allowSleep()
     }
@@ -149,23 +138,16 @@ enum RecordingSaver {
             let body = String(format: "The recording was mixed and saved, but its unmixed copy is still at: %@".local, leftover.path)
             UserNotice.showNotification(title: "Recording Completed".local, body: body, id: "holdfast.completed.\(UUID().uuidString)")
         }
-        if let reason = earlyReason {
-            UserNotice.reportFailure(title: "Recording Stopped Early".local, message: reason + " " + String(format: "The recording up to that point is saved as: %@".local, final.path))
-        }
-        if !recording.showPreview {
-            UserNotice.showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, final.path), id: "holdfast.completed.\(UUID().uuidString)")
-        }
-        if recording.trimAfterRecord {
-            AppDelegate.shared.openTrimmer(final)
-        } else if recording.showPreview {
-            showPreview(path: final.path, image: frame)
-        }
+        present(final, image: frame, recording: recording, earlyReason: earlyReason)
     }
 
-    /// What follows an audio-only recording once its files are closed: MP3 conversion, the mix of a .qma package, or just the report.
-    /// `completion` is called once, when the files are in their final state. Main thread: it shows the preview
+    /// What follows an audio-only recording once its files are closed: MP3 conversion, the mix of a .qma package, or
+    /// just the report. `completion` is called once, when the files are in their final state. A conversion or mix that
+    /// fails leaves no partial file and is reported with where the recording is. Main thread: it shows the preview
     /// and creates the audio player that does the mix.
-    private static func finishAudioRecording(_ recording: RecordingContext, completion: @escaping () -> Void) {
+    private static func finishAudioRecording(_ recording: RecordingContext, earlyReason: String?, completion: @escaping () -> Void) {
+        let early = earlyReason.map { $0 + " " } ?? ""
+        let audioIcon = NSImage(named: "audioIcon")
         if recording.audioFormat == .mp3 && !recording.recordMic {
             guard let source = recording.systemAudioURL else { completion(); return }
             let output = recording.finalURL
@@ -174,43 +156,64 @@ enum RecordingSaver {
                 do {
                     try await m4a2mp3(inputUrl: source, outputUrl: output, bitrate: recording.audioQuality)
                     try? fd.removeItem(at: source)
-                    if !recording.showPreview {
-                        let title = "Recording Completed".local
-                        let body = String(format: "File saved to: %@".local, output.path)
-                        let id = "holdfast.completed.\(UUID().uuidString)"
-                        UserNotice.showNotification(title: title, body: body, id: id)
-                    } else {
-                        DispatchQueue.main.async { showPreview(path: output.path, image: NSImage(named: "audioIcon")) }
-                    }
+                    present(output, image: audioIcon, recording: recording, earlyReason: earlyReason)
                 } catch {
-                    let body = String(format: "%@ The recording was kept as: %@".local, error.localizedDescription, source.path)
-                    UserNotice.showNotification(title: "Failed to save file".local, body: body, id: "holdfast.error.\(UUID().uuidString)")
+                    try? fd.removeItem(at: output)
+                    let body = early + String(format: "Converting to MP3 failed: %@ Nothing is lost: the recording is kept as: %@".local, error.localizedDescription, source.path)
+                    UserNotice.reportFailure(title: "MP3 Conversion Failed".local, message: body)
                 }
             }
         } else if recording.remuxAudio && recording.recordMic {
             let package = recording.rawURL
-            if let document = try? qmaPackageHandle.load(from: package) {
-                let audioPlayerManager = AudioPlayerManager()
-                audioPlayerManager.loadAudioFiles(format: document.info.format, package: package, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
-                audioPlayerManager.sysVol = document.info.sysVol
-                audioPlayerManager.micVol = document.info.micVol
+            func failed(_ reason: String) {
+                let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept with separate audio files in: %@".local, reason, package.path)
+                UserNotice.reportFailure(title: "Audio Mix Failed".local, message: body)
+            }
+            let player = AudioPlayerManager()
+            do {
+                let document = try qmaPackageHandle.load(from: package)
+                try player.loadAudioFiles(format: document.info.format, package: package, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
+                player.sysVol = document.info.sysVol
+                player.micVol = document.info.micVol
                 // With the settings the recording was started with, not the current ones
-                audioPlayerManager.saveFile(recording.finalURL, saveAsMP3: document.info.exportMP3, audioQuality: recording.audioQuality, completion: completion)
-            } else {
-                let body = String(format: "The recording was kept with separate audio files: %@".local, package.path)
-                UserNotice.showNotification(title: "Audio Mix Failed".local, body: body, id: "holdfast.error.\(UUID().uuidString)")
+                player.saveFile(recording.finalURL, saveAsMP3: document.info.exportMP3, audioQuality: recording.audioQuality) { result in
+                    switch result {
+                    case .success(let file): present(file, image: audioIcon, recording: recording, earlyReason: earlyReason)
+                    case .failure(let error): failed(error.localizedDescription)
+                    }
+                    completion()
+                }
+            } catch {
+                failed(error.localizedDescription)
                 completion()
             }
         } else {
-            if !recording.showPreview {
-                let title = "Recording Completed".local
-                let body = String(format: "File saved to: %@".local, recording.rawURL.path)
-                let id = "holdfast.completed.\(UUID().uuidString)"
-                UserNotice.showNotification(title: title, body: body, id: id)
-            } else {
-                showPreview(path: recording.rawURL.path, image: NSImage(named: "qmaIcon"))
-            }
+            // A package when there is a microphone, a single audio file otherwise
+            let icon = recording.recordMic ? NSImage(named: "qmaIcon") : audioIcon
+            present(recording.rawURL, image: icon, recording: recording, earlyReason: earlyReason)
             completion()
+        }
+    }
+
+    /// Tells the user where the finished recording is: why it ended early if it did, then its preview, or a
+    /// notification when previews are off, then the trimmer of a video when it opens after every recording. A file
+    /// that is not there is reported instead: the writer kept writing through its open file wherever the save folder went.
+    private static func present(_ url: URL, image: NSImage?, recording: RecordingContext, earlyReason: String?) {
+        guard fd.fileExists(atPath: url.path) else {
+            let reason = earlyReason.map { $0 + " " } ?? ""
+            UserNotice.reportFailure(title: earlyReason == nil ? "Recording Not Found".local : "Recording Stopped Early".local, message: reason + movedNote(for: url))
+            return
+        }
+        if let reason = earlyReason {
+            UserNotice.reportFailure(title: "Recording Stopped Early".local, message: reason + " " + String(format: "The recording up to that point is saved as: %@".local, url.path))
+        }
+        if recording.showPreview, let image {
+            showPreview(path: url.path, image: image)
+        } else {
+            UserNotice.showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, url.path), id: "holdfast.completed.\(UUID().uuidString)")
+        }
+        if recording.trimAfterRecord && !recording.audioOnly {
+            AppDelegate.shared.openTrimmer(url)
         }
     }
 
