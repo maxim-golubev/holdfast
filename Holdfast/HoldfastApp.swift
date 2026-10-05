@@ -32,7 +32,6 @@ struct HoldfastApp: App {
         }
         .windowResizability(.contentSize)
         .commands {
-            SidebarCommands()
             CommandGroup(replacing: .saveItem) {}
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .textEditing) {}

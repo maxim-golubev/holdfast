@@ -25,7 +25,6 @@
 		18D3BDED2BCE5DC1006CFFC0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18D3BDEC2BCE5DC1006CFFC0 /* ContentView.swift */; };
 		18FEBF022E91000000A1B2C3 /* Holdfast.icon in Resources */ = {isa = PBXBuildFile; fileRef = 18FEBF012E91000000A1B2C3 /* Holdfast.icon */; };
 		18D3BDEF2BCE5DC2006CFFC0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 18D3BDEE2BCE5DC2006CFFC0 /* Assets.xcassets */; };
-		18D3BDF22BCE5DC2006CFFC0 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 18D3BDF12BCE5DC2006CFFC0 /* Preview Assets.xcassets */; };
 		18D3BDFF2BCE5E4B006CFFC0 /* StatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18D3BDFE2BCE5E4B006CFFC0 /* StatusItem.swift */; };
 		18D3BE012BCEB1BF006CFFC0 /* AppSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18D3BE002BCEB1BF006CFFC0 /* AppSelector.swift */; };
 		18D3BE042BCEC847006CFFC0 /* ScreenContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18D3BE032BCEC847006CFFC0 /* ScreenContent.swift */; };
@@ -74,7 +73,6 @@
 		18D3BDEA2BCE5DC1006CFFC0 /* HoldfastApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldfastApp.swift; sourceTree = "<group>"; };
 		18D3BDEC2BCE5DC1006CFFC0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		18D3BDEE2BCE5DC2006CFFC0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		18D3BDF12BCE5DC2006CFFC0 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		18FEBF012E91000000A1B2C3 /* Holdfast.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = Holdfast.icon; sourceTree = "<group>"; };
 		18D3BDF32BCE5DC2006CFFC0 /* Holdfast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Holdfast.entitlements; sourceTree = "<group>"; };
 		18D3BDFE2BCE5E4B006CFFC0 /* StatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItem.swift; sourceTree = "<group>"; };
@@ -186,17 +184,8 @@
 				18FEBF012E91000000A1B2C3 /* Holdfast.icon */,
 				18D3BDEE2BCE5DC2006CFFC0 /* Assets.xcassets */,
 				18D3BDF32BCE5DC2006CFFC0 /* Holdfast.entitlements */,
-				18D3BDF02BCE5DC2006CFFC0 /* Preview Content */,
 			);
 			path = Holdfast;
-			sourceTree = "<group>";
-		};
-		18D3BDF02BCE5DC2006CFFC0 /* Preview Content */ = {
-			isa = PBXGroup;
-			children = (
-				18D3BDF12BCE5DC2006CFFC0 /* Preview Assets.xcassets */,
-			);
-			path = "Preview Content";
 			sourceTree = "<group>";
 		};
 		18D3BE022BCEB1D4006CFFC0 /* ViewModel */ = {
@@ -285,7 +274,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				18D3BDF22BCE5DC2006CFFC0 /* Preview Assets.xcassets in Resources */,
 				18A551FC2D0749C3008FC5F6 /* Scriptable.sdef in Resources */,
 				18FEBF022E91000000A1B2C3 /* Holdfast.icon in Resources */,
 				18D3BDEF2BCE5DC2006CFFC0 /* Assets.xcassets in Resources */,
@@ -489,7 +477,6 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 169;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_ASSET_PATHS = "\"Holdfast/Preview Content\"";
 				DEVELOPMENT_TEAM = N42Q7FY9FL;
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = N42Q7FY9FL;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -526,7 +513,6 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 169;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_ASSET_PATHS = "\"Holdfast/Preview Content\"";
 				DEVELOPMENT_TEAM = N42Q7FY9FL;
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = N42Q7FY9FL;
 				ENABLE_HARDENED_RUNTIME = YES;
