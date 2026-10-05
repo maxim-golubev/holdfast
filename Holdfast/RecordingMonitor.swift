@@ -14,7 +14,7 @@ import Foundation
 /// and leave a hole that players handle badly. It is also the watchdog that tells the user while a source is not
 /// being recorded. Everything here is only used on the sample queue; the methods the session calls and the timer trap elsewhere.
 final class RecordingMonitor {
-    private static let interval: Double = 0.5
+    static let interval: Double = 0.5
     /// How long a source may deliver nothing before its track is continued without it. The tracks are filled up to
     /// this far behind the present, so that a buffer which is merely late still fits.
     static let gapSeconds: Double = 1
@@ -54,18 +54,26 @@ final class RecordingMonitor {
         self.queue = queue
     }
 
+    /// Watches `writer` from now on, with a tick every `interval`
     func start(_ writer: RecordingWriter) {
+        watch(writer, from: DispatchTime.now().uptimeNanoseconds)
+        guard self.writer != nil else { return }
+        let interval = RecordingMonitor.interval
+        let source = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
+        source.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(50))
+        source.setEventHandler { [weak self] in self?.tick(at: DispatchTime.now().uptimeNanoseconds) }
+        timer = source
+        source.resume()
+    }
+
+    /// Watches `writer`, whose capture began at `uptime` (nanoseconds of `DispatchTime`), without a timer: the
+    /// ticks come from `start`'s timer, or from a test with times of its own
+    func watch(_ writer: RecordingWriter, from uptime: UInt64) {
         dispatchPrecondition(condition: .onQueue(queue))
         stop()
         guard writer.isCapturing else { return }
         self.writer = writer
-        let interval = RecordingMonitor.interval
-        let source = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
-        source.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(50))
-        source.setEventHandler { [weak self] in self?.tick() }
-        timer = source
-        started = DispatchTime.now().uptimeNanoseconds
-        source.resume()
+        started = uptime
     }
 
     func stop() {
@@ -108,12 +116,12 @@ final class RecordingMonitor {
         return CMTimeGetSeconds(CMTimeSubtract(end, start))
     }
 
-    private func tick() {
+    /// What the monitor does every `interval`, at the time `uptime` (nanoseconds of `DispatchTime`)
+    func tick(at uptime: UInt64) {
         dispatchPrecondition(condition: .onQueue(queue))
         let interval = RecordingMonitor.interval
         let silentSeconds = RecordingMonitor.silentSeconds
         let zeroSeconds = RecordingMonitor.zeroSeconds
-        let uptime = DispatchTime.now().uptimeNanoseconds
         let sinceLastTick = lastTick == 0 ? 0 : Double(uptime &- lastTick) / 1_000_000_000
         lastTick = uptime
         guard let writer = writer, writer.isCapturing, !writer.isPaused else { return }
