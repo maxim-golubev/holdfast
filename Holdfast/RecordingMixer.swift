@@ -12,12 +12,6 @@ import Foundation
 /// Nothing here deletes or renames a file. It writes the mix to the URL it is given and says whether that file can
 /// be trusted; the caller decides what happens to the files.
 enum RecordingMixer {
-    struct Failure: LocalizedError {
-        let message: String
-        init(_ message: String) { self.message = message }
-        var errorDescription: String? { message }
-    }
-
     // MARK: - Mix
 
     private static let pcmSettings: [String: Any] = [
@@ -35,13 +29,13 @@ enum RecordingMixer {
         let asset = AVURLAsset(url: source)
         let videoTracks = try await asset.loadTracks(withMediaType: .video)
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
-        guard let videoTrack = videoTracks.first, videoTracks.count == 1 else { throw Failure("The recording has no video track.") }
-        guard audioTracks.count > 1 else { throw Failure("The recording does not have two audio tracks to mix.") }
+        guard let videoTrack = videoTracks.first, videoTracks.count == 1 else { throw RecordingError("The recording has no video track.") }
+        guard audioTracks.count > 1 else { throw RecordingError("The recording does not have two audio tracks to mix.") }
         let duration = try await asset.load(.duration)
         let seconds = CMTimeGetSeconds(duration)
-        guard seconds.isFinite, seconds > 0 else { throw Failure("The recording is empty.") }
+        guard seconds.isFinite, seconds > 0 else { throw RecordingError("The recording is empty.") }
         let transform = try await videoTrack.load(.preferredTransform)
-        guard let videoFormat = try await videoTrack.load(.formatDescriptions).first else { throw Failure("The video track has no format.") }
+        guard let videoFormat = try await videoTrack.load(.formatDescriptions).first else { throw RecordingError("The video track has no format.") }
 
         let reader = try AVAssetReader(asset: asset)
         // No output settings: the compressed frames are handed over as they are in the file
@@ -52,7 +46,7 @@ enum RecordingMixer {
         mixSettings[AVNumberOfChannelsKey] = 2
         let audioOutput = AVAssetReaderAudioMixOutput(audioTracks: audioTracks, audioSettings: mixSettings)
         audioOutput.alwaysCopiesSampleData = false
-        guard reader.canAdd(videoOutput), reader.canAdd(audioOutput) else { throw Failure("The recording cannot be read for mixing.") }
+        guard reader.canAdd(videoOutput), reader.canAdd(audioOutput) else { throw RecordingError("The recording cannot be read for mixing.") }
         reader.add(videoOutput)
         reader.add(audioOutput)
 
@@ -62,14 +56,14 @@ enum RecordingMixer {
         videoInput.transform = transform
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         audioInput.expectsMediaDataInRealTime = false
-        guard writer.canAdd(videoInput), writer.canAdd(audioInput) else { throw Failure("The mixed recording cannot be written in this format.") }
+        guard writer.canAdd(videoInput), writer.canAdd(audioInput) else { throw RecordingError("The mixed recording cannot be written in this format.") }
         writer.add(videoInput)
         writer.add(audioInput)
 
-        guard reader.startReading() else { throw reader.error ?? Failure("The recording could not be read.") }
+        guard reader.startReading() else { throw reader.error ?? RecordingError("The recording could not be read.") }
         guard writer.startWriting() else {
             reader.cancelReading()
-            throw writer.error ?? Failure("The mixed recording could not be created.")
+            throw writer.error ?? RecordingError("The mixed recording could not be created.")
         }
         writer.startSession(atSourceTime: .zero)
 
@@ -88,14 +82,14 @@ enum RecordingMixer {
             let error = writer.error ?? reader.error
             reader.cancelReading()
             writer.cancelWriting()
-            throw error ?? Failure(copied ?? "Mixing the audio tracks was interrupted.")
+            throw error ?? RecordingError(copied ?? "Mixing the audio tracks was interrupted.")
         }
         guard writer.status == .writing else {
-            throw writer.error ?? Failure("The mixed recording could not be written.")
+            throw writer.error ?? RecordingError("The mixed recording could not be written.")
         }
         await writer.finishWriting()
         guard writer.status == .completed else {
-            throw writer.error ?? Failure("The mixed recording could not be closed.")
+            throw writer.error ?? RecordingError("The mixed recording could not be closed.")
         }
         progress(1)
     }
@@ -214,31 +208,31 @@ enum RecordingMixer {
     /// Throws unless `output` is a complete mix of `source`: one video and one audio track, as long as the source
     /// to within a second, and with the microphone audible where only the microphone had sound.
     static func verify(source: URL, output: URL) async throws {
-        guard FileManager.default.fileExists(atPath: output.path) else { throw Failure("The mixed recording was not written.") }
+        guard FileManager.default.fileExists(atPath: output.path) else { throw RecordingError("The mixed recording was not written.") }
         let raw = AVURLAsset(url: source)
         let mixed = AVURLAsset(url: output)
         let video = try await mixed.loadTracks(withMediaType: .video)
         let audio = try await mixed.loadTracks(withMediaType: .audio)
         guard video.count == 1, let mixedAudio = audio.first, audio.count == 1 else {
-            throw Failure("The mixed recording does not have one video and one audio track.")
+            throw RecordingError("The mixed recording does not have one video and one audio track.")
         }
         let rawSeconds = CMTimeGetSeconds(try await raw.load(.duration))
         let mixedSeconds = CMTimeGetSeconds(try await mixed.load(.duration))
         let videoSeconds = CMTimeGetSeconds(try await video[0].load(.timeRange).duration)
         let audioSeconds = CMTimeGetSeconds(try await mixedAudio.load(.timeRange).duration)
         guard rawSeconds.isFinite, mixedSeconds.isFinite, abs(rawSeconds - mixedSeconds) <= 1 else {
-            throw Failure(String(format: "The mixed recording is %.1f s long, the recording %.1f s.", mixedSeconds, rawSeconds))
+            throw RecordingError(String(format: "The mixed recording is %.1f s long, the recording %.1f s.", mixedSeconds, rawSeconds))
         }
         let rawVideoSeconds = CMTimeGetSeconds(try await raw.loadTracks(withMediaType: .video).first?.load(.timeRange).duration ?? .zero)
         guard videoSeconds.isFinite, videoSeconds >= rawVideoSeconds - 1 else {
-            throw Failure("The video of the mixed recording is shorter than the recording.")
+            throw RecordingError("The video of the mixed recording is shorter than the recording.")
         }
         // Tracks in the order they were added to the file: system audio, then microphone
         let rawAudio = try await raw.loadTracks(withMediaType: .audio).sorted { $0.trackID < $1.trackID }
         var rawAudioSeconds = 0.0
         for track in rawAudio { rawAudioSeconds = max(rawAudioSeconds, CMTimeGetSeconds(try await track.load(.timeRange).duration)) }
         guard audioSeconds.isFinite, audioSeconds >= rawAudioSeconds - 1 else {
-            throw Failure("The audio of the mixed recording is shorter than the recording.")
+            throw RecordingError("The audio of the mixed recording is shorter than the recording.")
         }
         guard rawAudio.count == 2 else { return }
         try checkMicrophone(system: rawAudio[0], microphone: rawAudio[1], in: raw, mixed: mixedAudio, in: mixed, seconds: rawSeconds)
@@ -266,7 +260,7 @@ enum RecordingMixer {
         }
         print("Mix check: \(count) windows, \(microphoneOnly) with the microphone alone, \(missing) of them without it in the mix")
         if microphoneOnly > 0 && missing * 2 >= microphoneOnly {
-            throw Failure("The microphone is in the recording but cannot be heard in the mixed audio.")
+            throw RecordingError("The microphone is in the recording but cannot be heard in the mixed audio.")
         }
     }
 
@@ -275,10 +269,10 @@ enum RecordingMixer {
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: pcmSettings)
         output.alwaysCopiesSampleData = false
-        guard reader.canAdd(output) else { throw Failure("The audio cannot be read to check the mix.") }
+        guard reader.canAdd(output) else { throw RecordingError("The audio cannot be read to check the mix.") }
         reader.add(output)
         reader.timeRange = range
-        guard reader.startReading() else { throw reader.error ?? Failure("The audio cannot be read to check the mix.") }
+        guard reader.startReading() else { throw reader.error ?? RecordingError("The audio cannot be read to check the mix.") }
         var sum = 0.0
         var count = 0
         var samples = [Float]()
@@ -295,7 +289,7 @@ enum RecordingMixer {
             for i in 0..<length { sum += Double(samples[i]) * Double(samples[i]) }
             count += length
         }
-        guard reader.status == .completed else { throw reader.error ?? Failure("The audio cannot be read to check the mix.") }
+        guard reader.status == .completed else { throw reader.error ?? RecordingError("The audio cannot be read to check the mix.") }
         return count > 0 ? (sum / Double(count)).squareRoot() : 0
     }
 

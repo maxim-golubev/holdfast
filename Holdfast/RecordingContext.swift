@@ -10,6 +10,9 @@ import Foundation
 /// notifications) work from, so changing a setting in the meantime cannot redirect them to another file. Built
 /// once in `RecorderController.start`. The settings of the stream and the encoder are not here: `CaptureSource`
 /// and `MovieWriter.prepareVideo` read them from `AppSettings` once, while the recording starts.
+///
+/// The URLs of its files are those of `files` and read as its own: `recording.rawURL` is `recording.files.rawURL`.
+@dynamicMemberLookup
 struct RecordingContext {
     let audioOnly: Bool
     /// Whether this recording has a microphone track, which the "recordMic" setting alone does not decide
@@ -26,22 +29,13 @@ struct RecordingContext {
     let saveDirectory: String
     /// MP3 bitrate in kbit/s
     let audioQuality: Int
-    /// What is written while recording: the video file, the audio file, or the .qma package for audio with a microphone
-    let rawURL: URL
-    /// What the audio mix after a video recording writes before it is checked and gets the final name, nil when
-    /// the audio tracks are not mixed
-    let mixURL: URL?
-    /// The name the recording as it was written (two audio tracks) gets when it is kept, nil when the audio tracks are not mixed
-    let unmixedURL: URL?
     /// Whether the recording as it was written stays next to the mixed one
     let keepUnmixed: Bool
-    /// What the user ends up with
-    let finalURL: URL
-    /// Audio-only recordings: the system audio file, and the microphone file when there is one
-    let systemAudioURL: URL?
-    let micAudioURL: URL?
+    let files: RecordingFiles
 
-    var mixesAudio: Bool { mixURL != nil }
+    subscript<T>(dynamicMember file: KeyPath<RecordingFiles, T>) -> T { files[keyPath: file] }
+
+    var mixesAudio: Bool { files.mixURL != nil }
     var fileType: AVFileType { videoFormat == .mov ? .mov : .mp4 }
     var audioFileType: AVFileType { audioFormat == .flac || audioFormat == .opus ? .caf : .m4a }
     var audioFileEnding: String { RecordingContext.fileEnding(for: audioFormat) }
@@ -82,20 +76,14 @@ struct RecordingContext {
         self.audioQuality = AppSettings.audioQuality.rawValue
         self.keepUnmixed = AppSettings.keepUnmixed
 
-        let files = RecordingFiles(base: RecordingFileStore(directory: saveDirectory).newBase(), audioOnly: audioOnly,
-                                   recordMic: recordMic, systemAudio: systemAudio, remuxAudio: remuxAudio,
-                                   videoEnding: videoFormat.rawValue, audioEnding: RecordingContext.fileEnding(for: audioFormat),
-                                   exportsMP3: audioFormat == .mp3)
-        rawURL = files.rawURL
-        mixURL = files.mixURL
-        unmixedURL = files.unmixedURL
-        finalURL = files.finalURL
-        systemAudioURL = files.systemAudioURL
-        micAudioURL = files.micAudioURL
+        files = RecordingFiles(base: RecordingFileStore(directory: saveDirectory).newBase(), audioOnly: audioOnly,
+                               recordMic: recordMic, systemAudio: systemAudio, remuxAudio: remuxAudio,
+                               videoEnding: videoFormat.rawValue, audioEnding: RecordingContext.fileEnding(for: audioFormat),
+                               exportsMP3: audioFormat == .mp3)
     }
 }
 
-/// A reason a recording could not be started, shown to the user as it is
+/// Why a recording could not be started, written, mixed or checked, in words shown to the user as they are
 struct RecordingError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
