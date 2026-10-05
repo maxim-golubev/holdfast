@@ -184,10 +184,10 @@ struct AudioSettings: View {
             }
             Section("Tracks") {
                 Toggle(isOn: $remuxAudio) {
-                    RowLabel("Mix Microphone into the Main Track", "After a video recording, system audio and microphone are mixed into one audio track, which every player plays. Off: two separate tracks.")
+                    RowLabel("Mix Microphone into the Main Track", "After a recording, system audio and microphone are mixed into one audio track, which every player plays; an audio-only recording gets the mix as a file next to its .qma package. Off: a video keeps two separate audio tracks, and an audio-only recording is only its .qma package, which plays in Holdfast.")
                 }
                 Toggle(isOn: $keepUnmixed) {
-                    RowLabel("Keep the Unmixed Recording", "The recording as it was written, with two audio tracks, stays next to the mixed file as \"<name> (unmixed, 2 audio tracks)\".")
+                    RowLabel("Keep the Unmixed Recording", "After a video recording, the recording as it was written, with two audio tracks, stays next to the mixed file as \"<name> (unmixed, 2 audio tracks)\". The .qma package of an audio-only recording is always kept.")
                 }
                 .disabled(!remuxAudio)
             }
