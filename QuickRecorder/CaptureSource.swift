@@ -43,10 +43,6 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     let micSelection: String
     /// The device the microphone is being captured from. `MicDevices` changes it when the devices change.
     var micActiveDeviceID: String?
-    /// A device switch that is waiting to be tried, and how often a switch the stream refused is tried again before
-    /// the next device change. `MicDevices` keeps them here, with the recording they belong to.
-    var micPendingSwitch: DispatchWorkItem?
-    var micRetriesLeft = 0
 
     private var stream: SCStream?
     private let queue: DispatchQueue

@@ -55,6 +55,7 @@ final class RecordingMonitor {
     }
 
     func start(_ writer: RecordingWriter) {
+        dispatchPrecondition(condition: .onQueue(queue))
         stop()
         guard writer.isCapturing else { return }
         self.writer = writer
@@ -109,6 +110,7 @@ final class RecordingMonitor {
     }
 
     private func tick() {
+        dispatchPrecondition(condition: .onQueue(queue))
         let interval = RecordingMonitor.interval
         let silentSeconds = RecordingMonitor.silentSeconds
         let zeroSeconds = RecordingMonitor.zeroSeconds

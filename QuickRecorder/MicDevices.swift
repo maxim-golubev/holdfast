@@ -77,9 +77,13 @@ enum MicSelection {
 /// from the device that should be used now. Main thread only.
 enum MicDevices {
     private static var watching = false
+    /// The check that is waiting. It belongs to no recording: a device change is also followed when it arrives just
+    /// before the capture exists, and the check then finds the recording that has started in the meantime.
+    private static var pending: DispatchWorkItem?
+    /// How often a switch the stream refused is tried again before the next device change
+    private static var retriesLeft = 0
 
-    /// The capture of the recording in progress. What belongs to one recording, the switch that is waiting and
-    /// the tries that are left, is kept in it (`micPendingSwitch`, `micRetriesLeft`) and goes with it.
+    /// The capture of the recording in progress
     private static func currentCapture() -> CaptureSource? {
         return MainActor.assumeIsolated { RecorderController.shared.session?.capture as? CaptureSource }
     }
@@ -107,18 +111,17 @@ enum MicDevices {
             var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
             let status = AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { _, _ in
                 // A device change comes as a burst of notifications, and the device list lags a little behind them
-                guard let capture = currentCapture() else { return }
-                capture.micRetriesLeft = 3
-                schedule(capture, after: 0.7, announce: true)
+                retriesLeft = 3
+                schedule(after: 0.7, announce: true)
             }
             if status != noErr { print("Cannot watch the audio devices (selector \(selector)): \(status)") }
         }
     }
 
-    private static func schedule(_ capture: CaptureSource, after delay: Double, announce: Bool) {
-        capture.micPendingSwitch?.cancel()
+    private static func schedule(after delay: Double, announce: Bool) {
+        pending?.cancel()
         let work = DispatchWorkItem { followDevices(announce: announce) }
-        capture.micPendingSwitch = work
+        pending = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
@@ -156,9 +159,9 @@ enum MicDevices {
                 guard currentCapture() === capture, capture.micActiveDeviceID == wanted else { return }
                 capture.micActiveDeviceID = previous
                 conf.microphoneCaptureDeviceID = previousCaptureID
-                if capture.micRetriesLeft > 0 {
-                    capture.micRetriesLeft -= 1
-                    schedule(capture, after: 2, announce: false)
+                if retriesLeft > 0 {
+                    retriesLeft -= 1
+                    schedule(after: 2, announce: false)
                 }
             }
         }
