@@ -181,6 +181,21 @@ func filesTests() async {
         expectEqual(RecordingFileStore.mixMarker, "mixing", "marker of a mix being written")
     }
 
+    await test("Store: a name an earlier recording has is not given again") {
+        let folder = try Suite.folder("store-taken")
+        let store = RecordingFileStore(directory: folder.path)
+        var parts = DateComponents()
+        (parts.year, parts.month, parts.day, parts.hour, parts.minute, parts.second) = (2026, 11, 1, 1, 10, 0)
+        let date = try require(Calendar.current.date(from: parts), "date")
+        let first = store.newBase(date: date)
+        expectEqual(first, folder.path + "/Recording at 2026-11-01 01.10.00", "a free name")
+        try Data().write(to: URL(fileURLWithPath: first + " (unmixed, 2 audio tracks).mp4"))
+        expectEqual(store.newBase(date: date), first + " (2)", "a name with a label of it is taken too")
+        try FileManager.default.createDirectory(atPath: first + " (2).qma", withIntermediateDirectories: false)
+        expectEqual(store.newBase(date: date), first + " (3)", "and a package")
+        expectEqual(RecordingFileStore(directory: folder.path + "/missing").newBase(date: date), folder.path + "/missing/Recording at 2026-11-01 01.10.00", "a folder that is not there yet has every name free")
+    }
+
     await test("Store: a recording starts only with a folder that is there and has room") {
         let folder = try Suite.folder("store")
         let plenty: (String) -> Int64? = { _ in 50_000_000_000 }

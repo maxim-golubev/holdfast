@@ -65,6 +65,8 @@ final class MovieWriter {
     private var videoInput, audioInput, micInput: AVAssetWriterInput?
     /// The system audio file of an audio-only recording
     private var audioFile: AVAudioFile?
+    /// What this writer created at `recording.rawURL` (the file or the package), which `cancel` removes; nil until then
+    private var created: URL?
     /// True from just before the capture is started until the recording is stopped or has failed
     private(set) var isCapturing = false
     private(set) var isPaused = false
@@ -112,6 +114,7 @@ final class MovieWriter {
         guard width >= 1, height >= 1 else {
             throw RecordingError(String(format: "The picture to record is %d x %d pixels: select a larger area.", width, height))
         }
+        try checkNameIsFree()
         let writer = try AVAssetWriter(outputURL: recording.rawURL, fileType: recording.fileType)
         self.writer = writer
         // The file is written in fragments, so a crash, a kill or a power loss costs the last few seconds instead of
@@ -181,6 +184,7 @@ final class MovieWriter {
             micInput = input
         }
         guard writer.startWriting() else { throw writer.error ?? RecordingError("The video file could not be created.") }
+        created = recording.rawURL
         self.videoInput = videoInput
         self.audioInput = audioInput
         self.micInput = micInput
@@ -190,6 +194,9 @@ final class MovieWriter {
     func prepareAudio() throws {
         guard let systemAudioURL = recording.systemAudioURL else { throw RecordingError("The audio file has no location.") }
         let settings = recording.audioSettings
+        try checkNameIsFree()
+        // From here on what is at the recording's name is this writer's: the package, or the file AVAudioFile creates
+        created = recording.rawURL
         if let micAudioURL = recording.micAudioURL {
             let exportMP3 = recording.audioFormat == .mp3
             let jsonString = "{\"format\": \"\(recording.audioFileEnding)\", \"encoder\": \"\(recording.audioEncoder)\", \"exportMP3\": \(exportMP3), \"sysVol\": 1.0, \"micVol\": 1.0}"
@@ -292,11 +299,21 @@ final class MovieWriter {
         return false
     }
 
-    /// For a start that failed before anything was recorded. Also deletes the file the writer created.
+    /// For a start that failed before anything was recorded. Also deletes what the writer created, and nothing else.
     func cancel() {
         isCapturing = false
         audioFile = nil
         writer?.cancelWriting()
+        if let created = created { try? FileManager.default.removeItem(at: created) }
+        created = nil
+    }
+
+    /// The writer never writes over a file: AVAudioFile would truncate it, and a failed start would remove it.
+    /// `RecordingFileStore.newBase` chooses a name no file has, so this only catches one that appeared since.
+    private func checkNameIsFree() throws {
+        guard !FileManager.default.fileExists(atPath: recording.rawURL.path) else {
+            throw RecordingError(String(format: "A file named \"%@\" is already in the save folder.", recording.rawURL.lastPathComponent))
+        }
     }
 
     // MARK: - Timeline

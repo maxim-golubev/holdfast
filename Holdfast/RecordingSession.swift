@@ -232,10 +232,8 @@ final class RecordingSession: @unchecked Sendable {
             queueWriter = nil
             monitor.stop()
         }
-        // Also deletes the file the writer created
+        // Nothing was recorded: the writer deletes the empty file or package it created, and only that
         discarded?.cancel()
-        // Nothing was recorded, so what is left is an empty file or a package without audio
-        if let recording = recording { try? FileManager.default.removeItem(at: recording.rawURL) }
         capture?.releaseStream()
         capture = nil
         startTime = nil

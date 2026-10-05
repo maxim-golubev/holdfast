@@ -32,9 +32,23 @@ struct RecordingFileStore {
 
     // MARK: - Names
 
-    /// Path without extension for a recording started at `date`: `<directory>/<prefix><date>`
+    /// Path without extension for a recording started at `date`: `<directory>/<prefix><date>`, or `… (2)` and so
+    /// on when a file in the folder already has that name, with any extension or label: the date repeats when the
+    /// clock goes back (the hour repeated when daylight saving time ends, a time zone change).
     func newBase(date: Date = Date()) -> String {
-        return RecordingFileStore.basePath(directory: directory, prefix: prefix, date: date)
+        let base = RecordingFileStore.basePath(directory: directory, prefix: prefix, date: date)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
+        func taken(_ candidate: String) -> Bool {
+            let name = (candidate as NSString).lastPathComponent
+            return names.contains { $0.hasPrefix(name + ".") || $0.hasPrefix(name + " (") }
+        }
+        var candidate = base
+        var number = 2
+        while taken(candidate) && number < 1000 {
+            candidate = "\(base) (\(number))"
+            number += 1
+        }
+        return candidate
     }
 
     /// Path without extension for a single frame saved at `date`

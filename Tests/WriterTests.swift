@@ -319,6 +319,24 @@ func writerTests() async {
         }
     }
 
+    await test("Writer: a file already at the recording's name is neither written over nor removed") {
+        for (audioOnly, microphone) in [(false, false), (true, false), (true, true)] {
+            let run = try TestRecording(folder: "writer-taken-\(audioOnly)-\(microphone)", audioOnly: audioOnly, microphone: microphone)
+            let earlier = Data("an earlier recording".utf8)
+            try earlier.write(to: run.recording.rawURL)
+            await expectThrows("audio-only \(audioOnly), microphone \(microphone)") {
+                if audioOnly { try run.writer.prepareAudio() } else { try run.writer.prepareVideo(width: 320, height: 240) }
+            }
+            run.writer.cancel()
+            expectEqual(try Data(contentsOf: run.recording.rawURL), earlier, "the earlier file is untouched (audio-only \(audioOnly), microphone \(microphone))")
+        }
+        let run = try TestRecording(folder: "writer-own-package", audioOnly: true, microphone: true)
+        try run.writer.prepareAudio()
+        expect(FileManager.default.fileExists(atPath: run.recording.rawURL.path), "the package is created")
+        run.writer.cancel()
+        expect(!FileManager.default.fileExists(atPath: run.recording.rawURL.path), "and removed with the start")
+    }
+
     await test("Writer: an audio-only recording with a microphone is a package of two files of the same length") {
         let run = try TestRecording(folder: "writer-audio", audioOnly: true, settings: ["remuxAudio": false])
         let writer = run.writer
