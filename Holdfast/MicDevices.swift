@@ -16,8 +16,8 @@ enum MicSelection {
         AppSettings.recordMic = false
         UserNotice.onMainRunLoop {
             let alert = createAlert(title: "Permission Required",
-                                                       message: "Holdfast needs permission to record your microphone.",
-                                                       button1: "Open Settings",
+                                                       message: "Holdfast needs permission to record your microphone. Allow it in System Settings, then switch Record Microphone on again.",
+                                                       button1: "Open System Settings",
                                                        button2: "Cancel")
             if alert.runModal() == .alertFirstButtonReturn {
                 UserNotice.openPrivacySettings("Privacy_Microphone")

@@ -134,12 +134,12 @@ struct RecordingFileStore {
     func prepareForRecording(free: (String) -> Int64? = DiskSpace.available) throws {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory) {
-            if !isDirectory.boolValue { throw RecordingError("The output path is a file instead of a folder!") }
+            if !isDirectory.boolValue { throw RecordingError("The save folder is a file instead of a folder.") }
         } else {
             do {
                 try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true, attributes: nil)
             } catch {
-                throw RecordingError("Unable to create output folder!")
+                throw RecordingError("Unable to create the save folder.")
             }
         }
         if let free = free(directory), !DiskSpace.canStart(free: free) {

@@ -16,38 +16,39 @@ private func scriptCanStart(_ command: NSScriptCommand) -> Bool {
     command.scriptErrorNumber = errOSAGeneralError
     command.scriptErrorString = withRecorder { recorder in
         if recorder.quitRequested { return "Holdfast is quitting." }
-        return recorder.isSaving ? "The previous recording is still being saved." : "Already recording!"
+        return recorder.isSaving ? "The previous recording is still being saved." : "A recording is already running."
     }
     return false
 }
 
+/// What a record command that has looked at the screens and windows cannot do. The command has returned by then,
+/// so the user is told with an alert that does not hold up a recording.
+private func scriptFailed(_ message: String) {
+    UserNotice.showAlertLater(title: "Failed to Record".local, message: message)
+}
+
+/// `record screen [number]`: that screen, or the screen selector without a number
 class selectScreen: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
+        let number = evaluatedArguments?["index"] as? Int
         ScreenContent.updateAvailableContent {
-            DispatchQueue.main.async {
-                closeAllWindow()
-                if var index = self.evaluatedArguments?["index"] as? Int {
-                    guard let screens = ScreenContent.availableContent?.displays else { return }
-                    index -= 1
-                    if index >= screens.count || index < 0 {
-                        createAlert(title: "Error".local, message: "Invalid screen number!".local, button1: "OK".local).runModal()
-                        return
-                    } else {
-                        let screen = screens[index]
-                        AppDelegate.shared.createCountdownPanel(screen: screen) {
-                            RecorderController.shared.start(type: .screen, display: screen, windows: nil, applications: nil)
-                        }
-                    }
-                } else {
-                    AppDelegate.shared.createNewWindow(view: ScreenSelector(), title: "Screen Selector".local)
-                }
+            closeAllWindow()
+            guard let number = number else { return AppDelegate.shared.chooseScreen() }
+            let screens = ScreenContent.availableContent?.displays ?? []
+            guard screens.indices.contains(number - 1) else {
+                return scriptFailed(String(format: "There is no screen number %d. Screens are numbered from 1 to %d.", number, screens.count))
+            }
+            let screen = screens[number - 1]
+            AppDelegate.shared.createCountdownPanel(screen: screen) {
+                RecorderController.shared.start(type: .screen, display: screen, windows: nil, applications: nil)
             }
         }
         return nil
     }
 }
 
+/// `record area`: the area selector
 class selectArea: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
@@ -57,101 +58,77 @@ class selectArea: NSScriptCommand {
     }
 }
 
+/// `record application [named X]`: that application on the one screen it has windows on, or the selector
 class selectApps: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
+        let name = evaluatedArguments?["name"] as? String
         ScreenContent.updateAvailableContent {
-            DispatchQueue.main.async {
-                closeAllWindow()
-                if let name = self.evaluatedArguments?["name"] as? String {
-                    guard let app = ScreenContent.availableContent?.applications.first(where: { $0.applicationName == name }) else {
-                        createAlert(title: "Error".local, message: "No such application!".local, button1: "OK".local).runModal()
-                        return
-                    }
-                    guard let screens = ScreenContent.availableContent?.displays else { return }
-                    // The screens are those the named application has windows on
-                    let windows = ScreenContent.getWindows().filter { $0.owningApplication?.processID == app.processID }
-                    var s = [SCDisplay]()
-                    for screen in screens {
-                        for w in windows {
-                            if NSIntersectsRect(screen.frame, w.frame) { if !s.contains(screen) { s.append(screen) }}
-                        }
-                    }
-                    guard let screen = s.first else {
-                        createAlert(title: "Error".local, message: "This application has no windows!".local, button1: "OK".local).runModal()
-                        return
-                    }
-                    if s.count != 1 {
-                        AppDelegate.shared.createNewWindow(view: AppSelector(), title: "App Selector".local, identifier: .appSelector)
-                        createAlert(title: "Error".local, message: "This app exists in multiple screens, please select it manually!".local, button1: "OK".local).runModal()
-                    } else {
-                        AppDelegate.shared.createCountdownPanel(screen: screen) {
-                            RecorderController.shared.start(type: .application, display: screen, windows: nil, applications: [app])
-                        }
-                    }
-                } else {
-                    AppDelegate.shared.createNewWindow(view: AppSelector(), title: "App Selector".local, identifier: .appSelector)
-                }
+            closeAllWindow()
+            guard let name = name else { return AppDelegate.shared.chooseApplication() }
+            guard let app = ScreenContent.availableContent?.applications.first(where: { $0.applicationName == name }) else {
+                return scriptFailed(String(format: "No running application is named \"%@\".", name))
+            }
+            // The screens are those the named application has windows on
+            let windows = ScreenContent.getWindows().filter { $0.owningApplication?.processID == app.processID }
+            let screens = (ScreenContent.availableContent?.displays ?? []).filter { screen in windows.contains { NSIntersectsRect(screen.frame, $0.frame) } }
+            guard let screen = screens.first else {
+                return scriptFailed(String(format: "\"%@\" has no window on screen to record.", name))
+            }
+            guard screens.count == 1 else {
+                AppDelegate.shared.chooseApplication()
+                return scriptFailed(String(format: "\"%@\" has windows on more than one screen. Choose it in the selector.", name))
+            }
+            AppDelegate.shared.createCountdownPanel(screen: screen) {
+                RecorderController.shared.start(type: .application, display: screen, windows: nil, applications: [app])
             }
         }
         return nil
     }
 }
 
+/// `record window [titled X] [in application Y]`: that window, or the selector. Only windows on screen are
+/// looked at, as in the selector: a minimized window or one on another Space delivers no picture.
 class selectWindows: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
+        let title = evaluatedArguments?["title"] as? String
+        let appName = evaluatedArguments?["app"] as? String
         ScreenContent.updateAvailableContent {
-            DispatchQueue.main.async {
-                closeAllWindow()
-                if let title = self.evaluatedArguments?["title"] as? String {
-                    guard var windows = ScreenContent.availableContent?.windows.filter({ $0.title == title }) else { return }
-                    if let app = self.evaluatedArguments?["app"] as? String {
-                        windows = windows.filter({ $0.owningApplication?.applicationName == app })
-                    }
-                    guard let window = windows.first else {
-                        createAlert(title: "Error".local, message: "No such window!".local, button1: "OK".local).runModal()
-                        return
-                    }
-                    if windows.count > 1 {
-                        AppDelegate.shared.createNewWindow(view: WinSelector(), title: "Window Selector".local, identifier: .windowSelector)
-                        createAlert(title: "Error".local, message: "Duplicate window exists, please select it manually!".local, button1: "OK".local).runModal()
-                        return
-                    }
-                    guard let screens = ScreenContent.availableContent?.displays else { return }
-                    var s = [SCDisplay]()
-                    for screen in screens {
-                        if NSIntersectsRect(screen.frame, window.frame) { if !s.contains(screen) { s.append(screen) }}
-                    }
-                    guard let screen = s.first else {
-                        createAlert(title: "Error".local, message: "Unable to find the screen this window belongs to!".local, button1: "OK".local).runModal()
-                        return
-                    }
-                    if let display = ScreenContent.getSCDisplayWithMouse() {
-                        // The countdown is shown where the pointer is when the window is there too
-                        AppDelegate.shared.createCountdownPanel(screen: s.contains(display) ? display : screen) {
-                            RecorderController.shared.start(type: .window, display: screen, windows: [window], applications: nil)
-                        }
-                    }
-                } else {
-                    AppDelegate.shared.createNewWindow(view: WinSelector(), title: "Window Selector".local, identifier: .windowSelector)
-                }
+            closeAllWindow()
+            guard let title = title else { return AppDelegate.shared.chooseWindow() }
+            var windows = ScreenContent.getWindows().filter { $0.title == title }
+            if let appName = appName { windows = windows.filter { $0.owningApplication?.applicationName == appName } }
+            guard let window = windows.first else {
+                return scriptFailed(String(format: "No window on screen is titled \"%@\".", title))
+            }
+            guard windows.count == 1 else {
+                AppDelegate.shared.chooseWindow()
+                return scriptFailed(String(format: "More than one window is titled \"%@\". Choose it in the selector.", title))
+            }
+            let screens = (ScreenContent.availableContent?.displays ?? []).filter { NSIntersectsRect($0.frame, window.frame) }
+            guard let screen = screens.first else {
+                return scriptFailed(String(format: "The window \"%@\" is on no connected screen.", title))
+            }
+            // The countdown is shown where the pointer is when the window is there too
+            let countdownScreen = ScreenContent.getSCDisplayWithMouse().flatMap { screens.contains($0) ? $0 : nil } ?? screen
+            AppDelegate.shared.createCountdownPanel(screen: countdownScreen) {
+                RecorderController.shared.start(type: .window, display: screen, windows: [window], applications: nil)
             }
         }
         return nil
     }
 }
 
+/// `record system audio [with microphone]`: starts at once, without a selector
 class recordAudio: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
+        // The "mic" argument applies to this recording only; the "recordMic" setting is left alone
+        let mic = evaluatedArguments?["mic"] as? Bool
         ScreenContent.updateAvailableContent {
-            DispatchQueue.main.async {
-                // The "mic" argument applies to this recording only; the "recordMic" setting is left alone
-                let mic = self.evaluatedArguments?["mic"] as? Bool
-                closeAllWindow()
-                RecorderController.shared.start(type: .systemaudio, display: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, recordMic: mic)
-            }
+            closeAllWindow()
+            RecorderController.shared.start(type: .systemaudio, display: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, recordMic: mic)
         }
         return nil
     }

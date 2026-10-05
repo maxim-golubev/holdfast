@@ -199,12 +199,13 @@ final class RecordingMonitor {
         if hasSystemAudio, seconds(from: audioHeard ?? sessionStart, to: now) > silentSeconds {
             audioProblem = String(format: "No system audio has arrived for %d seconds. The recording continues with silence in its place until it comes back.".local, Int(silentSeconds))
         }
-        report(micProblem, was: micWarning, title: "Microphone is not being recorded".local,
+        report(micProblem, was: micWarning, title: "Microphone Is Not Being Recorded".local,
                backTitle: "Microphone Is Back".local, backBody: "Microphone audio is being recorded again.".local)
         micWarning = micProblem
-        report(audioProblem, was: audioWarning, title: "System audio is not being recorded".local,
+        report(audioProblem, was: audioWarning, title: "System Audio Is Not Being Recorded".local,
                backTitle: "System Audio Is Back".local, backBody: "System audio is being recorded again.".local)
         audioWarning = audioProblem
+        // The status line is a sentence, the notifications have titles
         var warning: String?
         if micProblem != nil { warning = "Microphone is not being recorded".local }
         if audioProblem != nil { warning = (warning.map { $0 + ". " } ?? "") + "System audio is not being recorded".local }

@@ -32,7 +32,7 @@ enum RecordingSaver {
             await writer.finishWriting()
             closed = writer.status == .completed
         }
-        let failureTitle = earlyReason == nil ? "Failed to save file".local : "Recording Stopped Early".local
+        let failureTitle = earlyReason == nil ? "Failed to Save File".local : "Recording Stopped Early".local
         if session.filesDeleted {
             // The reason says it all: what was written is gone with its name, and there is no file to point to
             UserNotice.reportFailure(title: "Recording Stopped Early".local, message: earlyReason ?? "")

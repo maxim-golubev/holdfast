@@ -96,8 +96,10 @@ final class MonitorRun {
 }
 
 func monitorTests() async {
-    let micTitle = "Microphone is not being recorded"
-    let systemTitle = "System audio is not being recorded"
+    let micTitle = "Microphone Is Not Being Recorded"
+    let systemTitle = "System Audio Is Not Being Recorded"
+    let micWarning = "Microphone is not being recorded"
+    let systemWarning = "System audio is not being recorded"
 
     await test("monitor: a microphone that delivers nothing for 5 s is reported once, and once when it is back") {
         let run = try MonitorRun("monitor-mic-silent")
@@ -110,7 +112,7 @@ func monitorTests() async {
         run.tick(at: 10.5)
         expectEqual(run.notified, [micTitle], "more than 5 s is")
         expect(run.lastText.contains("No audio has arrived from the microphone"), "and says what happened: \(run.lastText)")
-        expectEqual(run.warning, micTitle, "the status item shows it")
+        expectEqual(run.warning, micWarning, "the status item shows it")
         run.ticks(after: 10.5, through: 12)
         expectEqual(run.notified, [micTitle], "one notification for as long as it lasts")
         run.microphone(upTo: 12.5)
@@ -145,7 +147,7 @@ func monitorTests() async {
         expectEqual(run.notified, [], "5 s is not yet a problem")
         run.tick(at: 8.5)
         expectEqual(run.notified, [systemTitle], "more than 5 s is")
-        expectEqual(run.warning, systemTitle, "and shown")
+        expectEqual(run.warning, systemWarning, "and shown")
         run.systemAudio(upTo: 9)
         run.tick(at: 9)
         expectEqual(run.notified, [systemTitle, "System Audio Is Back"], "and its return")

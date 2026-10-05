@@ -22,7 +22,7 @@ struct WinSelector: View {
     var appDelegate = AppDelegate.shared
     
     var body: some View {
-        SelectorWindow(prompt: "Please select the window(s) to record") {
+        SelectorWindow(prompt: "Select one or more windows to record") {
             TabView(selection: $selectedTab) {
                 let allApps = viewModel.windowThumbnails.sorted(by: { $0.key.displayID < $1.key.displayID })
                 ForEach(Array(allApps.enumerated()), id: \.element.key) { index, element in

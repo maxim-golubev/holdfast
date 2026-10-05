@@ -18,7 +18,7 @@ struct ScreenSelector: View {
     var body: some View {
         // One screen gets the whole width, several are shown two in a row
         let single = viewModel.screenThumbnails.count == 1
-        SelectorWindow(prompt: "Please select the screen to record") {
+        SelectorWindow(prompt: "Select the screen to record") {
             ScrollView(.vertical) {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 20), count: single ? 1 : 2), spacing: 14) {
                     ForEach(viewModel.screenThumbnails, id: \.screen.displayID) { item in

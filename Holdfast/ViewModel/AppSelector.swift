@@ -17,7 +17,7 @@ struct AppSelector: View {
     var appDelegate = AppDelegate.shared
     
     var body: some View {
-        SelectorWindow(prompt: "Please select the App(s) to record") {
+        SelectorWindow(prompt: "Select one or more applications to record") {
             TabView(selection: $selectedTab) {
                 let allApps = viewModel.allApps.sorted(by: { $0.key.displayID < $1.key.displayID })
                 ForEach(Array(allApps.enumerated()), id: \.element.key) { index, element in

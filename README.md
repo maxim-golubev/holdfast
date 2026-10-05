@@ -69,8 +69,8 @@ tell application "Holdfast"
 end tell
 ```
 
-- The record commands without a parameter open the matching selector. They return an error when a recording is already running or still being saved.
-- `stop recording` returns at once and the file is saved in the background: wait until the menu bar item no longer says "Saving…" or "Finishing…". It also cancels a countdown and does nothing when idle.
+- `record screen`, `record application` and `record window` without a parameter open the matching selector; `record screen area` always does. `record system audio` starts at once. Every record command returns an error when a recording is already running or still being saved, and one that names a screen, application or window it cannot record shows "Failed to Record".
+- `stop recording` returns at once and the file is saved in the background: wait until the menu bar item no longer says "Saving" (or, right after launch, "Recovering"). It also cancels a countdown and does nothing when idle.
 - `mute microphone` and `unmute microphone` return an error when no recording with a microphone is running.
 - `configure` takes any subset of its parameters; `mic device` must name a connected input.
 
