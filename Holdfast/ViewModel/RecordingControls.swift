@@ -227,6 +227,7 @@ struct OptionsView: View {
 struct SymbolButton<Icon: View>: View {
     let title: String
     let help: String
+    var shortcut: KeyboardShortcut?
     let action: () -> Void
     @ViewBuilder let icon: () -> Icon
 
@@ -240,14 +241,15 @@ struct SymbolButton<Icon: View>: View {
             }
         }
         .buttonStyle(.plain)
+        .keyboardShortcut(shortcut)
         .help(help)
         .accessibilityLabel(title)
     }
 }
 
 extension SymbolButton where Icon == AnyView {
-    init(_ title: String, symbol: String, color: Color, help: String, action: @escaping () -> Void) {
-        self.init(title: title, help: help, action: action) {
+    init(_ title: String, symbol: String, color: Color, help: String, shortcut: KeyboardShortcut? = nil, action: @escaping () -> Void) {
+        self.init(title: title, help: help, shortcut: shortcut, action: action) {
             AnyView(Image(systemName: symbol).font(.system(size: 36)).foregroundStyle(color))
         }
     }

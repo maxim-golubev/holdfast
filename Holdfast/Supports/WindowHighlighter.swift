@@ -32,11 +32,10 @@ struct HighlightMask: View {
             .help("\(app) - \(title)")
             .sheet(isPresented: $showSheet) {
                 SelectorBar(autoStop: $autoStop, start: startRecording) {
-                    SymbolButton("Cancel", symbol: "xmark.circle.fill", color: .gray, help: "Do not record this window") {
+                    // The picker's Esc monitor ended with the click: Esc reaches the sheet only as its cancel button
+                    SymbolButton("Cancel", symbol: "xmark.circle.fill", color: .gray, help: "Do not record this window", shortcut: .cancelAction) {
                         showSheet = false
                     }
-                    // The picker's Esc monitor ended with the click: Esc reaches the sheet only as its cancel button
-                    .keyboardShortcut(.cancelAction)
                 }
                 .focusable(false)
                 .padding(20)
