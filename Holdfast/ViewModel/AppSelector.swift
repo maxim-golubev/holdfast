@@ -72,6 +72,8 @@ struct AppSelector: View {
         } bar: {
             SelectorBar(autoStop: $autoStop, canStart: !selected.isEmpty && display != nil, start: startRecording) {
                 SymbolButton("Refresh", symbol: "arrow.clockwise.circle.fill", color: .blue, help: "Look for the running applications again") {
+                    // What was selected belongs to the list that is replaced: an app that has quit would stay selected unseen
+                    selected.removeAll()
                     viewModel.updateAppList()
                 }
             }

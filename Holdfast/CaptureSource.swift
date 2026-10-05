@@ -127,7 +127,10 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
             filter.includeMenuBar = AppSettings.includeMenuBar
             return filter
         case .application:
-            var included = target.applications ?? []
+            // Without one the filter would hold only the Dock and Holdfast: a recording of the wallpaper
+            guard var included = target.applications, !included.isEmpty else {
+                throw RecordingError("The application to record is not running any more.")
+            }
             var except = [SCWindow]()
             if let ownApp = ownApp { included.append(ownApp) }
             let withFinder = included.map{ $0.bundleIdentifier }.contains("com.apple.finder")
