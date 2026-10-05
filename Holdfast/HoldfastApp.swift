@@ -216,7 +216,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let process = NSWorkspace.shared.runningApplications.filter({ $0.bundleIdentifier == Bundle.main.bundleIdentifier })
         if process.count > 1 {
             DispatchQueue.main.async {
-                let button = createAlert(title: "Holdfast Is Already Running".local, message: "Another copy of Holdfast is already open. This copy quits.".local, button1: "Quit".local).runModal()
+                let button = createAlert(title: "Holdfast Is Already Running", message: "Another copy of Holdfast is already open. This copy quits.", button1: "Quit").runModal()
                 if button == .alertFirstButtonReturn { NSApp.terminate(self) }
             }
         }
@@ -242,7 +242,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         screenMagnifier.isReleasedWhenClosed = false
         screenMagnifier.backgroundColor = NSColor.clear
         
-        countdownPanel.title = "Countdown Panel".local
+        countdownPanel.title = "Countdown Panel"
         countdownPanel.identifier = .countdownPanel
         countdownPanel.level = .floating
         countdownPanel.isReleasedWhenClosed = false
@@ -283,7 +283,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             startWithFreshContent { recorder in
                 closeAllWindow()
                 guard let pid = pid, let scWindow = ScreenContent.getWindows().first(where: { $0.owningApplication?.processID == pid && $0.title != "" && $0.isOnScreen }) else {
-                    UserNotice.showAlertLater(title: "Failed to Record".local, message: "No window of the frontmost application was found.".local)
+                    UserNotice.showAlertLater(title: "Failed to Record", message: "No window of the frontmost application was found.")
                     return
                 }
                 recorder.start(type: .window, display: ScreenContent.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)
@@ -359,16 +359,16 @@ func closeAllWindow() {
 func tips(_ message: String, id: String) {
     let never = AppSettings.dismissedTips
     if never.contains(id) { return }
-    let alert = createAlert(title: Bundle.main.appName + " Tips".local, message: message, button1: "OK", button2: "Don't Remind Me Again").runModal()
+    let alert = createAlert(title: Bundle.main.appName + " Tips", message: message, button1: "OK", button2: "Don't Remind Me Again").runModal()
     if alert == .alertSecondButtonReturn { AppSettings.dismissedTips = never + [id] }
 }
 
 func createAlert(level: NSAlert.Style = .warning, title: String, message: String, button1: String, button2: String = "") -> NSAlert {
     let alert = NSAlert()
-    alert.messageText = title.local
-    alert.informativeText = message.local
-    alert.addButton(withTitle: button1.local)
-    if button2 != "" { alert.addButton(withTitle: button2.local) }
+    alert.messageText = title
+    alert.informativeText = message
+    alert.addButton(withTitle: button1)
+    if button2 != "" { alert.addButton(withTitle: button2) }
     alert.alertStyle = level
     return alert
 }
@@ -402,7 +402,6 @@ extension Bundle {
 }
 
 extension String {
-    var local: String { return NSLocalizedString(self, comment: "") }
     var url: URL { return URL(fileURLWithPath: self) }
 }
 

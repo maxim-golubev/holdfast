@@ -52,59 +52,59 @@ struct StatusDisplay: Equatable {
         switch input.state {
         case .starting:
             kind = .starting
-            title = "Starting".local
-            line = "The recording is starting".local
+            title = "Starting"
+            line = "The recording is starting"
             detail = line
         case .recording:
             title = input.length
             let microphone: String
             if !input.hasMicrophone {
-                microphone = "no microphone".local
+                microphone = "no microphone"
             } else if input.isMicrophoneMuted {
-                microphone = "microphone muted".local
+                microphone = "microphone muted"
             } else if input.micSilent == true {
-                microphone = "microphone silent".local
+                microphone = "microphone silent"
             } else {
-                microphone = "microphone OK".local
+                microphone = "microphone OK"
             }
             if input.isPaused {
                 kind = .paused
-                line = "Paused".local + " — " + microphone
+                line = "Paused" + " — " + microphone
             } else if let warning = input.warning {
                 kind = .warning
                 line = input.isMicrophoneMuted ? warning + " — " + microphone : warning
             } else {
                 kind = input.isMicrophoneMuted ? .muted : .recording
-                line = "Recording".local + " — " + microphone
+                line = "Recording" + " — " + microphone
             }
             detail = line
         case .stopping, .finalizing:
             kind = .saving
             // One title for the whole of it: a title that changes its length makes the item jump in the menu bar.
             // How far the mix is stands in the menu's status line.
-            title = "Saving".local
+            title = "Saving"
             if let progress = input.mixProgress {
-                line = StatusDisplay.percent("Mixing the audio tracks of the recording".local, progress)
+                line = StatusDisplay.percent("Mixing the audio tracks of the recording", progress)
             } else {
-                line = "Saving the recording".local
+                line = "Saving the recording"
             }
             detail = line + ". " + (input.isQuitting ? "Holdfast quits when this is done." : "A new one can be started when this is done.")
         case .idle:
             if input.isRecovering {
                 kind = .recovering
-                title = "Recovering".local
-                let recovering = "Recovering a recording that was not finished".local
+                title = "Recovering"
+                let recovering = "Recovering a recording that was not finished"
                 line = input.recoveryProgress.map { StatusDisplay.percent(recovering, $0) } ?? recovering
                 detail = "A recording that an earlier run of Holdfast did not finish is being mixed. " + (input.isQuitting ? "Holdfast quits when it is done." : "Quitting waits for it.")
             } else if input.isExporting {
                 kind = .exporting
-                title = "Exporting".local
-                line = "Exporting a file".local
+                title = "Exporting"
+                line = "Exporting a file"
                 detail = "A file made from a recording is being written. " + (input.isQuitting ? "Holdfast quits when it is done." : "Quitting waits for it.")
             } else {
                 kind = .idle
                 title = ""
-                line = "Ready to record".local
+                line = "Ready to record"
                 detail = "Holdfast"
             }
         }

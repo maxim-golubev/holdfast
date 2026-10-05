@@ -127,7 +127,7 @@ final class RecordingMonitor {
         lastTick = uptime
         guard let writer = writer, writer.isCapturing, !writer.isPaused else { return }
         let recording = writer.recording
-        let startTitle = "Nothing is being recorded yet".local
+        let startTitle = "Nothing is being recorded yet"
         guard let sessionStart = writer.sessionStart else {
             // The file starts with the first complete picture (the first system audio of an audio-only recording),
             // and all audio that arrives before it is left out. When that takes this long it may never come, a
@@ -135,8 +135,8 @@ final class RecordingMonitor {
             var problem: String?
             if started != 0, uptime >= started, Double(uptime - started) / 1_000_000_000 > silentSeconds {
                 problem = recording.audioOnly
-                    ? "No system audio has arrived since the recording was started, so nothing has been recorded so far.".local
-                    : "No picture has arrived from the screen or window since the recording was started, so nothing has been recorded so far, audio included. Check that the window is visible and the display is awake.".local
+                    ? "No system audio has arrived since the recording was started, so nothing has been recorded so far."
+                    : "No picture has arrived from the screen or window since the recording was started, so nothing has been recorded so far, audio included. Check that the window is visible and the display is awake."
             }
             report(problem, was: startWarning, title: startTitle, backTitle: "", backBody: "")
             startWarning = problem
@@ -144,7 +144,7 @@ final class RecordingMonitor {
             return
         }
         if startWarning != nil {
-            report(nil, was: startWarning, title: startTitle, backTitle: "Recording Started".local, backBody: "The recording has started now. What came before is not in it.".local)
+            report(nil, was: startWarning, title: startTitle, backTitle: "Recording Started", backBody: "The recording has started now. What came before is not in it.")
             startWarning = nil
         }
         guard let anchor = writer.clockAnchor, uptime >= anchor.uptime else { return }
@@ -189,9 +189,9 @@ final class RecordingMonitor {
             micSilent = true
         } else if writer.hasMicrophoneTrack {
             if seconds(from: micHeard ?? sessionStart, to: now) > silentSeconds {
-                micProblem = String(format: "No audio has arrived from the microphone for %d seconds. The recording continues with silence in its place until the microphone comes back.".local, Int(silentSeconds))
+                micProblem = String(format: "No audio has arrived from the microphone for %d seconds. The recording continues with silence in its place until the microphone comes back.", Int(silentSeconds))
             } else if seconds(from: micSound ?? sessionStart, to: now) > zeroSeconds {
-                micProblem = String(format: "The microphone has delivered nothing but silence for %d seconds. Check that it is not muted or in use by another app.".local, Int(zeroSeconds))
+                micProblem = String(format: "The microphone has delivered nothing but silence for %d seconds. Check that it is not muted or in use by another app.", Int(zeroSeconds))
             }
             // Nothing, or nothing but digital zeros, since the last tick
             micSilent = micPeak == 0
@@ -199,18 +199,18 @@ final class RecordingMonitor {
         }
         var audioProblem: String?
         if hasSystemAudio, seconds(from: audioHeard ?? sessionStart, to: now) > silentSeconds {
-            audioProblem = String(format: "No system audio has arrived for %d seconds. The recording continues with silence in its place until it comes back.".local, Int(silentSeconds))
+            audioProblem = String(format: "No system audio has arrived for %d seconds. The recording continues with silence in its place until it comes back.", Int(silentSeconds))
         }
-        report(micProblem, was: micWarning, title: "Microphone Is Not Being Recorded".local,
-               backTitle: "Microphone Is Back".local, backBody: "Microphone audio is being recorded again.".local)
+        report(micProblem, was: micWarning, title: "Microphone Is Not Being Recorded",
+               backTitle: "Microphone Is Back", backBody: "Microphone audio is being recorded again.")
         micWarning = micProblem
-        report(audioProblem, was: audioWarning, title: "System Audio Is Not Being Recorded".local,
-               backTitle: "System Audio Is Back".local, backBody: "System audio is being recorded again.".local)
+        report(audioProblem, was: audioWarning, title: "System Audio Is Not Being Recorded",
+               backTitle: "System Audio Is Back", backBody: "System audio is being recorded again.")
         audioWarning = audioProblem
         // The status line is a sentence, the notifications have titles
         var warning: String?
-        if micProblem != nil { warning = "Microphone is not being recorded".local }
-        if audioProblem != nil { warning = (warning.map { $0 + ". " } ?? "") + "System audio is not being recorded".local }
+        if micProblem != nil { warning = "Microphone is not being recorded" }
+        if audioProblem != nil { warning = (warning.map { $0 + ". " } ?? "") + "System audio is not being recorded" }
         show(warning: warning, silent: micSilent)
     }
 

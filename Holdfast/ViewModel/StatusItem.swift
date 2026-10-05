@@ -236,7 +236,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             NSBezierPath(ovalIn: NSRect(x: centre.x - 3.25, y: centre.y - 3.25, width: 6.5, height: 6.5)).fill()
             return true
         }
-        image.accessibilityDescription = "Recording".local
+        image.accessibilityDescription = "Recording"
         return image
     }()
 
@@ -299,7 +299,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         switch layout {
         case .recording:
-            let stop = add("Stop Recording".local, symbol: "stop.circle.fill", #selector(stopRecording))
+            let stop = add("Stop Recording", symbol: "stop.circle.fill", #selector(stopRecording))
             stop.attributedTitle = NSAttributedString(string: stop.title, attributes: [.font: NSFont.systemFont(ofSize: 16, weight: .semibold)])
             stop.image = stop.image?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
             add("", symbol: nil, #selector(togglePause), tag: .pause)
@@ -314,24 +314,24 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             let separator = NSMenuItem.separator()
             separator.tag = Tag.lineSeparator.rawValue
             menu.addItem(separator)
-            add("Open Main Panel".local, symbol: "rectangle.on.rectangle", #selector(openMainPanel))
+            add("Open Main Panel", symbol: "rectangle.on.rectangle", #selector(openMainPanel))
             menu.addItem(.separator())
             // Nothing can be started while the app waits to quit (`canStart`)
             let starts = [
-                add("Record System Audio".local, symbol: "waveform", #selector(recordSystemAudio)),
-                add("Record Screen…".local, symbol: "tv.inset.filled", #selector(chooseScreen)),
-                add("Record Screen Area…".local, symbol: "viewfinder", #selector(chooseArea)),
-                add("Record Application…".local, symbol: "app", #selector(chooseApplication)),
-                add("Record Window…".local, symbol: "macwindow", #selector(chooseWindow)),
+                add("Record System Audio", symbol: "waveform", #selector(recordSystemAudio)),
+                add("Record Screen…", symbol: "tv.inset.filled", #selector(chooseScreen)),
+                add("Record Screen Area…", symbol: "viewfinder", #selector(chooseArea)),
+                add("Record Application…", symbol: "app", #selector(chooseApplication)),
+                add("Record Window…", symbol: "macwindow", #selector(chooseWindow)),
             ]
             starts.forEach { $0.isEnabled = !recorder.quitRequested }
             menu.addItem(.separator())
-            add("Settings…".local, symbol: "gearshape", #selector(openSettings))
+            add("Settings…", symbol: "gearshape", #selector(openSettings))
         }
         // Not next to Stop, where it could be hit by accident; the Dock has its own
         if !forDock, layout != .recording {
             menu.addItem(.separator())
-            add("Quit Holdfast".local, symbol: "xmark.circle", #selector(quit))
+            add("Quit Holdfast", symbol: "xmark.circle", #selector(quit))
         }
         update(menu, display)
     }
@@ -354,14 +354,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         let state = recorder.state
         if recorder.isPaused {
-            set(.pause, title: "Resume Recording".local, symbol: "play.circle", enabled: state == .recording)
+            set(.pause, title: "Resume Recording", symbol: "play.circle", enabled: state == .recording)
         } else {
-            set(.pause, title: "Pause Recording".local, symbol: "pause.circle", enabled: state == .recording)
+            set(.pause, title: "Pause Recording", symbol: "pause.circle", enabled: state == .recording)
         }
         if recorder.isMicrophoneMuted {
-            set(.mute, title: "Unmute Microphone".local, symbol: "mic", enabled: recorder.canMuteMicrophone)
+            set(.mute, title: "Unmute Microphone", symbol: "mic", enabled: recorder.canMuteMicrophone)
         } else {
-            set(.mute, title: "Mute Microphone".local, symbol: "mic.slash", enabled: recorder.canMuteMicrophone)
+            set(.mute, title: "Mute Microphone", symbol: "mic.slash", enabled: recorder.canMuteMicrophone)
         }
         if let line = menu.item(withTag: Tag.line.rawValue), line.title != display.line { line.title = display.line }
         let lineShown = display.kind != .idle

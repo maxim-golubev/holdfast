@@ -51,7 +51,7 @@ final class RecordingRecovery {
                     self.progressChanged()
                 }
             }
-            let message = String(format: "Found in %@ from an earlier run of Holdfast that did not end normally:".local, directory) + "\n\n" + lines.joined(separator: "\n\n")
+            let message = String(format: "Found in %@ from an earlier run of Holdfast that did not end normally:", directory) + "\n\n" + lines.joined(separator: "\n\n")
             await MainActor.run {
                 ProcessInfo.processInfo.endActivity(activity)
                 self.isRunning = false
@@ -60,7 +60,7 @@ final class RecordingRecovery {
                 self.runningChanged()
                 let handlers = self.handlers
                 self.handlers = []
-                self.report("Recording Recovered".local, message)
+                self.report("Recording Recovered", message)
                 handlers.forEach { $0() }
             }
         }
@@ -76,8 +76,8 @@ final class RecordingRecovery {
             let target = RecordingFileStore.freeURL(base: leftover.base, label: RecoveryNames.incompleteMix, ending: leftover.ending)
             let now = RecordingFileStore.keep(written: leftover.url, as: target)
             print("Leftover \(leftover.url.lastPathComponent) -> \(now.lastPathComponent)")
-            var line = String(format: "\"%@\" is what an interrupted audio mix or MP3 conversion had written. The recording it was made from is kept separately; this file can be deleted.".local, now.lastPathComponent)
-            if now != target { line += " " + "It could not be renamed.".local }
+            var line = String(format: "\"%@\" is what an interrupted audio mix or MP3 conversion had written. The recording it was made from is kept separately; this file can be deleted.", now.lastPathComponent)
+            if now != target { line += " " + "It could not be renamed." }
             lines.append(line)
         }
         for leftover in found where !leftover.isMix {
@@ -97,19 +97,19 @@ final class RecordingRecovery {
         let now = RecordingFileStore.keep(written: leftover.url, as: target)
         print("Leftover \(leftover.url.lastPathComponent) -> \(now.lastPathComponent)")
         let text = String(format: line, now.lastPathComponent)
-        return now == target ? text : text + " " + "It could not be renamed.".local
+        return now == target ? text : text + " " + "It could not be renamed."
     }
 
     /// An audio-only recording that was never closed: an audio file, or a .qma package of two. Nothing is mixed: a
     /// file that opens becomes `X (recovered)`, one that does not `X (damaged)`; a package is recovered when one of
     /// its files opens, and the report says which does not.
     nonisolated static func recoverAudio(_ leftover: RecordingFileStore.Leftover) async -> String {
-        let unfinished = "\"%@\" is a recording that was not finished and cannot be opened.".local
+        let unfinished = "\"%@\" is a recording that was not finished and cannot be opened."
         guard leftover.ending.lowercased() == RecordingFileStore.packageEnding else {
             guard let seconds = await RecordingMixer.inspect(leftover.url).seconds else {
                 return rename(leftover, RecoveryNames.damaged, unfinished)
             }
-            let line = String(format: "is a recording that was not finished (%@); its last seconds may be missing.".local, RecordingRecovery.length(seconds))
+            let line = String(format: "is a recording that was not finished (%@); its last seconds may be missing.", RecordingRecovery.length(seconds))
             return rename(leftover, RecoveryNames.recovered, "\"%@\" " + line.replacingOccurrences(of: "%", with: "%%"))
         }
         guard let info = try? QmaInfo.read(package: leftover.url) else {
@@ -118,12 +118,12 @@ final class RecordingRecovery {
         let system = await RecordingMixer.inspect(info.systemAudio(in: leftover.url)).seconds != nil
         let microphone = await RecordingMixer.inspect(info.microphone(in: leftover.url)).seconds != nil
         guard system || microphone else { return rename(leftover, RecoveryNames.damaged, unfinished) }
-        var line = "\"%@\" " + "is a recording that was not finished, with system audio and microphone as separate files.".local
+        var line = "\"%@\" " + "is a recording that was not finished, with system audio and microphone as separate files."
         if system && microphone {
-            line += " " + "Open it in Holdfast to listen to it or to export a mix.".local
+            line += " " + "Open it in Holdfast to listen to it or to export a mix."
         } else {
             let (bad, good) = system ? ("mic", "sys") : ("sys", "mic")
-            line += " " + String(format: "Its file %@ cannot be opened; %@ opens on its own (Show Package Contents in Finder).".local, "\(bad).\(info.format)", "\(good).\(info.format)").replacingOccurrences(of: "%", with: "%%")
+            line += " " + String(format: "Its file %@ cannot be opened; %@ opens on its own (Show Package Contents in Finder).", "\(bad).\(info.format)", "\(good).\(info.format)").replacingOccurrences(of: "%", with: "%%")
         }
         return rename(leftover, RecoveryNames.recovered, line)
     }
@@ -150,24 +150,24 @@ final class RecordingRecovery {
         let ending = leftover.ending
         let info = await RecordingMixer.inspect(raw)
         guard let seconds = info.seconds else {
-            return rename(leftover, RecoveryNames.damaged, "\"%@\" is a recording that was not finished and cannot be opened.".local)
+            return rename(leftover, RecoveryNames.damaged, "\"%@\" is a recording that was not finished and cannot be opened.")
         }
         let length = RecordingRecovery.length(seconds)
         let complete = !info.fragmented
         let what = complete
-            ? String(format: "is a complete recording (%@) whose audio had not been mixed yet when the app went away.".local, length)
-            : String(format: "is a recording that was not finished (%@); its last seconds may be missing.".local, length)
-        let separate = "It plays, with system audio and microphone as two separate audio tracks (many players only play the first, which is system audio).".local
+            ? String(format: "is a complete recording (%@) whose audio had not been mixed yet when the app went away.", length)
+            : String(format: "is a recording that was not finished (%@); its last seconds may be missing.", length)
+        let separate = "It plays, with system audio and microphone as two separate audio tracks (many players only play the first, which is system audio)."
         let mixURL = RecordingFileStore.temporaryURL(base: base, marker: RecordingFileStore.mixMarker, ending: ending)
         let final = RecordingFileStore.freeURL(base: base, label: RecoveryNames.mix(complete: complete), ending: ending)
         var failure: String?
         if !info.mixable {
-            failure = "It does not have one video and two audio tracks.".local
+            failure = "It does not have one video and two audio tracks."
         } else if FileManager.default.fileExists(atPath: mixURL.path) {
             // What the interrupted mix wrote could not be moved away; it is not overwritten
-            failure = "The file of the interrupted mix is in the way.".local
+            failure = "The file of the interrupted mix is in the way."
         } else if !RecordingFileStore.hasRoomForCopy(of: raw) {
-            failure = "Not enough free disk space to mix the audio tracks.".local
+            failure = "Not enough free disk space to mix the audio tracks."
         } else {
             do {
                 try await RecordingMixer.mix(source: raw, output: mixURL, fileType: ending.lowercased() == "mov" ? .mov : .mp4, audioSettings: audioSettings, progress: progress)
@@ -181,11 +181,11 @@ final class RecordingRecovery {
             }
         }
         if let failure = failure {
-            let line = "\"%@\" " + what + " " + String(format: "Mixing its audio now failed: %@".local, failure).replacingOccurrences(of: "%", with: "%%") + " " + separate
+            let line = "\"%@\" " + what + " " + String(format: "Mixing its audio now failed: %@", failure).replacingOccurrences(of: "%", with: "%%") + " " + separate
             return rename(leftover, RecoveryNames.recording(complete: complete, mixed: false), line)
         }
-        let mixed = String(format: "\"%@\" ".local, final.lastPathComponent) + what + " " + "Its audio was mixed now.".local
-        let kept = "The recording as it was written, with system audio and microphone as separate audio tracks, is kept as \"%@\".".local
+        let mixed = String(format: "\"%@\" ", final.lastPathComponent) + what + " " + "Its audio was mixed now."
+        let kept = "The recording as it was written, with system audio and microphone as separate audio tracks, is kept as \"%@\"."
         return rename(leftover, RecoveryNames.recording(complete: complete, mixed: true), mixed.replacingOccurrences(of: "%", with: "%%") + " " + kept)
     }
 }

@@ -67,7 +67,7 @@ struct HighlightMask: View {
             // Only what is on the display: a window can reach past its edge, and an area cannot be recorded there
             let onDesktop = CGRectTransform(cgRect: frame).intersection(nsScreen.frame)
             guard onDesktop.width >= 1, onDesktop.height >= 1 else {
-                UserNotice.showAlertLater(title: "Failed to Record".local, message: "The window is not on the display it was clicked on.".local)
+                UserNotice.showAlertLater(title: "Failed to Record", message: "The window is not on the display it was clicked on.")
                 return
             }
             // Relative to its screen, as the area selector gives it
@@ -105,8 +105,8 @@ class WindowHighlighter {
         UserNotice.onMainRunLoop {
             // The ids are those dismissed tips were stored under
             switch mode {
-            case .area: tips("Click on a window to select its area\nor press Esc to cancel.".local, id: "qr.how-to-select.note2")
-            case .window: tips("Click the window you want to record\nor press Esc to cancel.".local, id: "qr.how-to-select.note")
+            case .area: tips("Click on a window to select its area\nor press Esc to cancel.", id: "qr.how-to-select.note2")
+            case .window: tips("Click the window you want to record\nor press Esc to cancel.", id: "qr.how-to-select.note")
             }
             // The tip's alert had the keyboard
             self.makeCoverKey()

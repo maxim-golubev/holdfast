@@ -32,25 +32,25 @@ enum RecordingSaver {
             await writer.finishWriting()
             closed = writer.status == .completed
         }
-        let failureTitle = earlyReason == nil ? "Failed to Save File".local : "Recording Stopped Early".local
+        let failureTitle = earlyReason == nil ? "Failed to Save File" : "Recording Stopped Early"
         if session.filesDeleted {
             // The reason says it all: what was written is gone with its name, and there is no file to point to
-            UserNotice.reportFailure(title: "Recording Stopped Early".local, message: earlyReason ?? "")
+            UserNotice.reportFailure(title: "Recording Stopped Early", message: earlyReason ?? "")
         } else if !taken.sessionStarted && cancelled {
             // Stopped before the first frame or the first audio arrived. Nothing was lost, so nothing is reported as failed.
             try? fd.removeItem(at: recording.rawURL)
-            UserNotice.showNotification(title: "Recording Cancelled".local, body: "The recording was stopped before anything was recorded.".local, id: "holdfast.cancelled.\(UUID().uuidString)")
+            UserNotice.showNotification(title: "Recording Cancelled", body: "The recording was stopped before anything was recorded.", id: "holdfast.cancelled.\(UUID().uuidString)")
         } else if !recording.audioOnly {
             if !closed {
                 print("Video writing failed with status: \(String(describing: writer?.status)), error: \(String(describing: writer?.error))")
                 var body = earlyReason ?? ""
                 if let error = writer?.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
-                if body.isEmpty { body = writer == nil ? "The recording did not start, nothing was written.".local : "Unknown error".local }
+                if body.isEmpty { body = writer == nil ? "The recording did not start, nothing was written." : "Unknown error" }
                 if fd.fileExists(atPath: recording.rawURL.path) {
                     // The file is written in fragments, so it plays up to the last few seconds without having been closed.
                     // It leaves its temporary name; no mix is attempted on it.
                     let kept = recording.unmixedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
-                    body += " " + String(format: "The file could not be closed. What was written before that was kept as: %@".local, kept.path)
+                    body += " " + String(format: "The file could not be closed. What was written before that was kept as: %@", kept.path)
                 } else if writer != nil {
                     body += " " + movedNote(for: recording.rawURL)
                 }
@@ -66,7 +66,7 @@ enum RecordingSaver {
         } else if !taken.sessionStarted {
             // No audio arrived, so the files are empty
             try? fd.removeItem(at: recording.rawURL)
-            let body = (earlyReason.map { $0 + " " } ?? "") + "No audio arrived, nothing was recorded.".local
+            let body = (earlyReason.map { $0 + " " } ?? "") + "No audio arrived, nothing was recorded."
             UserNotice.reportFailure(title: failureTitle, message: body)
         } else {
             // The files are as complete as they will get: they leave their temporary name
@@ -75,7 +75,7 @@ enum RecordingSaver {
                 // The microphone file did not close: the package is kept as it is and is not mixed
                 var body = earlyReason ?? ""
                 if let error = writer.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
-                body += (body.isEmpty ? "" : " ") + keptNote(kept, "The microphone file could not be closed. The recording was kept with separate audio files: %@".local)
+                body += (body.isEmpty ? "" : " ") + keptNote(kept, "The microphone file could not be closed. The recording was kept with separate audio files: %@")
                 UserNotice.reportFailure(title: failureTitle, message: body)
             } else {
                 // The package is only read now that the microphone file is complete
@@ -98,7 +98,7 @@ enum RecordingSaver {
         // The mix writes a second file of about the same size next to the recording. On a nearly full disk the
         // recording is kept as it is rather than put at risk.
         if !RecordingFileStore.hasRoomForCopy(of: raw) {
-            failure = "Not enough free disk space to mix the audio tracks.".local
+            failure = "Not enough free disk space to mix the audio tracks."
         } else {
             session.mixProgressed(0)
             let settings = recording.audioSettings
@@ -120,11 +120,11 @@ enum RecordingSaver {
             let kept = RecordingFileStore.keep(written: raw, as: unmixedURL)
             guard fd.fileExists(atPath: kept.path) else {
                 // Not a place to claim the recording is: the writer kept writing through its open file, wherever that went
-                UserNotice.reportFailure(title: "Audio Mix Failed".local, message: early + String(format: "Mixing the audio failed: %@".local, failure) + " " + movedNote(for: raw))
+                UserNotice.reportFailure(title: "Audio Mix Failed", message: early + String(format: "Mixing the audio failed: %@", failure) + " " + movedNote(for: raw))
                 return
             }
-            let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept with system audio and microphone as two separate audio tracks in: %@".local, failure, kept.path)
-            UserNotice.reportFailure(title: "Audio Mix Failed".local, message: body)
+            let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept with system audio and microphone as two separate audio tracks in: %@", failure, kept.path)
+            UserNotice.reportFailure(title: "Audio Mix Failed", message: body)
             if recording.showPreview { showPreview(path: kept.path, image: frame) }
             return
         }
@@ -142,8 +142,8 @@ enum RecordingSaver {
             }
         }
         if let leftover = leftover {
-            let body = String(format: "The recording was mixed and saved, but its unmixed copy is still at: %@".local, leftover.path)
-            UserNotice.showNotification(title: "Recording Completed".local, body: body, id: "holdfast.completed.\(UUID().uuidString)")
+            let body = String(format: "The recording was mixed and saved, but its unmixed copy is still at: %@", leftover.path)
+            UserNotice.showNotification(title: "Recording Completed", body: body, id: "holdfast.completed.\(UUID().uuidString)")
         }
         present(final, image: frame, recording: recording, earlyReason: earlyReason)
     }
@@ -167,15 +167,15 @@ enum RecordingSaver {
                     try? fd.removeItem(at: source)
                     present(output, image: audioIcon, recording: recording, earlyReason: earlyReason)
                 } catch {
-                    let reason = String(format: "Converting to MP3 failed: %@".local, error.localizedDescription)
-                    UserNotice.reportFailure(title: "MP3 Conversion Failed".local, message: early + reason + " " + keptNote(source, "Nothing is lost: the recording is kept as: %@".local))
+                    let reason = String(format: "Converting to MP3 failed: %@", error.localizedDescription)
+                    UserNotice.reportFailure(title: "MP3 Conversion Failed", message: early + reason + " " + keptNote(source, "Nothing is lost: the recording is kept as: %@"))
                 }
             }
         } else if recording.remuxAudio && recording.recordMic {
             let package = file
             func failed(_ reason: String) {
-                let body = early + String(format: "Mixing the audio failed: %@".local, reason) + " " + keptNote(package, "Nothing is lost: the recording is kept with separate audio files in: %@".local)
-                UserNotice.reportFailure(title: "Audio Mix Failed".local, message: body)
+                let body = early + String(format: "Mixing the audio failed: %@", reason) + " " + keptNote(package, "Nothing is lost: the recording is kept with separate audio files in: %@")
+                UserNotice.reportFailure(title: "Audio Mix Failed", message: body)
             }
             let player = AudioPlayerManager()
             do {
@@ -207,17 +207,17 @@ enum RecordingSaver {
     private static func present(_ url: URL, image: NSImage?, recording: RecordingContext, earlyReason: String?) {
         guard fd.fileExists(atPath: url.path) else {
             let reason = earlyReason.map { $0 + " " } ?? ""
-            UserNotice.reportFailure(title: earlyReason == nil ? "Recording Not Found".local : "Recording Stopped Early".local, message: reason + movedNote(for: url))
+            UserNotice.reportFailure(title: earlyReason == nil ? "Recording Not Found" : "Recording Stopped Early", message: reason + movedNote(for: url))
             return
         }
         RecLog.write("Recording saved: \(url.path)")
         if let reason = earlyReason {
-            UserNotice.reportFailure(title: "Recording Stopped Early".local, message: reason + " " + String(format: "The recording up to that point is saved as: %@".local, url.path))
+            UserNotice.reportFailure(title: "Recording Stopped Early", message: reason + " " + String(format: "The recording up to that point is saved as: %@", url.path))
         }
         if recording.showPreview, let image {
             showPreview(path: url.path, image: image)
         } else {
-            UserNotice.showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, url.path), id: "holdfast.completed.\(UUID().uuidString)")
+            UserNotice.showNotification(title: "Recording Completed", body: String(format: "File saved to: %@", url.path), id: "holdfast.completed.\(UUID().uuidString)")
         }
         if recording.trimAfterRecord && !recording.audioOnly {
             AppDelegate.shared.openTrimmer(url)
@@ -227,7 +227,7 @@ enum RecordingSaver {
     /// What to tell the user when a recording is not where it was written to: the save folder was renamed or moved
     /// (or its volume went away) while recording. The file still has the name it was written under.
     private static func movedNote(for written: URL) -> String {
-        return String(format: "The recording is no longer at %@: the folder was moved or renamed, or its disk was removed, while recording. Look for the file \"%@\" where the folder is now; it holds everything that was recorded.".local, written.deletingLastPathComponent().path, written.lastPathComponent)
+        return String(format: "The recording is no longer at %@: the folder was moved or renamed, or its disk was removed, while recording. Look for the file \"%@\" where the folder is now; it holds everything that was recorded.", written.deletingLastPathComponent().path, written.lastPathComponent)
     }
 
     /// `sentence` (a format with the path) when the recording is at `url`, where it was written; where to look for it

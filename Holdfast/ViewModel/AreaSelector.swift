@@ -152,11 +152,11 @@ struct AreaSelector: View {
     
     func startRecording() {
         guard let area = ScreenContent.screenArea, area.width >= 1, area.height >= 1 else {
-            UserNotice.showAlertLater(title: "Failed to Record".local, message: "Select an area to record first.".local)
+            UserNotice.showAlertLater(title: "Failed to Record", message: "Select an area to record first.")
             return
         }
         guard let nsScreen = screen.nsScreen else {
-            UserNotice.showAlertLater(title: "Failed to Record".local, message: "The display of the area is not connected any more.".local)
+            UserNotice.showAlertLater(title: "Failed to Record", message: "The display of the area is not connected any more.")
             return
         }
         closeAllWindow()

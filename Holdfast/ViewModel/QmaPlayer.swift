@@ -525,7 +525,7 @@ class AudioPlayerManager: ObservableObject {
             self.saveFile(url, saveAsMP3: saveAsMP3, replacing: true) { result in
                 switch result {
                 case .success(let file):
-                    UserNotice.showNotification(title: "Recording Exported", body: String(format: "File saved to: %@".local, file.path), id: "holdfast.completed.\(UUID().uuidString)")
+                    UserNotice.showNotification(title: "Recording Exported", body: String(format: "File saved to: %@", file.path), id: "holdfast.completed.\(UUID().uuidString)")
                 case .failure(let error):
                     UserNotice.reportFailure(title: "Export Failed", message: error.localizedDescription)
                 }
@@ -656,9 +656,9 @@ class AudioPlayerManager: ObservableObject {
         panel.allowedContentTypes = UTType(filenameExtension: format).map { [$0] } ?? []
         panel.allowsOtherFileTypes = false
         panel.canCreateDirectories = true
-        panel.title = "Export Recording".local
+        panel.title = "Export Recording"
         
-        let checkBox = NSButton(checkboxWithTitle: "Export as MP3".local, target: self, action: #selector(checkBoxToggled(_:)))
+        let checkBox = NSButton(checkboxWithTitle: "Export as MP3", target: self, action: #selector(checkBoxToggled(_:)))
         checkBox.state = exportMP3 ? .on : .off
         
         let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: checkBox.frame.width, height: checkBox.frame.height))

@@ -50,7 +50,7 @@ extension RecorderController {
         // Every reason not to start ends here, with one alert
         func failToRecord(_ message: String) {
             session.abandonStart()
-            UserNotice.showAlertLater(title: "Failed to Record".local, message: message)
+            UserNotice.showAlertLater(title: "Failed to Record", message: message)
         }
 
         let store = RecordingFileStore(directory: AppSettings.saveDirectory)
@@ -61,28 +61,28 @@ extension RecorderController {
         }
 
         guard let content = ScreenContent.availableContent else {
-            return failToRecord("The list of screens and windows is not available. Check the screen recording permission.".local)
+            return failToRecord("The list of screens and windows is not available. Check the screen recording permission.")
         }
-        guard let display = display else { return failToRecord("No display to record was found.".local) }
+        guard let display = display else { return failToRecord("No display to record was found.") }
         let listedDisplay = content.displays.first(where: { $0 == display })
 
         var listedWindows: [SCWindow]?
         if let windows = windows {
             listedWindows = content.windows.filter({ windows.contains($0) })
         } else if streamType == .window {
-            return failToRecord("No window to record was given.".local)
+            return failToRecord("No window to record was given.")
         }
 
         var listedApplications: [SCRunningApplication]?
         if let applications = applications {
             listedApplications = content.applications.filter({ applications.contains($0) })
         } else if streamType == .application {
-            return failToRecord("No application to record was given.".local)
+            return failToRecord("No application to record was given.")
         }
 
-        if streamType == .screenarea && area == nil { return failToRecord("No area to record was given.".local) }
+        if streamType == .screenarea && area == nil { return failToRecord("No area to record was given.") }
         guard let screen = listedDisplay ?? ScreenContent.getSCDisplayWithMouse() else {
-            return failToRecord("No display to record was found.".local)
+            return failToRecord("No display to record was found.")
         }
         var target = CaptureTarget(type: streamType, display: screen, areaDisplay: listedDisplay, windows: listedWindows,
                                    applications: listedApplications, area: area)
@@ -103,8 +103,8 @@ extension RecorderController {
             // A recording that was asked to have the microphone never starts without it unnoticed: a microphone
             // that turns up later cannot be added to it. Cancel is the default button.
             NSApp.activate(ignoringOtherApps: true)
-            let message = problem + " " + "A recording started now has no microphone track, and one cannot be added while it runs. Cancel, connect the microphone and start again, or record without it.".local
-            let answer = createAlert(level: .critical, title: "Microphone Not Available".local, message: message, button1: "Cancel", button2: "Record Without Microphone").runModal()
+            let message = problem + " " + "A recording started now has no microphone track, and one cannot be added while it runs. Cancel, connect the microphone and start again, or record without it."
+            let answer = createAlert(level: .critical, title: "Microphone Not Available", message: message, button1: "Cancel", button2: "Record Without Microphone").runModal()
             if answer != .alertSecondButtonReturn {
                 session.abandonStart()
                 return
@@ -130,7 +130,7 @@ extension RecorderController {
     private static func failStart(_ session: RecordingSession, error: Error) {
         print("Failed to start the recording: \(error)")
         session.abandonStart()
-        UserNotice.showAlertLater(title: "Failed to Record".local, message: error.localizedDescription)
+        UserNotice.showAlertLater(title: "Failed to Record", message: error.localizedDescription)
     }
 
     /// Decides whether this recording gets a microphone track and which device ScreenCaptureKit captures it from.
@@ -139,10 +139,10 @@ extension RecorderController {
         guard wanted else { return (nil, nil) }
         let access = AVCaptureDevice.authorizationStatus(for: .audio)
         if access == .denied || access == .restricted {
-            return (nil, "Holdfast has no permission to use the microphone (System Settings, Privacy & Security, Microphone).".local)
+            return (nil, "Holdfast has no permission to use the microphone (System Settings, Privacy & Security, Microphone).")
         }
         guard let defaultMic = AVCaptureDevice.default(for: .audio), let converter = MicConverter() else {
-            return (nil, "No microphone was found.".local)
+            return (nil, "No microphone was found.")
         }
         // The selection is kept for the recording: MicDevices follows the default input, or goes back to the chosen
         // device when it returns
@@ -154,8 +154,8 @@ extension RecorderController {
         if MicSelection.getMicrophone().contains(where: { $0.uniqueID == selected }) {
             return (MicrophoneChoice(converter: converter, selection: selected, captureDeviceID: selected, activeDeviceID: selected), nil)
         }
-        let body = String(format: "\"%@\" is not connected. Recording with the default microphone \"%@\" instead.".local, MicSelection.selectedMicName(), defaultMic.localizedName)
-        UserNotice.showNotification(title: "Microphone Unavailable".local, body: body, id: "holdfast.microphone.\(UUID().uuidString)")
+        let body = String(format: "\"%@\" is not connected. Recording with the default microphone \"%@\" instead.", MicSelection.selectedMicName(), defaultMic.localizedName)
+        UserNotice.showNotification(title: "Microphone Unavailable", body: body, id: "holdfast.microphone.\(UUID().uuidString)")
         return (MicrophoneChoice(converter: converter, selection: selected, captureDeviceID: nil, activeDeviceID: defaultID), nil)
     }
 
@@ -182,7 +182,7 @@ extension RecorderController {
                                     onStop: { [weak session] capture, error in
             let nsError = error as NSError
             let userStopped = nsError.domain == SCStreamErrorDomain && nsError.code == SCStreamError.Code.userStopped.rawValue
-            session?.captureEnded(capture, reason: userStopped ? nil : String(format: "The screen capture stopped: %@".local, error.localizedDescription))
+            session?.captureEnded(capture, reason: userStopped ? nil : String(format: "The screen capture stopped: %@", error.localizedDescription))
         })
         await session.attach(capture)
         do {
@@ -206,13 +206,13 @@ extension RecorderController {
                 // The file that is written to all along: in a package, its system audio file
                 let file = recording.systemAudioURL ?? recording.rawURL
                 let watch = RecordingFileStore(directory: recording.saveDirectory).watch(file: file, onLow: { [weak session] free in
-                    let reason = String(format: "The disk is almost full, only %@ is left.".local, DiskSpace.formatted(free))
+                    let reason = String(format: "The disk is almost full, only %@ is left.", DiskSpace.formatted(free))
                     MainActor.assumeIsolated { session?.stop(earlyReason: reason) }
                 }, onDeleted: { [weak session] in
                     RecLog.write("The recording's file was deleted: \(file.path)")
                     MainActor.assumeIsolated {
                         session?.filesDeleted = true
-                        session?.stop(earlyReason: "The recording's file was deleted while recording, or the folder it was in was, so nothing of it can be kept. Start a new recording to record the rest.".local)
+                        session?.stop(earlyReason: "The recording's file was deleted while recording, or the folder it was in was, so nothing of it can be kept. Start a new recording to record the rest.")
                     }
                 })
                 session.whenStopped { watch.cancel() }
@@ -271,7 +271,7 @@ extension RecorderEnvironment {
             }
         } catch {
             print("Failed to save a frame: \(error)")
-            UserNotice.showNotification(title: "Frame Not Saved".local, body: String(format: "The frame could not be saved as %@: %@".local, url.path, error.localizedDescription), id: "holdfast.frame.\(UUID().uuidString)")
+            UserNotice.showNotification(title: "Frame Not Saved", body: String(format: "The frame could not be saved as %@: %@", url.path, error.localizedDescription), id: "holdfast.frame.\(UUID().uuidString)")
         }
     }
 }

@@ -12,11 +12,6 @@ enum RecLog {
     static func write(_ message: String) { lines.append(message) }
 }
 
-/// Only English ships, so the app's `local` returns its key
-extension String {
-    var local: String { self }
-}
-
 struct TestError: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }

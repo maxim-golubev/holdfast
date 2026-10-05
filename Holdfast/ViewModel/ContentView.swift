@@ -156,7 +156,7 @@ extension AppDelegate {
         startWithFreshContent { [self] _ in
             // The display is only where the countdown is shown and what the stream is attached to
             guard let display = ScreenContent.getSCDisplayWithMouse() else {
-                UserNotice.showAlertLater(title: "Failed to Record".local, message: "No display to record was found.".local)
+                UserNotice.showAlertLater(title: "Failed to Record", message: "No display to record was found.")
                 return
             }
             // As every other start: no selector outlives it, whose own Start would be refused while this one records
@@ -169,7 +169,7 @@ extension AppDelegate {
 
     func chooseScreen() {
         closeMainWindow()
-        createNewWindow(view: ScreenSelector(), title: "Screen Selector".local)
+        createNewWindow(view: ScreenSelector(), title: "Screen Selector")
     }
 
     func chooseArea() {
@@ -179,12 +179,12 @@ extension AppDelegate {
 
     func chooseApplication() {
         closeMainWindow()
-        createNewWindow(view: AppSelector(), title: "App Selector".local, identifier: .appSelector)
+        createNewWindow(view: AppSelector(), title: "App Selector", identifier: .appSelector)
     }
 
     func chooseWindow() {
         closeMainWindow()
-        createNewWindow(view: WinSelector(), title: "Window Selector".local, identifier: .windowSelector)
+        createNewWindow(view: WinSelector(), title: "Window Selector", identifier: .windowSelector)
     }
 
     /// The main panel, centred on its screen and as large as its content
@@ -192,7 +192,7 @@ extension AppDelegate {
         let content = NSHostingView(rootView: ContentView())
         let mainPanel = MainPanel(contentRect: NSRect(origin: .zero, size: content.fittingSize), styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
         mainPanel.contentView = content
-        mainPanel.title = "Holdfast".local
+        mainPanel.title = "Holdfast"
         mainPanel.identifier = .mainPanel
         mainPanel.isOpaque = false
         mainPanel.level = .floating
@@ -219,7 +219,7 @@ extension AppDelegate {
         guard let scDisplay = ScreenContent.getSCDisplayWithMouse() else { return }
         guard let screen = scDisplay.nsScreen else { return }
         let screenshotWindow = ScreenshotWindow(contentRect: screen.frame, backing: .buffered, defer: false, size: size, force: noPanel)
-        screenshotWindow.title = "Area Selector".local
+        screenshotWindow.title = "Area Selector"
         screenshotWindow.identifier = .areaSelector
         screenshotWindow.orderFrontRegardless()
         if !noPanel {
@@ -232,7 +232,7 @@ extension AppDelegate {
             let areaPanel = NSPanel(contentRect: frame, styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
             areaPanel.collectionBehavior = [.canJoinAllSpaces]
             areaPanel.level = .screenSaver
-            areaPanel.title = "Start Recording".local
+            areaPanel.title = "Start Recording"
             areaPanel.identifier = .areaPanel
             areaPanel.contentView = contentView
             areaPanel.setFrame(frame, display: true)
@@ -255,7 +255,7 @@ extension AppDelegate {
         window.level = .screenSaver
         window.ignoresMouseEvents = true
         window.isReleasedWhenClosed = false
-        window.title = "Area Overlayer".local
+        window.title = "Area Overlayer"
         window.identifier = .areaOverlay
         window.backgroundColor = NSColor.clear
         window.contentView = NSHostingView(rootView: DashWindow())

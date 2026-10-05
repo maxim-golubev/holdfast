@@ -145,8 +145,8 @@ enum MicDevices {
         conf.microphoneCaptureDeviceID = devices.contains(where: { $0.uniqueID == wanted }) ? wanted : nil
         capture.micActiveDeviceID = wanted
         if announce && selection != "default" && !selectedIsPresent {
-            let body = String(format: "\"%@\" is not connected any more. Recording continues with the default microphone \"%@\".".local, MicSelection.selectedMicName(), wantedName)
-            UserNotice.showNotification(title: "Microphone Unavailable".local, body: body, id: "holdfast.microphone.\(UUID().uuidString)")
+            let body = String(format: "\"%@\" is not connected any more. Recording continues with the default microphone \"%@\".", MicSelection.selectedMicName(), wantedName)
+            UserNotice.showNotification(title: "Microphone Unavailable", body: body, id: "holdfast.microphone.\(UUID().uuidString)")
         }
         capture.applyConfiguration { error in
             guard let error = error else {

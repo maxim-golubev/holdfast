@@ -90,7 +90,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
 
         switch target.type {
         case .window, .windows:
-            guard var included = target.windows else { throw RecordingError("There is nothing to record.".local) }
+            guard var included = target.windows else { throw RecordingError("There is nothing to record.") }
             if included.count > 1 {
                 if AppSettings.highlightMouse { included += mouseWindow }
                 if dockApp != nil { included += wallpaper }
@@ -101,7 +101,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
                 target.type = .window
                 return SCContentFilter(desktopIndependentWindow: only)
             } else {
-                throw RecordingError("The window to record is not there any more.".local)
+                throw RecordingError("The window to record is not there any more.")
             }
         case .screen, .screenarea:
             var excluded = [SCRunningApplication]()
@@ -193,7 +193,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     }
 
     func start() async throws {
-        guard let stream = stream else { throw RecordingError("The screen capture is not available any more.".local) }
+        guard let stream = stream else { throw RecordingError("The screen capture is not available any more.") }
         try await stream.startCapture()
     }
 
@@ -250,8 +250,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        print("closing stream with error:\n".local, error,
-              "\nthis might be due to the window closing or the user stopping from the sonoma ui".local)
+        RecLog.write("The capture stream stopped: \(error.localizedDescription)")
         onStop(self, error)
     }
 }

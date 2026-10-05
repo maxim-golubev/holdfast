@@ -24,7 +24,7 @@ private func scriptCanStart(_ command: NSScriptCommand) -> Bool {
 /// What a record command that has looked at the screens and windows cannot do. The command has returned by then,
 /// so the user is told with an alert that does not hold up a recording.
 private func scriptFailed(_ message: String) {
-    UserNotice.showAlertLater(title: "Failed to Record".local, message: message)
+    UserNotice.showAlertLater(title: "Failed to Record", message: message)
 }
 
 /// `record screen [number]`: that screen, or the screen selector without a number
