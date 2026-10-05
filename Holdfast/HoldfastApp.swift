@@ -462,13 +462,4 @@ extension NSImage {
             DispatchQueue.main.async { completion(image) }
         }
     }
-    
-    /// Writes the image to `url`, which must not exist yet, as a PNG. Throws when it cannot be encoded or written.
-    func saveToFile(_ url: URL) throws {
-        guard let tiffData = tiffRepresentation, let imageRep = NSBitmapImageRep(data: tiffData),
-              let pngData = imageRep.representation(using: .png, properties: [:]) else {
-            throw RecordingError("The picture could not be encoded.")
-        }
-        try pngData.write(to: url, options: .withoutOverwriting)
-    }
 }

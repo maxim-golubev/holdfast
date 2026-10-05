@@ -264,16 +264,24 @@ extension RecorderEnvironment {
     private static func savePicture(of sampleBuffer: CMSampleBuffer, in directory: String) {
         guard let imageBuffer = sampleBuffer.imageBuffer else { return }
         let url = RecordingFileStore.freeURL(base: RecordingFileStore(directory: directory).newFrameBase(), label: nil, ending: "png")
+        var image = CIImage(cvPixelBuffer: imageBuffer)
+        let format: CIFormat
+        let colorSpace: CGColorSpace?
+        if AppSettings.recordHDR {
+            // Image exposure needs to be increased by one stop to match the original
+            image = image.applyingFilter("CIExposureAdjust", parameters: ["inputEV": 1.0])
+            format = .RGB10
+            colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ)
+        } else {
+            format = .RGBA8
+            colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
+        }
         do {
-            if !AppSettings.recordHDR {
-                guard let image = sampleBuffer.nsImage else { throw RecordingError("The frame could not be read.") }
-                try image.saveToFile(url)
-            } else {
-                let colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpaceCreateDeviceRGB()
-                // Image exposure needs to be increased by one stop to match the original
-                let ciImage = CIImage(cvPixelBuffer: imageBuffer).applyingFilter("CIExposureAdjust", parameters: ["inputEV": 1.0])
-                try CIContext().writePNGRepresentation(of: ciImage, to: url, format: .RGB10, colorSpace: colorSpace)
+            // Encoded in one step from the frame, and written only where no file is
+            guard let png = CIContext().pngRepresentation(of: image, format: format, colorSpace: colorSpace ?? CGColorSpaceCreateDeviceRGB()) else {
+                throw RecordingError("The picture could not be encoded.")
             }
+            try png.write(to: url, options: .withoutOverwriting)
         } catch {
             print("Failed to save a frame: \(error)")
             UserNotice.showNotification(title: "Frame Not Saved", body: String(format: "The frame could not be saved as %@: %@", url.path, error.localizedDescription), id: "holdfast.frame.\(UUID().uuidString)")

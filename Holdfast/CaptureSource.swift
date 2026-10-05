@@ -310,19 +310,3 @@ extension SCDisplay {
         return NSScreen.screens.first(where: { $0.displayID == self.displayID })
     }
 }
-
-extension CMSampleBuffer {
-    var nsImage: NSImage? {
-        return autoreleasepool {
-            guard let pixelBuffer = CMSampleBufferGetImageBuffer(self) else { return nil }
-            CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-            defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-            let ciContext = CIContext()
-            if let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) {
-                return NSImage(cgImage: cgImage, size: .zero)
-            }
-            return nil
-        }
-    }
-}
