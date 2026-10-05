@@ -228,7 +228,7 @@ extension RecorderEnvironment {
         app.startAbandoned = { closeAreaOverlay() }
         app.tearDown = {
             // Both also take the mouse highlight and the magnifier off the screen
-            AppDelegate.shared.stopGlobalMouseMonitor()
+            AppDelegate.shared.stopAreaSelectorMonitor()
             AppDelegate.shared.stopRecordingMouseMonitor()
             closeAreaOverlay()
         }

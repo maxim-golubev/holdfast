@@ -172,20 +172,7 @@ extension AppDelegate {
 
     func chooseArea() {
         closeMainWindow()
-        ScreenContent.updateAvailableContent {
-            DispatchQueue.main.async { [self] in
-                showAreaSelector(size: NSSize(width: 600, height: 450))
-                var currentDisplay = ScreenContent.getSCDisplayWithMouse()
-                mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .rightMouseDown, .leftMouseDown, .otherMouseDown]) { [self] event in
-                    let display = ScreenContent.getSCDisplayWithMouse()
-                    if display != currentDisplay {
-                        currentDisplay = display
-                        closeAllWindow()
-                        showAreaSelector(size: NSSize(width: 600, height: 450))
-                    }
-                }
-            }
-        }
+        ScreenContent.updateAvailableContent { [self] in showAreaSelectorFollowingPointer() }
     }
 
     func chooseApplication() {

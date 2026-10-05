@@ -103,7 +103,7 @@ struct AreaSelector: View {
                 SymbolButton(title: "Window Area", help: "Take the area from a window by clicking it") {
                     nsWindow?.close()
                     for w in NSApp.windows(.areaSelector) { w.close() }
-                    appDelegate.stopGlobalMouseMonitor()
+                    appDelegate.stopAreaSelectorMonitor()
                     WindowHighlighter.shared.registerMouseMonitor(mode: 2)
                 } icon: {
                     ZStack {
@@ -136,12 +136,15 @@ struct AreaSelector: View {
         .focusable(false)
         .background(WindowAccessor(onWindowOpen: { w in nsWindow = w }, onWindowClose: {
             DispatchQueue.main.async {
-                for w in NSApp.windows(.areaSelector) { w.close() }
+                // Its own screen's window. After a move to another display the selector there stays, and so
+                // does the monitor that follows the pointer.
+                for w in NSApp.windows(.areaSelector) where w.frame == screen.nsScreen?.frame { w.close() }
+                guard !NSApp.windows(.areaPanel).contains(where: { $0.isVisible }) else { return }
                 if let monitor = keyMonitor {
                     NSEvent.removeMonitor(monitor)
                     keyMonitor = nil
                 }
-                appDelegate.stopGlobalMouseMonitor()
+                appDelegate.stopAreaSelectorMonitor()
             }
         }))
     }
@@ -149,7 +152,7 @@ struct AreaSelector: View {
     func startRecording() {
         guard let area = ScreenContent.screenArea, let nsScreen = screen.nsScreen else { return }
         closeAllWindow()
-        appDelegate.stopGlobalMouseMonitor()
+        appDelegate.stopAreaSelectorMonitor()
         // The area is relative to its screen
         appDelegate.showAreaOverlay(around: area.offsetBy(dx: nsScreen.frame.minX, dy: nsScreen.frame.minY), border: 4)
         appDelegate.createCountdownPanel(screen: screen) {
@@ -425,25 +428,23 @@ class ScreenshotWindow: NSPanel {
         self.contentView = overlayView
         
         if keyMonitor != nil { return }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: NSEvent.EventTypeMask.keyDown, handler: myKeyDownEvent)
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: ScreenshotWindow.escape)
     }
     
     required init?(coder: NSCoder) {
         return nil
     }
 
-    func myKeyDownEvent(event: NSEvent) -> NSEvent? {
-        if event.keyCode == 53 && !event.isARepeat {
-            self.close()
-            for w in NSApp.windows(.areaPanel) { w.close() }
-            AppDelegate.shared.stopGlobalMouseMonitor()
-            if let monitor = keyMonitor {
-                NSEvent.removeMonitor(monitor)
-                keyMonitor = nil
-            }
-            return nil
+    /// Esc closes the selector on whichever display it is by now, not only the window that was first shown
+    private static func escape(_ event: NSEvent) -> NSEvent? {
+        guard event.keyCode == 53 && !event.isARepeat else { return event }
+        for w in NSApp.windows(.areaSelector, .areaPanel) { w.close() }
+        AppDelegate.shared.stopAreaSelectorMonitor()
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
         }
-        return event
+        return nil
     }
 }
 

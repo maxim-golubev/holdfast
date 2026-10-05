@@ -13,7 +13,6 @@ import UserNotifications
 import KeyboardShortcuts
 
 let fd = FileManager.default
-var mouseMonitor: Any?
 let mousePointer = NSWindow(contentRect: NSRect(x: -70, y: -70, width: 70, height: 70), styleMask: [.borderless], backing: .buffered, defer: false)
 let screenMagnifier = NSWindow(contentRect: NSRect(x: -402, y: -402, width: 402, height: 348), styleMask: [.borderless], backing: .buffered, defer: false)
 let countdownPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 120), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
@@ -62,9 +61,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     private var isMagnifierCapturing = false
     private var pendingMagnifierEvent: NSEvent?
-    /// The monitor that drives the mouse highlight and the magnifier of a recording. Not `mouseMonitor`, which
-    /// belongs to the selectors.
+    /// The monitor that drives the mouse highlight and the magnifier of a recording
     private var recordingMouseMonitor: Any?
+    /// The area selector's, which shows it again on the display the pointer moves to. One at most.
+    private var areaSelectorMonitor: Any?
     private var tracksMouseForRecording = false
     private var mousePointerHost: NSHostingView<MousePointerView>?
     
@@ -146,10 +146,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if !magnifier { screenMagnifier.orderOut(nil) }
     }
     
-    /// Removes the monitor a selector installed (`mouseMonitor`)
-    func stopGlobalMouseMonitor() {
+    /// Removes the area selector's monitor, and the mouse highlight
+    func stopAreaSelectorMonitor() {
         mousePointer.orderOut(nil)
-        if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor); mouseMonitor = nil }
+        if let monitor = areaSelectorMonitor { NSEvent.removeMonitor(monitor); areaSelectorMonitor = nil }
+    }
+
+    /// Shows the area selector on the display with the pointer, and again on each display the pointer moves to,
+    /// until it is closed. One that is open already, from another menu or display, goes first with its monitor.
+    func showAreaSelectorFollowingPointer() {
+        stopAreaSelectorMonitor()
+        for w in NSApp.windows(.areaSelector, .areaPanel) { w.close() }
+        showAreaSelector(size: NSSize(width: 600, height: 450))
+        var currentDisplay = ScreenContent.getSCDisplayWithMouse()
+        areaSelectorMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .rightMouseDown, .leftMouseDown, .otherMouseDown]) { [self] _ in
+            let display = ScreenContent.getSCDisplayWithMouse()
+            guard display != currentDisplay else { return }
+            currentDisplay = display
+            // Only the selector's own windows: a recording's frame, Settings or a trimmer stay
+            for w in NSApp.windows(.areaSelector, .areaPanel) { w.close() }
+            showAreaSelector(size: NSSize(width: 600, height: 450))
+        }
     }
     
     /// Without this the system shows no banner while the app is active, which it is right after Start was clicked
