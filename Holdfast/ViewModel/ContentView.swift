@@ -20,11 +20,11 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                tile("System Audio", "waveform", help: "Record what the Mac plays, without video") { appDelegate.recordSystemAudio() }
-                tile("Screen", "tv.inset.filled", help: "Choose a screen to record") { appDelegate.chooseScreen() }
-                tile("Screen Area", "viewfinder", help: "Choose a part of the screen to record") { appDelegate.chooseArea() }
-                tile("Application", "app", help: "Choose one or more applications to record") { appDelegate.chooseApplication() }
-                tile("Window", "macwindow", help: "Choose one or more windows to record") { appDelegate.chooseWindow() }
+                tile("System Audio", "waveform", help: "Record what the Mac plays, without video") { $0.recordSystemAudio() }
+                tile("Screen", "tv.inset.filled", help: "Choose a screen to record") { $0.chooseScreen() }
+                tile("Screen Area", "viewfinder", help: "Choose a part of the screen to record") { $0.chooseArea() }
+                tile("Application", "app", help: "Choose one or more applications to record") { $0.chooseApplication() }
+                tile("Window", "macwindow", help: "Choose one or more windows to record") { $0.chooseWindow() }
             }
             Divider()
             HStack(spacing: 8) {
@@ -59,8 +59,10 @@ struct ContentView: View {
         .environment(\.controlActiveState, .active)
     }
 
-    private func tile(_ title: String, _ symbol: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    private func tile(_ title: String, _ symbol: String, help: String, action: @escaping (AppDelegate) -> Void) -> some View {
+        Button {
+            appDelegate.startIfAllowed(action)
+        } label: {
             VStack(spacing: 6) {
                 Image(systemName: symbol)
                     .font(.system(size: 30))
@@ -150,6 +152,15 @@ struct CountdownView: View {
 
 extension AppDelegate {
     // What the tiles of the main panel and the items of the status item's menu do
+
+    /// How the tiles and the menu items start: a start that cannot happen now (the previous recording is still being
+    /// saved, the app waits to quit) is refused with its alert at once, not after a selector and a countdown, and one
+    /// asked for while a recording starts or runs does nothing.
+    func startIfAllowed(_ action: (AppDelegate) -> Void) {
+        guard withRecorder({ $0.canStart() }) else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        action(self)
+    }
 
     func recordSystemAudio() {
         closeMainWindow()

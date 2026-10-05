@@ -378,18 +378,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         AppDelegate.shared.openMainPanel()
     }
 
-    /// The menu may have been open while the recorder left the idle state
-    private func start(_ action: (AppDelegate) -> Void) {
-        guard recorder.canStart() else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        action(AppDelegate.shared)
-    }
-
-    @objc private func recordSystemAudio() { start { $0.recordSystemAudio() } }
-    @objc private func chooseScreen() { start { $0.chooseScreen() } }
-    @objc private func chooseArea() { start { $0.chooseArea() } }
-    @objc private func chooseApplication() { start { $0.chooseApplication() } }
-    @objc private func chooseWindow() { start { $0.chooseWindow() } }
+    // The menu may have been open while the recorder left the idle state
+    @objc private func recordSystemAudio() { AppDelegate.shared.startIfAllowed { $0.recordSystemAudio() } }
+    @objc private func chooseScreen() { AppDelegate.shared.startIfAllowed { $0.chooseScreen() } }
+    @objc private func chooseArea() { AppDelegate.shared.startIfAllowed { $0.chooseArea() } }
+    @objc private func chooseApplication() { AppDelegate.shared.startIfAllowed { $0.chooseApplication() } }
+    @objc private func chooseWindow() { AppDelegate.shared.startIfAllowed { $0.chooseWindow() } }
 
     @objc private func openSettings() {
         closeMainWindow()

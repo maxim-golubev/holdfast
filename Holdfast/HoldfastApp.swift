@@ -297,11 +297,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
         withRecorder { $0.recovery.start(in: AppSettings.saveDirectory) }
-        // Opened by the user, the app shows its panel; started at login, it waits in the menu bar until it is wanted
+        // Opened by the user, the app shows its panel, with or without a Dock icon: without one, and without the menu
+        // bar item, nothing else would show that it launched. Started at login, it waits until it is wanted.
         let launch = NSAppleEventManager.shared().currentAppleEvent
         let atLogin = launch?.eventID == kAEOpenApplication
             && launch?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
-        if AppSettings.showOnDock && !atLogin { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
+        if !atLogin { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
     }
     
     /// A start that works from the list of screens and windows without a selector having fetched it: the list is
@@ -319,17 +320,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
-    /// "Open Main Panel" in the menus and its hotkey: shows the panel unless it is there or a recording has its
-    /// stream, whatever other windows are open.
+    /// "Open Main Panel" in the menus and its hotkey: shows the panel unless it is there, a recording has its stream
+    /// or a countdown runs (the panel would stay up through the recording it starts), whatever other windows are open.
     func openMainPanel() {
-        guard withRecorder({ !$0.hasStream }) else { return }
+        guard withRecorder({ !$0.hasStream }), !countdownPanel.isVisible else { return }
         if !NSApp.windows(.mainPanel).contains(where: { $0.isVisible }) { showMainPanel() }
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// A click on the Dock icon: the main panel, unless another window of the app is open (audio players aside)
+    /// A click on the Dock icon: the main panel, unless another window of the app is open (audio players aside), a
+    /// recording has its stream or a countdown runs
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard withRecorder({ !$0.hasStream }) else { return false }
+        guard withRecorder({ !$0.hasStream }), !countdownPanel.isVisible else { return false }
         let open = NSApp.windows.filter { $0.isVisible && $0.title != "Item-0" && !$0.title.isEmpty && !$0.title.lowercased().contains(".qma") }
         if open.isEmpty { showMainPanel() }
         return false
