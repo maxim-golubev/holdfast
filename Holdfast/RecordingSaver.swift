@@ -210,6 +210,7 @@ enum RecordingSaver {
             UserNotice.reportFailure(title: earlyReason == nil ? "Recording Not Found".local : "Recording Stopped Early".local, message: reason + movedNote(for: url))
             return
         }
+        RecLog.write("Recording saved: \(url.path)")
         if let reason = earlyReason {
             UserNotice.reportFailure(title: "Recording Stopped Early".local, message: reason + " " + String(format: "The recording up to that point is saved as: %@".local, url.path))
         }

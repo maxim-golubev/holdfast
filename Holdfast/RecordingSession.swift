@@ -378,6 +378,7 @@ final class RecordingSession: @unchecked Sendable {
         }
         // Stopped by the user within moments of the start: when nothing was recorded by then, that is a cancelled start
         let cancelled = earlyReason == nil && Date.now.timeIntervalSince(enteredRecording ?? .distantPast) < 3
+        RecLog.write(earlyReason.map { "Recording stopped early: \($0)" } ?? "Recording stopped")
         state = .stopping
         isMagnifierEnabled = false
         let actions = undo

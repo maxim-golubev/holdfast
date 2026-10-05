@@ -199,6 +199,7 @@ extension RecorderController {
             // Nothing can have stopped this recording yet: a stop that was asked for while the capture was starting
             // is carried out by enterRecording, after everything it undoes has been set up
             session.enterRecording {
+                RecLog.write("Recording started: \(recording.rawURL.lastPathComponent) (\(audioOnly ? "audio only" : "screen"), system audio \(recording.systemAudio ? "on" : "off"), microphone \(recording.recordMic ? "on" : "off"))")
                 if !audioOnly { AppDelegate.shared.startRecordingMouseMonitor() }
                 if recording.preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
                 if recording.recordMic { MicDevices.watch() }

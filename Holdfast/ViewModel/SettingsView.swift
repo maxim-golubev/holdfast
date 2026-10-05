@@ -260,7 +260,7 @@ struct OutputSettings: View {
                     Button("Open") { openLog() }
                         .accessibilityLabel("Open Recordings Log")
                 } label: {
-                    RowLabel("Recordings Log", "What happened to each recording and its tracks: starts, stops, microphone changes, silence that was filled in, failures. Kept in ~/Library/Logs/Holdfast/recordings.log.")
+                    RowLabel("Recordings Log", "What happened to each recording: its start and stop, where it was saved, microphone switches and format changes, mute, track warnings, a summary of its microphone track, and every failure. Kept in ~/Library/Logs/Holdfast/recordings.log.")
                 }
             }
         }

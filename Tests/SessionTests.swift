@@ -285,6 +285,14 @@ func sessionTests() async {
         expect(rig.controller.state == .idle, "a stop when idle does nothing")
     }
 
+    await test("session: the log says why a recording stopped by itself") {
+        let rig = try Rig("session-log")
+        let (session, _, _) = try rig.start()
+        session.stop(earlyReason: "The disk is almost full")
+        expect(await rig.idle(), "idle")
+        expect(RecLog.lines.contains("Recording stopped early: The disk is almost full"), "the reason is in the log: \(RecLog.lines)")
+    }
+
     await test("session: a failure while stopping does not stop twice") {
         let rig = try Rig("session-abort")
         let (session, capture, writer) = try rig.start()
@@ -303,6 +311,7 @@ func sessionTests() async {
         }
         expectEqual(rig.journal.count("capture.release"), 0, "the stream that is being stopped is not given up a second time")
         expect(rig.saved.first?.reason == nil, "the stop that was carried out was the user's")
+        expectEqual(RecLog.lines.filter { $0.hasPrefix("Recording stopped") }, ["Recording stopped"], "the log has the one stop that was carried out")
     }
 
     await test("session: a failing writer and a stream that ends stop the recording with the reason") {

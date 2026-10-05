@@ -48,8 +48,10 @@ enum UserNotice {
         if !waiting { handler() }
     }
     
-    /// For a failure that must not be missed: a notification, and an alert because notifications may be off or silenced
+    /// For a failure that must not be missed: a notification, and an alert because notifications may be off or
+    /// silenced. It also goes into the recordings log.
     static func reportFailure(title: String, message: String) {
+        RecLog.write("\(title): \(message)")
         showNotification(title: title, body: message, id: "holdfast.error.\(UUID().uuidString)")
         showAlertLater(title: title, message: message)
     }

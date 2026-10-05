@@ -76,7 +76,7 @@ end tell
 
 ## Log
 
-`~/Library/Logs/Holdfast/recordings.log` (Settings, Output, "Recordings Log") has one line per event: microphone device switches and format changes, mute and unmute, track warnings, and a summary of the microphone track for every recording (buffers written and dropped, seconds of silence filled, loudest peak).
+`~/Library/Logs/Holdfast/recordings.log` (Settings, Output, "Recordings Log") has one line per event: each recording's start (file name, what it records) and stop (with the reason when it stopped by itself), where it was saved, microphone device switches and format changes, mute and unmute, track warnings, a summary of the microphone track (buffers written and dropped, seconds of silence filled, loudest peak), and every failure that was reported.
 
 ## Credits and license
 
