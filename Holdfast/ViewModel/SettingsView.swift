@@ -373,6 +373,7 @@ struct GeneralSettings: View {
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
+        var failure: Error?
         do {
             if enabled {
                 try SMAppService.mainApp.register()
@@ -380,17 +381,20 @@ struct GeneralSettings: View {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            UserNotice.showAlertLater(title: enabled ? "Launch at Login Not Turned On" : "Launch at Login Not Turned Off", message: error.localizedDescription)
+            failure = error
         }
         // What the system says now, so that the switch never shows what was not done
         let status = SMAppService.mainApp.status
         launchAtLogin = status == .enabled
         if enabled && status == .requiresApproval {
-            // Holdfast was switched off in Login Items once; only the user can switch it on there again
+            // Holdfast was switched off in Login Items once; only the user can switch it on there again. The error
+            // register() throws for it says the same in fewer words, so this is the one message.
             let answer = createAlert(level: .informational, title: "Launch at Login Needs Your Approval",
                                      message: "Holdfast is switched off in System Settings → General → Login Items. Switch it on there to have it open at login.",
                                      button1: "Open Login Items", button2: "Cancel").runModal()
             if answer == .alertFirstButtonReturn { SMAppService.openSystemSettingsLoginItems() }
+        } else if let failure {
+            UserNotice.showAlertLater(title: enabled ? "Launch at Login Not Turned On" : "Launch at Login Not Turned Off", message: failure.localizedDescription)
         }
     }
 }
