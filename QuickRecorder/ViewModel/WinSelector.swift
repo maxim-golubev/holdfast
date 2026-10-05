@@ -11,222 +11,125 @@ import AVFoundation
 import ScreenCaptureKit
 
 struct WinSelector: View {
-    @Environment(\.colorScheme) var colorScheme
     @StateObject var viewModel = WindowSelectorViewModel()
     @State private var selected = [SCWindow]()
-    @State private var display: SCDisplay!
+    @State private var display: SCDisplay?
     @State private var selectedTab = 0
-    @State private var isPopoverShowing = false
-    @State private var isPopoverShowing2 = false
+    @State private var isShowingListOptions = false
     @State private var disableFilter = false
     @State private var donotCapture = false
     @State private var autoStop = 0
     var appDelegate = AppDelegate.shared
     
     var body: some View {
-        ZStack {
-            VStack(spacing: 15) {
-                Text("Please select the window(s) to record").offset(y: 12)
-                TabView(selection: $selectedTab) {
-                    let allApps = viewModel.windowThumbnails.sorted(by: { $0.key.displayID < $1.key.displayID })
-                    ForEach(allApps, id: \.key) { element in
-                        let (screen, thumbnails) = element
-                        let index = allApps.firstIndex(where: { $0.key == screen }) ?? 0
-                        ScrollView(.vertical) {
-                            VStack(spacing: 0) {
-                                ForEach(0..<thumbnails.count/4 + 1, id: \.self) { rowIndex in
-                                    HStack(spacing: 16.5) {
-                                        ForEach(0..<4, id: \.self) { columnIndex in
-                                            let index = 4 * rowIndex + columnIndex
-                                            if index <= thumbnails.count - 1 {
-                                                let item = thumbnails[index]
-                                                Button(action: {
-                                                    if !selected.contains(item.window) {
-                                                        selected.append(item.window)
-                                                    } else {
-                                                        selected.removeAll{ $0 == item.window }
-                                                    }
-                                                }, label: {
-                                                    VStack(spacing: 1){
-                                                        ZStack{
-                                                            if colorScheme == .light {
-                                                                Image(nsImage: item.image)
-                                                                    .resizable()
-                                                                    .aspectRatio(contentMode: .fit)
-                                                                    .colorMultiply(.black)
-                                                                    .blur(radius: 0.5)
-                                                                    .opacity(1)
-                                                                    .frame(width: 160, height: 90, alignment: .center)
-                                                            } else {
-                                                                Image(nsImage: item.image)
-                                                                    .resizable()
-                                                                    .aspectRatio(contentMode: .fit)
-                                                                    .colorMultiply(.black)
-                                                                    .colorInvert()
-                                                                    .blur(radius: 0.5)
-                                                                    .opacity(1)
-                                                                    .frame(width: 160, height: 90, alignment: .center)
-                                                            }
-                                                            Image(nsImage: item.image)
-                                                                .resizable()
-                                                                .aspectRatio(contentMode: .fit)
-                                                                .frame(width: 160, height: 90, alignment: .center)
-                                                            Image(systemName: "circle.fill")
-                                                                .font(.system(size: 31))
-                                                                .foregroundStyle(.white)
-                                                                .opacity(selected.contains(item.window) ? 1.0 : 0.0)
-                                                                .offset(x: 55, y: 25)
-                                                            Image(systemName: "checkmark.circle.fill")
-                                                                .font(.system(size: 27))
-                                                                .foregroundStyle(.green)
-                                                                .opacity(selected.contains(item.window) ? 1.0 : 0.0)
-                                                                .offset(x: 55, y: 25)
-                                                            Image(nsImage: ScreenContent.getAppIcon(item.window.owningApplication!)!)
-                                                                .resizable()
-                                                                .aspectRatio(contentMode: .fit)
-                                                                .frame(width: 40, height: 40, alignment: .center)
-                                                                .offset(y: 35)
-                                                        }
-                                                        .padding(5)
-                                                        .padding(.vertical, 5)
-                                                        .background(
-                                                            Rectangle()
-                                                                .foregroundStyle(.blue)
-                                                                .cornerRadius(5)
-                                                                .opacity(selected.contains(item.window) ? 0.2 : 0.0001)
-                                                        )
-                                                        Text(item.window.title!)
-                                                            .font(.system(size: 12))
-                                                            .foregroundStyle(.secondary)
-                                                            .lineLimit(1)
-                                                            .truncationMode(.tail)
-                                                            .frame(width: 160)
-                                                    }
-                                                }).buttonStyle(.plain)
-                                            }
-                                        }
+        SelectorWindow(prompt: "Please select the window(s) to record") {
+            TabView(selection: $selectedTab) {
+                let allApps = viewModel.windowThumbnails.sorted(by: { $0.key.displayID < $1.key.displayID })
+                ForEach(Array(allApps.enumerated()), id: \.element.key) { index, element in
+                    let (screen, thumbnails) = element
+                    ScrollView(.vertical) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 8)], spacing: 8) {
+                            ForEach(thumbnails, id: \.window.windowID) { item in
+                                let title = item.window.title ?? ""
+                                let isSelected = selected.contains(item.window)
+                                Button {
+                                    if !isSelected {
+                                        selected.append(item.window)
+                                    } else {
+                                        selected.removeAll{ $0 == item.window }
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.leading, 12).padding(.top, 5)
+                                } label: {
+                                    VStack(spacing: 4) {
+                                        Thumbnail(image: item.image)
+                                            .frame(width: 160, height: 90)
+                                            .overlay(alignment: .bottom) {
+                                                if let app = item.window.owningApplication, let icon = ScreenContent.getAppIcon(app) {
+                                                    Image(nsImage: icon)
+                                                        .resizable()
+                                                        .aspectRatio(contentMode: .fit)
+                                                        .frame(width: 40, height: 40)
+                                                }
+                                            }
+                                        Text(title)
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                            .frame(width: 160)
+                                    }
+                                    .modifier(SelectableItem(isSelected: isSelected))
                                 }
+                                .buttonStyle(.plain)
+                                .help(title)
+                                .accessibilityLabel(title.isEmpty ? "Untitled window of \(item.window.owningApplication?.applicationName ?? "an application")" : title)
                             }
                         }
-                        .tag(index)
-                        .tabItem { Text(screen.nsScreen?.localizedName ?? ("Display ".local + "\(index)")) }
-                        .onAppear{ display = screen }
+                        .padding(8)
+                    }
+                    .tag(index)
+                    .tabItem { Text(screen.nsScreen?.localizedName ?? "Display \(index)") }
+                    .onAppear{ display = screen }
+                }
+            }
+            .onChange(of: selectedTab) { selected.removeAll() }
+            .onReceive(viewModel.$isReady) { isReady in
+                if isReady {
+                    let allApps = viewModel.windowThumbnails.sorted(by: { $0.key.displayID < $1.key.displayID })
+                    if let s = NSApp.windows(.windowSelector).first?.screen,
+                       let index = allApps.firstIndex(where: { $0.key.displayID == s.displayID }) {
+                        selectedTab = index
                     }
                 }
-                .frame(height: 445)
-                .padding(.horizontal, 10)
-                .onChange(of: selectedTab) { _ in selected.removeAll() }
-                .onReceive(viewModel.$isReady) { isReady in
-                    if isReady {
-                        let allApps = viewModel.windowThumbnails.sorted(by: { $0.key.displayID < $1.key.displayID })
-                        if let s = NSApp.windows(.windowSelector).first?.screen,
-                           let index = allApps.firstIndex(where: { $0.key.displayID == s.displayID }) {
-                            selectedTab = index
-                        }
-                    }
+            }
+        } bar: {
+            SelectorBar(autoStop: $autoStop, canStart: !selected.isEmpty && display != nil, start: startRecording) {
+                SymbolButton("Refresh", symbol: "arrow.clockwise.circle.fill", color: .blue, help: "Look for the windows again") { reload() }
+                Button {
+                    isShowingListOptions = true
+                } label: {
+                    Label("List Options", systemImage: "chevron.down")
                 }
-                HStack(spacing: 4) {
-                    Button(action: {
-                        self.viewModel.setupStreams(filter: !disableFilter, capture: !donotCapture)
-                        self.selected.removeAll()
-                    }, label: {
-                        VStack{
-                            Image(systemName: "arrow.clockwise.circle.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.blue)
-                            Text("Refresh")
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 12))
-                        }
-                        
-                    }).buttonStyle(.plain)
-                    Button(action: {
-                        isPopoverShowing2 = true
-                    }, label: {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.blue)
-                    })
-                    .buttonStyle(.plain)
-                    .padding(.top, 42.5)
-                    .popover(isPresented: $isPopoverShowing2, arrowEdge: .bottom, content: {
-                        VStack(alignment: .leading) {
-                            Toggle(isOn: $disableFilter) { Text("Show Windows with No Title") }
-                                .toggleStyle(.checkbox)
-                                .onChange(of: disableFilter) { _ in
-                                    self.viewModel.setupStreams(filter: !disableFilter, capture: !donotCapture)
-                                    self.selected.removeAll()
-                                }
-                            Toggle(isOn: $donotCapture) { Text("Don't Create Thumbnails") }
-                                .toggleStyle(.checkbox)
-                                .onChange(of: donotCapture) { _ in
-                                    self.viewModel.setupStreams(filter: !disableFilter, capture: !donotCapture)
-                                    self.selected.removeAll()
-                                }
-                        }
-                        .fixedSize()
-                        .padding()
-                    })
-                    Spacer()
-                    OptionsView()
-                    Spacer()
-                    Button(action: {
-                        isPopoverShowing = true
-                    }, label: {
-                        Image(systemName: "timer")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.blue)
-                    })
-                    .buttonStyle(.plain)
-                    .padding(.top, 42.5)
-                    .popover(isPresented: $isPopoverShowing, arrowEdge: .bottom, content: {
-                        HStack {
-                            Text(" Stop after".local)
-                            TextField("", value: $autoStop, formatter: NumberFormatter())
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                            Stepper("", value: $autoStop)
-                                .padding(.leading, -10)
-                            Text("minutes ".local)
-                        }
-                        .fixedSize()
-                        .padding()
-                    })
-                    Button(action: {
-                        startRecording()
-                    }, label: {
-                        VStack{
-                            Image(systemName: "record.circle.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.red)
-                            Text("Start")
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 12))
-                        }
-                    })
-                    .buttonStyle(.plain)
-                    .disabled(selected.count < 1)
-                }.padding(.horizontal, 40)
-                Spacer()
-            }.padding(.top, -5)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Choose which windows are listed and whether they get a picture")
+                .popover(isPresented: $isShowingListOptions, arrowEdge: .bottom) {
+                    VStack(alignment: .leading) {
+                        Toggle("Show Windows with No Title", isOn: $disableFilter)
+                        Toggle("Don't Create Thumbnails", isOn: $donotCapture)
+                    }
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
+                    .padding()
+                }
+            }
         }
-        .frame(width: 780, height:555)
+        .onChange(of: disableFilter) { reload() }
+        .onChange(of: donotCapture) { reload() }
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                HoverButton(action: {
+                Button {
                     WindowHighlighter.shared.registerMouseMonitor()
-                }, label: {
-                    Image("window.select")
-                        .resizable().scaledToFit()
-                        .frame(width: 20)
-                }).help("Select Window Directly")
+                } label: {
+                    Label {
+                        Text("Select Window Directly")
+                    } icon: {
+                        Image("window.select")
+                            .resizable().scaledToFit()
+                            .frame(width: 20)
+                    }
+                }
+                .help("Select a window by clicking it on the screen")
             }
         }
     }
     
+    private func reload() {
+        viewModel.setupStreams(filter: !disableFilter, capture: !donotCapture)
+        selected.removeAll()
+    }
+    
     func startRecording() {
+        guard let display = display else { return }
         closeAllWindow()
         appDelegate.createCountdownPanel(screen: display) {
             RecorderController.shared.start(type: (selected.count<2 ? "window" : "windows") , screens: display, windows: selected, applications: nil, autoStop: autoStop)
@@ -259,10 +162,8 @@ class WindowSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
             }
             for d in displays {
                 DispatchQueue.main.async {
-                    if self.windowThumbnails[d] != nil {
-                        if !self.windowThumbnails[d]!.contains(where: { $0.window == currentWindow }) { self.windowThumbnails[d]!.append(thumbnail) }
-                    } else {
-                        self.windowThumbnails[d] = [thumbnail]
+                    if !self.windowThumbnails[d, default: []].contains(where: { $0.window == currentWindow }) {
+                        self.windowThumbnails[d, default: []].append(thumbnail)
                     }
                 }
             }
@@ -310,12 +211,8 @@ class WindowSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
                             guard let displays = ScreenContent.availableContent?.displays.filter({ NSIntersectsRect(w.frame, $0.frame) }) else { break }
                             for d in displays {
                                 DispatchQueue.main.async {
-                                    if self.windowThumbnails[d] != nil {
-                                        if !self.windowThumbnails[d]!.contains(where: { $0.window == w }) {
-                                            self.windowThumbnails[d]!.append(thumbnail)
-                                        }
-                                    } else {
-                                        self.windowThumbnails[d] = [thumbnail]
+                                    if !self.windowThumbnails[d, default: []].contains(where: { $0.window == w }) {
+                                        self.windowThumbnails[d, default: []].append(thumbnail)
                                     }
                                 }
                             }

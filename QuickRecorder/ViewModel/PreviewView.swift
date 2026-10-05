@@ -114,7 +114,7 @@ struct PreviewView: View {
             if !trimAfterRecord {
                 Button("Trim") {
                     if fd.fileExists(atPath: filePath) {
-                        AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: filePath.url), title: filePath.lastPathComponent, only: false)
+                        AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: filePath.url), title: filePath.lastPathComponent, size: VideoTrimmerView.windowSize, only: false)
                     }
                     closeWindow()
                 }
@@ -147,6 +147,23 @@ struct PreviewView: View {
             sharingPicker.delegate = sharingDelegate
             sharingPicker.show(relativeTo: .zero, of: window.contentView!, preferredEdge: .minY)
         }
+    }
+}
+
+/// A borderless button whose label changes colour under the pointer
+struct HoverButton<Content: View>: View {
+    var color: Color = .primary
+    var secondaryColor: Color = .blue
+    var action: () -> Void
+    @ViewBuilder let label: () -> Content
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        Button(action: action) {
+            label().foregroundStyle(isHovered ? secondaryColor : color)
+        }
+        .buttonStyle(.plain)
+        .onHover(perform: { isHovered = $0 })
     }
 }
 

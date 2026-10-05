@@ -36,7 +36,7 @@ This fork has no binary releases. Build it from source with `Tools/build.sh` (re
 > QuickRecorder has no plans to be uploaded to the App Store, so it does not need to be designed as a sandbox app.  
 
 **3. How to independently control the volume of system sound and sound from microphone in other video editor?**
-> QuickRecorder will merge the audio input from the microphone to the main audio track after recording by default. If you need to edit the video, you can turn off the `Record Microphone to Main Track` option in the settings panel. After turning off, the system sound and sound from microphone will be recorded into two audio tracks and can be edited independently.  
+> QuickRecorder will merge the audio input from the microphone to the main audio track after recording by default. If you need to edit the video, you can turn off the `Mix Microphone into the Main Track` option in Settings, under Audio. After turning off, the system sound and sound from microphone will be recorded into two audio tracks and can be edited independently.  
 
 ## Thanks
 [Azayaka](https://github.com/Mnpn/Azayaka) @Mnpn

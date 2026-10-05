@@ -134,7 +134,7 @@ enum AppSettings {
     // Audio
     @Setting("recordWinSound", default: true) static var recordWinSound: Bool
     @Setting("recordMic", default: false) static var recordMic: Bool
-    /// "Record Microphone to Main Track": system audio and microphone are mixed into one track after the recording
+    /// "Mix Microphone into the Main Track": system audio and microphone are mixed into one track after the recording
     @Setting("remuxAudio", default: true) static var remuxAudio: Bool
     @Setting("keepUnmixed", default: true) static var keepUnmixed: Bool
     @Setting("audioFormat", default: .aac) static var audioFormat: AudioFormat

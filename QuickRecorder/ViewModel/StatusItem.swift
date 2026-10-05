@@ -267,7 +267,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func openSettings() {
         closeMainWindow()
-        AppDelegate.shared.openSettingPanel()
+        AppDelegate.shared.openSettings()
     }
 
     @objc private func quit() {

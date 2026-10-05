@@ -46,21 +46,6 @@ struct QuickRecorderApp: App {
         
         Settings {
             SettingsView()
-                .background(
-                    WindowAccessor(
-                        onWindowOpen: { w in
-                            if let w = w {
-                                //w.level = .floating
-                                w.titlebarSeparatorStyle = .none
-                                guard let nsSplitView = findNSSplitVIew(view: w.contentView),
-                                      let controller = nsSplitView.delegate as? NSSplitViewController else { return }
-                                controller.splitViewItems.first?.canCollapse = false
-                                controller.splitViewItems.first?.minimumThickness = 140
-                                controller.splitViewItems.first?.maximumThickness = 140
-                                w.orderFront(nil)
-                            }
-                        })
-                )
         }
         .handlesExternalEvents(matching: [])
         .commands {
@@ -146,7 +131,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     /// Main thread. Every mouse event of the system is only listened to while something is drawn from it: during a
-    /// video recording with "Highlight the Mouse Cursor" on or the magnifier switched on. Called when any of the
+    /// video recording with "Highlight the Cursor" on or the magnifier switched on. Called when any of the
     /// three changes.
     func updateRecordingMouseMonitor() {
         let highlight = tracksMouseForRecording && AppSettings.highlightMouse
@@ -203,7 +188,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             if trimingList.contains(url) { continue }
-            createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, random: true, only: false)
+            createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, size: VideoTrimmerView.windowSize, random: true, only: false)
             closeMainWindow()
         }
     }
@@ -311,26 +296,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             let w1 = NSApp.windows.filter({ !$0.title.contains("Item-0") && !$0.title.isEmpty && $0.isVisible })
             let w2 = w1.filter({ !$0.title.contains(".qma") })
             if (!w1.isEmpty && w2.isEmpty) || w1.isEmpty {
-                let offset = (!AppSettings.showOnDock && !AppSettings.showMenubar) ? 127 : 0
-                let width = 801
-                let mainPanel = EscPanel(contentRect: NSRect(x: 0, y: 0, width: width + offset, height: 100), styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
-                mainPanel.contentView = NSHostingView(rootView: ContentView())
-                mainPanel.title = "QuickRecorder".local
-                mainPanel.identifier = .mainPanel
-                mainPanel.isOpaque = false
-                mainPanel.level = .floating
-                mainPanel.isRestorable = false
-                mainPanel.backgroundColor = .clear
-                mainPanel.isReleasedWhenClosed = false
-                mainPanel.isMovableByWindowBackground = true
-                mainPanel.collectionBehavior = [.canJoinAllSpaces]
-                mainPanel.center()
-                if let screen = mainPanel.screen {
-                    let wX = (screen.frame.width - mainPanel.frame.width) / 2 + screen.frame.minX
-                    let wY = (screen.frame.height - mainPanel.frame.height) / 2 + screen.frame.minY
-                    mainPanel.setFrameOrigin(NSPoint(x: wX, y: wY))
-                }
-                mainPanel.makeKeyAndOrderFront(self)
+                showMainPanel()
             }
         }
         return false
@@ -339,24 +305,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     /// The status item's commands under the Dock icon too, which is there when the status item is out of sight
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         return withRecorder { _ in StatusItemController.shared.dockMenu() }
-    }
-
-    func openSettingPanel() {
-        NSApp.activate(ignoringOtherApps: true)
-        // SwiftUI gives the Settings item a private action, so it can only be triggered through the app menu.
-        // Look it up by its Cmd+, shortcut instead of a fixed index, which shifts whenever the menu changes.
-        let appMenu = NSApp.mainMenu?.items.first?.submenu
-        let settingsItem = appMenu?.items.first(where: { $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == .command })
-        (settingsItem ?? appMenu?.item(at: 2))?.performAction()
-    }
-    
-    class EscPanel: NSPanel {
-        override func cancelOperation(_ sender: Any?) {
-            self.close()
-        }
-        override var canBecomeKey: Bool {
-            return true
-        }
     }
 }
 
@@ -376,18 +324,6 @@ func closeAllWindow(except: NSUserInterfaceItemIdentifier? = nil) {
         $0.title != "Item-0" && $0.title != ""
         && !$0.title.lowercased().contains(".qma")
         && (except == nil || $0.identifier != except) }) { w.close() }
-}
-
-func findNSSplitVIew(view: NSView?) -> NSSplitView? {
-    var queue = [NSView]()
-    if let root = view { queue.append(root) }
-    
-    while !queue.isEmpty {
-        let current = queue.removeFirst()
-        if current is NSSplitView { return current as? NSSplitView }
-        for subview in current.subviews { queue.append(subview) }
-    }
-    return nil
 }
 
 func tips(_ message: String, title: String? = nil, id: String, buttonTitle: String = "OK", switchButton: Bool = false, width: Int? = nil, action: (() -> Void)? = nil) {
@@ -458,15 +394,6 @@ extension String {
         return (self as NSString).lastPathComponent
     }
     var url: URL { return URL(fileURLWithPath: self) }
-}
-
-extension NSMenuItem {
-    func performAction() {
-        guard let menu else {
-            return
-        }
-        menu.performActionForItem(at: menu.index(of: self))
-    }
 }
 
 extension NSImage {

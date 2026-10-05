@@ -33,38 +33,40 @@ struct resizeView: View {
     @AppStorage(AppSettings.$highRes)    private var highRes: Int
     
     var appDelegate = AppDelegate.shared
-    var screen: SCDisplay!
+    let screen: SCDisplay
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 4) {
+        Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 10) {
+            GridRow {
                 Text("Area Size:")
-                TextField("", value: $areaWidth, formatter: NumberFormatter())
-                    .frame(width: 60)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focusedField, equals: .width)
-                    .onChange(of: areaWidth) { newValue in
-                        if !appDelegate.isResizing {
-                            areaWidth = min(max(newValue, 1), screen.width)
-                            resize()
+                HStack(spacing: 4) {
+                    TextField("Width", value: $areaWidth, format: .number.grouping(.never))
+                        .frame(width: 60)
+                        .focused($focusedField, equals: .width)
+                        .onChange(of: areaWidth) { _, newValue in
+                            if !appDelegate.isResizing {
+                                areaWidth = min(max(newValue, 1), screen.width)
+                                resize()
+                            }
                         }
-                    }
-                Image(systemName: "xmark").font(.system(size: 10, weight: .medium))
-                TextField("", value: $areaHeight, formatter: NumberFormatter())
-                    .frame(width: 60)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focusedField, equals: .height)
-                    .onChange(of: areaHeight) { newValue in
-                        if !appDelegate.isResizing {
-                            areaHeight = min(max(newValue, 1), screen.height)
-                            resize()
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .medium)).accessibilityHidden(true)
+                    TextField("Height", value: $areaHeight, format: .number.grouping(.never))
+                        .frame(width: 60)
+                        .focused($focusedField, equals: .height)
+                        .onChange(of: areaHeight) { _, newValue in
+                            if !appDelegate.isResizing {
+                                areaHeight = min(max(newValue, 1), screen.height)
+                                resize()
+                            }
                         }
-                    }
+                }
+                .textFieldStyle(.roundedBorder)
+                .labelsHidden()
             }
-            HStack(spacing: 4) {
+            GridRow {
                 Text("Output Size:")
-                let scale = Int(screen.nsScreen!.backingScaleFactor)
-                Text(" \(AppSettings.recordsPixels(highRes) ? areaWidth * scale : areaWidth) x \(AppSettings.recordsPixels(highRes) ? areaHeight * scale : areaHeight)")
+                let scale = AppSettings.recordsPixels(highRes) ? Int(screen.nsScreen?.backingScaleFactor ?? 1) : 1
+                Text("\(areaWidth * scale) x \(areaHeight * scale)")
             }
         }.onAppear{ focusedField = .width }
     }
@@ -76,130 +78,59 @@ struct resizeView: View {
 }
 
 struct AreaSelector: View {
-    @State private var isPopoverShowing = false
     @State private var resizePopoverShowing = false
     @State private var autoStop = 0
     @State private var nsWindow: NSWindow?
     
-    var screen: SCDisplay!
+    let screen: SCDisplay
     var appDelegate = AppDelegate.shared
     
     var body: some View {
-        ZStack {
-            Color(nsColor: NSColor.windowBackgroundColor)
-                .cornerRadius(10)
-            VStack {
-                HStack(spacing: 6) {
-                    Spacer()
-                    Button(action: {
-                        nsWindow?.close()
-                        for w in NSApp.windows(.areaSelector) { w.close() }
-                        appDelegate.stopGlobalMouseMonitor()
-                        WindowHighlighter.shared.registerMouseMonitor(mode: 2)
-                    }, label: {
-                        VStack(spacing:0){
-                            ZStack {
-                                Image(systemName: "circle.fill")
-                                    .font(.system(size: 36))
-                                    .foregroundStyle(.green)
-                                Image("window.select")
-                                    .resizable().scaledToFit()
-                                    .foregroundStyle(.black)
-                                    .frame(width: 27)
-                                    .offset(y: 0.5)
-                                    .blendMode(.destinationOut)
-                            }
-                            .compositingGroup()
-                            .frame(width: 42, height: 41)
-                            Text("Window Area")
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 12))
-                        }
-                    }).buttonStyle(.plain)
-                    Button(action: {
-                        resizePopoverShowing = true
-                    }, label: {
-                        VStack{
-                            Image(systemName: "viewfinder.circle.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.blue)
-                            Text("Resize")
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 12))
-                        }
-                    })
-                    .buttonStyle(.plain)
-                    .sheet(isPresented: $resizePopoverShowing, content: {
-                        HStack(spacing: 10) {
-                            Button(action: {
-                                resizePopoverShowing = false
-                            }, label: {
-                                VStack{
-                                    Image(systemName: "arrow.uturn.backward.circle.fill")
-                                        .font(.system(size: 30))
-                                        .foregroundStyle(.secondary)
-                                    Text("Back")
-                                        .foregroundStyle(.secondary)
-                                        .font(.system(size: 12))
-                                }
-                                
-                            }).buttonStyle(.plain)
-                            resizeView(screen: screen)
-                        }.padding()
-                    })
-                    Spacer()
-                    OptionsView().padding(.horizontal, 10)
-                    Spacer()
-                    Button(action: {
-                        isPopoverShowing = true
-                    }, label: {
-                        Image(systemName: "timer")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.blue)
-                    })
-                    .buttonStyle(.plain)
-                    .padding(.top, 42.5)
-                    .popover(isPresented: $isPopoverShowing, arrowEdge: .bottom, content: {
-                        HStack {
-                            Text(" Stop after".local)
-                            TextField("", value: $autoStop, formatter: NumberFormatter())
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                            Stepper("", value: $autoStop)
-                                .padding(.leading, -10)
-                            Text("minutes ".local)
-                        }
-                        .fixedSize()
-                        .padding()
-                    })
-                    Button(action: {
-                        startRecording()
-                    }, label: {
-                        VStack{
-                            Image(systemName: "record.circle.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.red)
-                            Text("Start")
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 12))
-                        }
-                    }).buttonStyle(.plain)
-                    Spacer()
-                }
-            }.padding(.horizontal, 10)
-            Button(action: {
+        HStack(alignment: .top, spacing: 12) {
+            Button {
                 nsWindow?.close()
-            }, label: {
-                Image(systemName: "x.circle")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.secondary)
-            })
-            .buttonStyle(.plain)
-            .padding(.top, -39)
-            .padding(.leading, -389)
+            } label: {
+                Image(systemName: "xmark.circle")
+            }
+            .buttonStyle(.borderless)
             .keyboardShortcut(.cancelAction)
+            .help("Close the area selector")
+            .accessibilityLabel("Close")
+            SelectorBar(autoStop: $autoStop, start: startRecording) {
+                SymbolButton(title: "Window Area", help: "Take the area from a window by clicking it") {
+                    nsWindow?.close()
+                    for w in NSApp.windows(.areaSelector) { w.close() }
+                    appDelegate.stopGlobalMouseMonitor()
+                    WindowHighlighter.shared.registerMouseMonitor(mode: 2)
+                } icon: {
+                    ZStack {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.green)
+                        Image("window.select")
+                            .resizable().scaledToFit()
+                            .frame(width: 27)
+                            .blendMode(.destinationOut)
+                    }
+                    .compositingGroup()
+                }
+                SymbolButton("Resize", symbol: "viewfinder.circle.fill", color: .blue, help: "Type the size of the area") {
+                    resizePopoverShowing = true
+                }
+                .sheet(isPresented: $resizePopoverShowing) {
+                    HStack(spacing: 10) {
+                        SymbolButton("Back", symbol: "arrow.uturn.backward.circle.fill", color: .secondary, help: "Back to the area selector") {
+                            resizePopoverShowing = false
+                        }
+                        resizeView(screen: screen)
+                    }.padding()
+                }
+            }
         }
+        .padding(12)
+        .fixedSize()
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
         .focusable(false)
-        .frame(width: 790, height: 90)
         .background(WindowAccessor(onWindowOpen: { w in nsWindow = w }, onWindowClose: {
             DispatchQueue.main.async {
                 for w in NSApp.windows(.areaSelector) { w.close() }
@@ -213,15 +144,15 @@ struct AreaSelector: View {
     }
     
     func startRecording() {
+        guard let area = ScreenContent.screenArea, let nsScreen = screen.nsScreen else { return }
         closeAllWindow()
         appDelegate.stopGlobalMouseMonitor()
-        var window = NSWindow()
-        let area = ScreenContent.screenArea!
-        guard let nsScreen = screen.nsScreen else { return }
-        let frame = NSRect(x: Int(area.origin.x + nsScreen.frame.minX - 4),
-                           y: Int(area.origin.y + nsScreen.frame.minY - 4),
-                           width: Int(area.width + 8), height: Int(area.height + 8))
-        window = NSWindow(contentRect: frame, styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
+        // The dashed frame lies just outside the recorded area
+        let border: CGFloat = 4
+        let frame = NSRect(x: Int(area.origin.x + nsScreen.frame.minX - border),
+                           y: Int(area.origin.y + nsScreen.frame.minY - border),
+                           width: Int(area.width + 2 * border), height: Int(area.height + 2 * border))
+        let window = NSWindow(contentRect: frame, styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
         window.hasShadow = false
         window.level = .screenSaver
         window.ignoresMouseEvents = true
@@ -454,12 +385,11 @@ class ScreenshotOverlayView: NSView {
                 let deltaY = currentLocation.y - initialLocation.y
 
                 // Move the rectangle, keeping it inside the view
-                let x = self.selectionRect?.origin.x
-                let y = self.selectionRect?.origin.y
-                let w = self.selectionRect?.size.width
-                let h = self.selectionRect?.size.height
-                self.selectionRect?.origin.x = min(max(0.0, x! + deltaX), self.frame.width - w!)
-                self.selectionRect?.origin.y = min(max(0.0, y! + deltaY), self.frame.height - h!)
+                if var moved = self.selectionRect {
+                    moved.origin.x = min(max(0.0, moved.origin.x + deltaX), self.frame.width - moved.width)
+                    moved.origin.y = min(max(0.0, moved.origin.y + deltaY), self.frame.height - moved.height)
+                    self.selectionRect = moved
+                }
                 initialLocation = currentLocation
             } else {
                 //dragIng = false

@@ -12,150 +12,75 @@ import ScreenCaptureKit
 struct AppSelector: View {
     @StateObject var viewModel = AppSelectorViewModel()
     @State private var selected = [SCRunningApplication]()
-    @State private var display: SCDisplay!
+    @State private var display: SCDisplay?
     @State private var selectedTab = 0
-    @State private var isPopoverShowing = false
     @State private var autoStop = 0
     var appDelegate = AppDelegate.shared
     
     var body: some View {
-        ZStack {
-            VStack(spacing: 15) {
-                Text("Please select the App(s) to record").offset(y: 12)
-                TabView(selection: $selectedTab) {
-                    let allApps = viewModel.allApps.sorted(by: { $0.key.displayID < $1.key.displayID })
-                    ForEach(allApps, id: \.key) { element in
-                        let (screen, apps) = element
-                        let index = allApps.firstIndex(where: { $0.key == screen }) ?? 0
-                        ScrollView(.vertical) {
-                            VStack(spacing: 8) {
-                                ForEach(0..<apps.count/5 + 1, id: \.self) { rowIndex in
-                                    HStack(spacing: 20) {
-                                        ForEach(0..<5, id: \.self) { columnIndex in
-                                            let index = 5 * rowIndex + columnIndex
-                                            if index <= apps.count - 1 {
-                                                let item = apps[index]
-                                                Button(action: {
-                                                    if !selected.contains(item) {
-                                                        selected.append(item)
-                                                    } else {
-                                                        selected.removeAll{ $0 == item }
-                                                    }
-                                                }, label: {
-                                                    ZStack {
-                                                        VStack {
-                                                            Image(nsImage: ScreenContent.getAppIcon(item)!)
-                                                            let appName = item.applicationName
-                                                            let appID = item.bundleIdentifier
-                                                            Text(appName != "" ? appName : appID)
-                                                                .foregroundStyle(.secondary)
-                                                                .lineLimit(1)
-                                                                .truncationMode(.tail)
-                                                        }
-                                                        .frame(width: 110, height: 94)
-                                                        .padding(10)
-                                                        .background(
-                                                            Rectangle()
-                                                                .foregroundStyle(.blue)
-                                                                .cornerRadius(5)
-                                                                .opacity(selected.contains(item) ? 0.2 : 0.0)
-                                                        )
-                                                        Image(systemName: "circle.fill")
-                                                            .font(.system(size: 31))
-                                                            .foregroundStyle(.white)
-                                                            .opacity(selected.contains(item) ? 1.0 : 0.0)
-                                                            .offset(x: 20, y: 10)
-                                                        Image(systemName: "checkmark.circle.fill")
-                                                            .font(.system(size: 27))
-                                                            .foregroundStyle(.green)
-                                                            .opacity(selected.contains(item) ? 1.0 : 0.0)
-                                                            .offset(x: 20, y: 10)
-                                                    }
-                                                }).buttonStyle(.plain)
-                                            }
-                                        }
+        SelectorWindow(prompt: "Please select the App(s) to record") {
+            TabView(selection: $selectedTab) {
+                let allApps = viewModel.allApps.sorted(by: { $0.key.displayID < $1.key.displayID })
+                ForEach(Array(allApps.enumerated()), id: \.element.key) { index, element in
+                    let (screen, apps) = element
+                    ScrollView(.vertical) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 8) {
+                            ForEach(apps, id: \.self) { item in
+                                let name = item.applicationName != "" ? item.applicationName : item.bundleIdentifier
+                                Button {
+                                    if !selected.contains(item) {
+                                        selected.append(item)
+                                    } else {
+                                        selected.removeAll{ $0 == item }
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.leading, 12).padding(.top, 4)
+                                } label: {
+                                    VStack {
+                                        if let icon = ScreenContent.getAppIcon(item) {
+                                            Image(nsImage: icon)
+                                        } else {
+                                            Image(systemName: "app.dashed").font(.system(size: 56))
+                                        }
+                                        Text(name)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .modifier(SelectableItem(isSelected: selected.contains(item)))
                                 }
+                                .buttonStyle(.plain)
+                                .help("Record \(name)")
+                                .accessibilityLabel(name)
                             }
                         }
-                        .tag(index)
-                        .tabItem { Text(screen.nsScreen?.localizedName ?? ("Display ".local + "\(index)")) }
-                        .onAppear{ display = screen }
+                        .padding(12)
+                    }
+                    .tag(index)
+                    .tabItem { Text(screen.nsScreen?.localizedName ?? "Display \(index)") }
+                    .onAppear{ display = screen }
+                }
+            }
+            .onChange(of: selectedTab) { selected.removeAll() }
+            .onReceive(viewModel.$isReady) { isReady in
+                if isReady {
+                    let allApps = viewModel.allApps.sorted(by: { $0.key.displayID < $1.key.displayID })
+                    if let s = NSApp.windows(.appSelector).first?.screen,
+                       let index = allApps.firstIndex(where: { $0.key.displayID == s.displayID }) {
+                        selectedTab = index
                     }
                 }
-                .frame(height: 445)
-                .padding(.horizontal, 10)
-                .onChange(of: selectedTab) { _ in selected.removeAll() }
-                .onReceive(viewModel.$isReady) { isReady in
-                    if isReady {
-                        let allApps = viewModel.allApps.sorted(by: { $0.key.displayID < $1.key.displayID })
-                        if let s = NSApp.windows(.appSelector).first?.screen,
-                           let index = allApps.firstIndex(where: { $0.key.displayID == s.displayID }) {
-                            selectedTab = index
-                        }
-                    }
+            }
+        } bar: {
+            SelectorBar(autoStop: $autoStop, canStart: !selected.isEmpty && display != nil, start: startRecording) {
+                SymbolButton("Refresh", symbol: "arrow.clockwise.circle.fill", color: .blue, help: "Look for the running applications again") {
+                    viewModel.updateAppList()
                 }
-                HStack(spacing: 4) {
-                    Button(action: {
-                        viewModel.updateAppList()
-                    }, label: {
-                        VStack{
-                            Image(systemName: "arrow.clockwise.circle.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.blue)
-                            Text("Refresh")
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 12))
-                        }
-                        
-                    }).buttonStyle(.plain)
-                    Spacer()
-                    OptionsView().padding(.leading, 18)
-                    Spacer()
-                    Button(action: {
-                        isPopoverShowing = true
-                    }, label: {
-                        Image(systemName: "timer")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.blue)
-                    })
-                    .buttonStyle(.plain)
-                    .padding(.top, 42.5)
-                    .popover(isPresented: $isPopoverShowing, arrowEdge: .bottom, content: {
-                        HStack {
-                            Text(" Stop after".local)
-                            TextField("", value: $autoStop, formatter: NumberFormatter())
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                            Stepper("", value: $autoStop)
-                                .padding(.leading, -10)
-                            Text("minutes ".local)
-                        }
-                        .fixedSize()
-                        .padding()
-                    })
-                    Button(action: {
-                        startRecording()
-                    }, label: {
-                        VStack{
-                            Image(systemName: "record.circle.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.red)
-                            Text("Start")
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 12))
-                        }
-                    })
-                    .buttonStyle(.plain)
-                    .disabled(selected.count < 1)
-                }.padding(.horizontal, 40)
-                Spacer()
-            }.padding(.top, -5)
-        }.frame(width: 780, height:555)
+            }
+        }
     }
     
     func startRecording() {
+        guard let display = display else { return }
         closeAllWindow()
         appDelegate.createCountdownPanel(screen: display) {
             RecorderController.shared.start(type: "application", screens: display, windows: nil, applications: selected, autoStop: autoStop)
@@ -177,164 +102,11 @@ class AppSelectorViewModel: ObservableObject {
             for screen in screens {
                 var apps = [SCRunningApplication]()
                 let windows = ScreenContent.getWindows().filter({ NSIntersectsRect(screen.frame, $0.frame) })
-                for app in windows.map({ $0.owningApplication }) { if !apps.contains(app!) { apps.append(app!) }}
+                for app in windows.compactMap({ $0.owningApplication }) { if !apps.contains(app) { apps.append(app) }}
                 if AppSettings.hideSelf { apps = apps.filter({$0.bundleIdentifier != Bundle.main.bundleIdentifier}) }
                 DispatchQueue.main.async { self.allApps[screen] = apps }
             }
             DispatchQueue.main.async { self.isReady = true }
-        }
-    }
-    
-    /*func updateAppList() {
-        ScreenContent.updateAvailableContent{
-            DispatchQueue.main.async {
-                self.allApps = ScreenContent.getApps().filter({ $0.bundleIdentifier != Bundle.main.bundleIdentifier })
-            }
-        }
-    }*/
-}
-
-struct OptionsView: View {
-    @State private var micList = MicSelection.getMicrophone()
-    
-    @AppStorage(AppSettings.$frameRate)      private var frameRate: Int
-    @AppStorage(AppSettings.$videoQuality)   private var videoQuality: Double
-    @AppStorage(AppSettings.$showMouse)      private var showMouse: Bool
-    @AppStorage(AppSettings.$recordMic)      private var recordMic: Bool
-    @AppStorage(AppSettings.$recordWinSound) private var recordWinSound: Bool
-    @AppStorage(AppSettings.$highRes)        private var highRes: Int
-    @AppStorage(AppSettings.$recordHDR)      private var recordHDR: Bool
-    
-    var body: some View {
-        VStack(spacing: 6) {
-            HStack {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Resolution")
-                    Text("Frame Rate")
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker("", selection: $highRes) {
-                        Text("High (auto)").tag(2)
-                        Text("Normal (1x)").tag(1)
-                        //Text("Low (0.5x)").tag(0)
-                    }
-                    .buttonStyle(.borderless)
-                    .frame(minWidth: 10)
-                    Picker("", selection: $frameRate) {
-                        if ![240, 144, 120, 90, 60, 30, 24, 15 ,10].contains(frameRate) {
-                            Text("\(frameRate) FPS").tag(frameRate)
-                        }
-                        Text("240 FPS").tag(240)
-                        Text("144 FPS").tag(144)
-                        Text("120 FPS").tag(120)
-                        Text("90 FPS").tag(90)
-                        Text("60 FPS").tag(60)
-                        Text("30 FPS").tag(30)
-                        Text("24 FPS").tag(24)
-                        Text("15 FPS").tag(15)
-                        Text("10 FPS").tag(10)
-                    }
-                    .buttonStyle(.borderless)
-                    .frame(minWidth: 10)
-                }.scaledToFit()
-                Divider().frame(height: 50)
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Quality")
-                }.padding(.leading, 8)
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker("", selection: $videoQuality) {
-                        Text("High").tag(1.0)
-                        Text("Medium").tag(0.7)
-                        Text("Low").tag(0.3)
-                    }
-                    .buttonStyle(.borderless)
-                    .frame(minWidth: 10)
-                }.scaledToFit()
-                Divider().frame(height: 50)
-                VStack(alignment: .leading, spacing: 2) {
-                    Toggle(isOn: $recordHDR) {
-                        HStack(spacing:0){
-                            Image(systemName: "sparkles.square.filled.on.square")
-                                .font(.subheadline)
-                                .frame(width: 16)
-                            Text("Record HDR")
-                                .font(.subheadline)
-                        }
-                    }
-                    .fixedSize()
-                    .toggleStyle(.checkbox)
-                    Toggle(isOn: $showMouse) {
-                        HStack(spacing: 0){
-                            Image(systemName: "cursorarrow")
-                                .font(.subheadline)
-                                .frame(width: 16)
-                            Text("Record Cursor")
-                                .font(.subheadline)
-                        }
-                    }
-                    .fixedSize()
-                    .toggleStyle(.checkbox)
-                    Toggle(isOn: $recordWinSound) {
-                        HStack(spacing: 0){
-                            Image(systemName: "speaker.wave.1.fill")
-                                .font(.subheadline)
-                                .frame(width: 16)
-                            Text("App's Audio")
-                                .font(.subheadline)
-                        }
-                    }
-                    .fixedSize()
-                    .toggleStyle(.checkbox)
-                    HStack(spacing: 0) {
-                        Toggle(isOn: $recordMic) {
-                            Image(systemName: "mic.fill")
-                                .font(.subheadline)
-                                .frame(width: 16)
-                        }
-                        .fixedSize()
-                        .toggleStyle(.checkbox)
-                        .onChange(of: recordMic) { _ in
-                            Task { await MicSelection.performMicCheck() }
-                        }
-                        .disabled(micList.isEmpty)
-                        MicPicker(micList: micList)
-                            .disabled(!recordMic)
-                            .scaleEffect(0.8)
-                            .padding(.leading, -16)
-                            .frame(width: 90, height: 12)
-                        Spacer().frame(width: 5)
-                    }
-                }.padding(.trailing, -17)
-            }
-        }
-    }
-}
-
-/// Microphone menu shared by the panels. The selection is the device's uniqueID, or "default" for the system default input.
-/// A selected device that is not connected stays selected and is listed as unavailable.
-struct MicPicker: View {
-    let micList: [AVCaptureDevice]
-    @AppStorage(AppSettings.$micDeviceID) private var micDeviceID: String
-    @AppStorage(AppSettings.$micName)   private var micName: String
-    
-    var body: some View {
-        Picker("", selection: $micDeviceID) {
-            Text("Default".local).tag("default")
-            ForEach(micList, id: \.uniqueID) { device in
-                Text(device.localizedName).tag(device.uniqueID)
-            }
-            if micDeviceID != "default" && !micList.contains(where: { $0.uniqueID == micDeviceID }) {
-                Text(String(format: "%@ (unavailable)".local, micName == "default" ? micDeviceID : micName)).tag(micDeviceID)
-            }
-        }
-        .onAppear { micDeviceID = MicSelection.selectedMicID() }
-        .onChange(of: micDeviceID) { id in
-            // The name is stored next to the ID so that the device can still be named while it is absent
-            if id == "default" {
-                micName = "default"
-            } else if let device = micList.first(where: { $0.uniqueID == id }) {
-                micName = device.localizedName
-            }
         }
     }
 }

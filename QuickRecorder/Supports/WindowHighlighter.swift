@@ -23,9 +23,6 @@ struct HighlightMask: View {
     @State var display: SCDisplay?
     @State var color: Color = .blue
     @State var showSheet: Bool = false
-    @State private var isPopoverShowing = false
-    @State private var disableFilter = false
-    @State private var donotCapture = false
     @State private var autoStop = 0
     
     var body: some View {
@@ -34,59 +31,14 @@ struct HighlightMask: View {
             .cornerRadius(10)
             .help("\(app) - \(title)")
             .sheet(isPresented: $showSheet) {
-                HStack(spacing: 4) {
-                    Button(action: {
+                SelectorBar(autoStop: $autoStop, start: startRecording) {
+                    SymbolButton("Cancel", symbol: "xmark.circle.fill", color: .gray, help: "Do not record this window") {
                         showSheet = false
-                    }, label: {
-                        VStack{
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.gray)
-                            Text("Cancel")
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 12))
-                        }
-                    }).buttonStyle(.plain)
-                    Spacer()
-                    OptionsView()
-                    Spacer()
-                    Button(action: {
-                        isPopoverShowing = true
-                    }, label: {
-                        Image(systemName: "timer")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.blue)
-                    })
-                    .buttonStyle(.plain)
-                    .padding(.top, 42.5)
-                    .popover(isPresented: $isPopoverShowing, arrowEdge: .bottom, content: {
-                        HStack {
-                            Text(" Stop after".local)
-                            TextField("", value: $autoStop, formatter: NumberFormatter())
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                            Stepper("", value: $autoStop)
-                                .padding(.leading, -10)
-                            Text("minutes ".local)
-                        }
-                        .fixedSize()
-                        .padding()
-                    })
-                    Button(action: {
-                        startRecording()
-                    }, label: {
-                        VStack{
-                            Image(systemName: "record.circle.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.red)
-                            Text("Start")
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 12))
-                        }
-                    }).buttonStyle(.plain)
+                    }
                 }
                 .focusable(false)
-                .frame(width: 640, height: 90)
-                .padding(.horizontal, 40)
+                .padding(20)
+                .fixedSize()
                 .onDisappear {
                     if let mask = WindowHighlighter.shared.mask {
                         mask.close()
@@ -111,14 +63,13 @@ struct HighlightMask: View {
         closeAllWindow()
         switch WindowHighlighter.shared.Mode {
         case 2:
-            var dashWindow = NSWindow()
             guard let screen = display, let nsScreen = display?.nsScreen, var area = window?.frame else { return }
             area = CGRectTransform(cgRect: area)
             ScreenContent.screenArea = NSRect(x: area.origin.x - nsScreen.frame.minX, y: area.origin.y - nsScreen.frame.minY, width:area.width, height: area.height)
             let frame = NSRect(x: Int(area.origin.x - 3),
                                y: Int(area.origin.y - 3),
                                width: Int(area.width + 6), height: Int(area.height + 6))
-            dashWindow = NSWindow(contentRect: frame, styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
+            let dashWindow = NSWindow(contentRect: frame, styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
             dashWindow.hasShadow = false
             dashWindow.level = .screenSaver
             dashWindow.ignoresMouseEvents = true

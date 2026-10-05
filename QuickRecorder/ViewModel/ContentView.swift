@@ -9,180 +9,91 @@ import SwiftUI
 import AVFoundation
 import ScreenCaptureKit
 
+/// The main panel: what to record, the microphone, Settings. Shown as a floating panel that is as large as
+/// this view asks for (`AppDelegate.showMainPanel`).
 struct ContentView: View {
-    @State private var window: NSWindow?
-    @State private var xmarkGlowing = false
-    @State private var infoGlowing = false
-    @State private var micGlowing = false
-    @State private var micList = MicSelection.getMicrophone()
     @AppStorage(AppSettings.$recordMic) private var recordMic: Bool
     @AppStorage(AppSettings.$showOnDock) private var showOnDock: Bool
     @AppStorage(AppSettings.$showMenubar) private var showMenubar: Bool
 
     var appDelegate = AppDelegate.shared
-    
+
     var body: some View {
-        ZStack(alignment: Alignment(horizontal: .leading, vertical: .top)) {
-            ZStack {
-                ZStack {
-                    Color.clear
-                        .background(.ultraThinMaterial)
-                        .environment(\.controlActiveState, .active)
-                }.cornerRadius(14)
-                HStack {
-                    Spacer()
-                    ZStack(alignment: Alignment(horizontal: .center, vertical: .bottom)) {
-                        Button(action: {
-                            appDelegate.recordSystemAudio()
-                        }, label: {
-                            SelectorView(title: "System Audio".local, symbol: "waveform").cornerRadius(8)
-                        }).buttonStyle(.plain)
-                        Button {} label: {
-                            HStack(spacing: -2) {
-                                Button {
-                                    recordMic.toggle()
-                                } label: {
-                                    ZStack {
-                                        Image(systemName: "square.fill")
-                                            .font(.system(size: 15, weight: .medium))
-                                            .foregroundColor(.primary)
-                                            .colorInvert()
-                                            .opacity(0.2)
-                                        Image(systemName: recordMic ? "checkmark.square" : "square")
-                                            .font(.system(size: 16, weight: .medium))
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Record Microphone".local)
-                                .accessibilityValue(recordMic ? "On".local : "Off".local)
-                                .onChange(of: recordMic) { _ in  Task { await MicSelection.performMicCheck() }}
-                                .disabled(micList.isEmpty)
-                                Image(systemName: "mic.fill")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundColor(recordMic ? .primary : .secondary)
-                                    .frame(width: 24)
-                                    .padding(.leading, 1)
-                                MicPicker(micList: micList)
-                                    .frame(width: 90)
-                                    .background(
-                                        ZStack {
-                                            Color.primary
-                                                .opacity(0.1)
-                                                .cornerRadius(4)
-                                                .padding(.vertical, -1)
-                                                .padding(.horizontal, 3)
-                                                .padding(.trailing, -16)
-                                            Image(systemName: "chevron.up.chevron.down")
-                                                .offset(x: 50)
-                                        }
-                                    )
-                                    .disabled(!recordMic)
-                                    .padding(.leading, -10)
-                                    .frame(width: 99)
-                            }.padding(.leading, -5)
-                        }.buttonStyle(.plain)
-                        .scaleEffect(0.69)
-                        .padding(.bottom, 4)
-                        .frame(width: 110)
-                        .background(.primary.opacity(0.00001))
-                    }
-                    Divider().frame(height: 70)
-                    Button(action: {
-                        appDelegate.chooseScreen()
-                    }, label: {
-                        SelectorView(title: "Screen".local, symbol: "tv.inset.filled").cornerRadius(8)
-                    }).buttonStyle(.plain)
-                    Divider().frame(height: 70)
-                    Button(action: {
-                        appDelegate.chooseArea()
-                    }, label: {
-                        SelectorView(title: "Screen Area".local, symbol: "viewfinder").cornerRadius(8)
-                    }).buttonStyle(.plain)
-                    Divider().frame(height: 70)
-                    Button(action: {
-                        appDelegate.chooseApplication()
-                    }, label: {
-                        SelectorView(title: "Application".local, symbol: "app", symbolSize: 38, overlayer: "App")
-                            .cornerRadius(8)
-                    }).buttonStyle(.plain)
-                    Divider().frame(height: 70)
-                    Button(action: {
-                        appDelegate.chooseWindow()
-                    }, label: {
-                        SelectorView(title: "Window".local, symbol: "macwindow").cornerRadius(8)
-                    }).buttonStyle(.plain)
-                    Divider().frame(height: 70)
-                    Button(action: {
-                        closeMainWindow()
-                        appDelegate.openSettingPanel()
-                    }, label: {
-                        SelectorView(title: "Preferences".local, symbol: "gearshape").cornerRadius(8)
-                    }).buttonStyle(.plain)
-                    if !showOnDock && !showMenubar {
-                        Divider().frame(height: 70)
-                        Button(action: {
-                            NSApp.terminate(self)
-                        }, label: {
-                            SelectorView(title: "Quit".local, symbol: "xmark.circle")
-                                .cornerRadius(8)
-                                .foregroundStyle(.darkMyRed)
-                        }).buttonStyle(.plain)
-                    }
-                    Spacer()
-                }.padding(.vertical, 10).padding(.horizontal, 20)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                tile("System Audio", "waveform", help: "Record what the Mac plays, without video") { appDelegate.recordSystemAudio() }
+                tile("Screen", "tv.inset.filled", help: "Choose a screen to record") { appDelegate.chooseScreen() }
+                tile("Screen Area", "viewfinder", help: "Choose a part of the screen to record") { appDelegate.chooseArea() }
+                tile("Application", "app", help: "Choose one or more applications to record") { appDelegate.chooseApplication() }
+                tile("Window", "macwindow", help: "Choose one or more windows to record") { appDelegate.chooseWindow() }
             }
-            Button(action: {
-                closeMainWindow()
-            }, label: {
-                Image(systemName: "x.circle")
-                    .font(.system(size: 13, weight: .bold))
-                    .opacity(xmarkGlowing ? 1.0 : 0.4)
-                    .foregroundStyle(.secondary)
-                    .onHover{ hovering in xmarkGlowing = hovering }
-            })
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close".local)
-            .padding([.horizontal, .top], 7)
-        }.focusable(false)
+            Divider()
+            HStack(spacing: 8) {
+                MicToggle().toggleStyle(.checkbox)
+                MicPicker()
+                    .labelsHidden()
+                    .frame(maxWidth: 220)
+                    .disabled(!recordMic)
+                Spacer(minLength: 16)
+                Button {
+                    closeMainWindow()
+                    appDelegate.openSettings()
+                } label: {
+                    Label("Settings…", systemImage: "gearshape")
+                }
+                .help("Open the settings window")
+                // Without a Dock icon and a menu bar item there is no other way to quit
+                if !showOnDock && !showMenubar {
+                    Button(role: .destructive) {
+                        NSApp.terminate(nil)
+                    } label: {
+                        Label("Quit", systemImage: "xmark.circle")
+                    }
+                    .help("Quit QuickRecorder")
+                }
+                Button("Close") { closeMainWindow() }
+                    .help("Close this panel (Esc)")
+            }
+        }
+        .padding(16)
+        .fixedSize()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .environment(\.controlActiveState, .active)
+    }
+
+    private func tile(_ title: String, _ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 30))
+                    .frame(height: 38)
+                Text(title)
+            }
+        }
+        .buttonStyle(TileButtonStyle())
+        .help(help)
+        .accessibilityLabel("Record \(title)")
     }
 }
 
-struct SelectorView: View {
-    var title = "No Title".local
-    var symbol = "app"
-    var symbolSize: CGFloat = 36
-    var overlayer = ""
-    @State private var backgroundOpacity = 0.0001
-    
-    var body: some View {
-        VStack(spacing: 6) {
-            Text(title)
-                .opacity(0.95)
-                .font(.system(size: 12))
-                .offset(y: title == "System Audio".local ? -3.5 : 0)
-            ZStack {
-                if title == "System Audio".local {
-                    Image(systemName: symbol)
-                        .opacity(0.95)
-                        .offset(y: -9.5)
-                        .font(.system(size: 26, weight: .bold))
-                } else {
-                    Image(systemName: symbol)
-                        .opacity(0.95)
-                        .font(.system(size: symbolSize))
-                        .frame(height: 40)
-                }
-                Text(overlayer)
-                    .fontWeight(.bold)
-                    .opacity(0.95)
-                    .font(.system(size: 11))
-            }
+/// A large square button of the main panel, tinted under the pointer
+struct TileButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Tile(configuration: configuration)
+    }
+
+    private struct Tile: View {
+        let configuration: Configuration
+        @State private var isHovered = false
+
+        var body: some View {
+            configuration.label
+                .padding(.vertical, 10)
+                .frame(minWidth: 104)
+                .background(Color.primary.opacity(configuration.isPressed ? 0.25 : (isHovered ? 0.12 : 0)), in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+                .onHover { isHovered = $0 }
         }
-        .frame(width: 110, height: 80)
-        .onHover{ hovering in
-            backgroundOpacity = hovering ? 0.2 : 0.0001
-        }
-        .background( .primary.opacity(backgroundOpacity) )
     }
 }
 
@@ -194,25 +105,28 @@ struct CountdownView: View {
     var atEnd: () -> Void
 
     var body: some View {
-        ZStack {
-            Color.mypurple.environment(\.colorScheme, .dark)
+        VStack(spacing: 0) {
             Text("\(countdownValue)")
                 .font(.system(size: 72))
-                .foregroundColor(.white)
-                .offset(y: -10)
-            Button(action: {
+                .monospacedDigit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel("Recording starts in \(countdownValue) seconds")
+            Button {
                 AppDelegate.shared.cancelCountdown()
-            }, label: {
-                ZStack {
-                    Color.white.opacity(0.2)
-                    Text("Cancel").foregroundColor(.white)
-                }.frame(width: 120, height: 24)
-            })
+            } label: {
+                Text("Cancel")
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.white.opacity(0.2))
+                    .contentShape(Rectangle())
+            }
             .buttonStyle(.plain)
-            .padding(.top, 96)
+            .help("Cancel the recording that is about to start")
         }
+        .foregroundStyle(.white)
         .frame(width: 120, height: 120)
-        .cornerRadius(10)
+        .background(Color.mypurple.environment(\.colorScheme, .dark))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
         .onAppear{
             countdownTimer?.invalidate()
             countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
@@ -280,33 +194,60 @@ extension AppDelegate {
         createNewWindow(view: WinSelector(), title: "Window Selector".local, identifier: .windowSelector)
     }
 
+    /// The main panel, centred on its screen and as large as its content
+    func showMainPanel() {
+        let content = NSHostingView(rootView: ContentView())
+        let mainPanel = MainPanel(contentRect: NSRect(origin: .zero, size: content.fittingSize), styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
+        mainPanel.contentView = content
+        mainPanel.title = "QuickRecorder".local
+        mainPanel.identifier = .mainPanel
+        mainPanel.isOpaque = false
+        mainPanel.level = .floating
+        mainPanel.isRestorable = false
+        mainPanel.backgroundColor = .clear
+        mainPanel.isReleasedWhenClosed = false
+        mainPanel.isMovableByWindowBackground = true
+        mainPanel.collectionBehavior = [.canJoinAllSpaces]
+        mainPanel.center()
+        if let screen = mainPanel.screen {
+            mainPanel.setFrameOrigin(NSPoint(x: screen.frame.midX - mainPanel.frame.width / 2, y: screen.frame.midY - mainPanel.frame.height / 2))
+        }
+        mainPanel.makeKeyAndOrderFront(self)
+    }
+
+    /// Opens the window of the Settings scene with SwiftUI's own action. The action has no state, so the one of
+    /// an empty environment is the one a view would get, and AppKit code (the status item's menu) can call it too.
+    func openSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        EnvironmentValues().openSettings()
+    }
+
     func showAreaSelector(size: NSSize, noPanel: Bool = false) {
         guard let scDisplay = ScreenContent.getSCDisplayWithMouse() else { return }
         guard let screen = scDisplay.nsScreen else { return }
         let screenshotWindow = ScreenshotWindow(contentRect: screen.frame, backing: .buffered, defer: false, size: size, force: noPanel)
         screenshotWindow.title = "Area Selector".local
         screenshotWindow.identifier = .areaSelector
-        //screenshotWindow.orderFront(self)
         screenshotWindow.orderFrontRegardless()
         if !noPanel {
-            let wX = (screen.frame.width - 790) / 2 + screen.frame.minX
-            let wY = screen.visibleFrame.minY + 80
+            // Centred, a little above the Dock, and as large as its content
             let contentView = NSHostingView(rootView: AreaSelector(screen: scDisplay))
-            contentView.frame = NSRect(x: wX, y: wY, width: 790, height: 90)
+            let size = contentView.fittingSize
+            let gapAboveDock: CGFloat = 80
+            let frame = NSRect(x: screen.frame.midX - size.width / 2, y: screen.visibleFrame.minY + gapAboveDock, width: size.width, height: size.height)
             contentView.focusRingType = .none
-            let areaPanel = NSPanel(contentRect: contentView.frame, styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
+            let areaPanel = NSPanel(contentRect: frame, styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
             areaPanel.collectionBehavior = [.canJoinAllSpaces]
-            areaPanel.setFrame(contentView.frame, display: true)
             areaPanel.level = .screenSaver
             areaPanel.title = "Start Recording".local
             areaPanel.identifier = .areaPanel
             areaPanel.contentView = contentView
+            areaPanel.setFrame(frame, display: true)
             areaPanel.backgroundColor = .clear
             areaPanel.titleVisibility = .hidden
             areaPanel.isReleasedWhenClosed = false
             areaPanel.titlebarAppearsTransparent = true
             areaPanel.isMovableByWindowBackground = true
-            //areaPanel.setFrameOrigin(NSPoint(x: wX, y: wY))
             areaPanel.orderFront(self)
         }
     }
@@ -327,27 +268,26 @@ extension AppDelegate {
         if countdown == 0 {
             action()
         } else {
-            let wX = (screen.frame.width - 120) / 2 + screen.frame.minX
-            let wY = (screen.frame.height - 120) / 2 + screen.frame.minY
-            let frame =  NSRect(x: wX, y: wY, width: 120, height: 120)
             let contentView = NSHostingView(rootView: CountdownView(countdownValue: countdown, atEnd: action))
-            contentView.frame = frame
+            let size = contentView.fittingSize
+            let frame = NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.midY - size.height / 2, width: size.width, height: size.height)
             countdownPanel.contentView = contentView
             countdownPanel.setFrame(frame, display: true)
             countdownPanel.makeKeyAndOrderFront(self)
         }
     }
     
-    func createNewWindow(view: some View, title: String, identifier: NSUserInterfaceItemIdentifier? = nil, random: Bool = false, only: Bool = true) {
+    /// A titled window around `view`, centred on the screen with the mouse. It is as large as the view asks for,
+    /// or `size` for a view that takes what it is given. `random` moves it a little, so that several do not
+    /// cover each other exactly.
+    func createNewWindow(view: some View, title: String, identifier: NSUserInterfaceItemIdentifier? = nil, size: NSSize? = nil, random: Bool = false, only: Bool = true) {
         guard let screen = ScreenContent.getScreenWithMouse() else { return }
         if only { closeAllWindow() }
-        var seed = 0.0
-        if random { seed = CGFloat(Int(arc4random_uniform(401)) - 200) }
-        let wX = (screen.frame.width - 780) / 2 + seed + screen.frame.minX
-        let wY = (screen.frame.height - 555) / 2 + 100 + seed + screen.frame.minY
         let contentView = NSHostingView(rootView: view)
-        contentView.frame = NSRect(x: wX, y: wY, width: 780, height: 555)
-        let window = NSWindow(contentRect: contentView.frame, styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        let size = size ?? contentView.fittingSize
+        let shift = random ? CGFloat(Int.random(in: -200...200)) : 0
+        let origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2 + shift, y: screen.visibleFrame.midY - size.height / 2 + shift)
+        let window = NSWindow(contentRect: NSRect(origin: origin, size: size), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = title
         window.identifier = identifier
         window.contentView = contentView
@@ -360,8 +300,12 @@ extension AppDelegate {
     }
 }
 
-
-/*#Preview {
-    ContentView()
+/// The main panel closes with Esc and takes the keyboard although it does not activate the app
+final class MainPanel: NSPanel {
+    override func cancelOperation(_ sender: Any?) {
+        close()
+    }
+    override var canBecomeKey: Bool {
+        return true
+    }
 }
-*/
