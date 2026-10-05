@@ -15,8 +15,6 @@ struct ContentView: View {
     @State private var xmarkGlowing = false
     @State private var infoGlowing = false
     @State private var micGlowing = false
-    @State private var isPopoverShowing = false
-    @State private var isPopoverShowing2 = false
     @State private var micList = SCContext.getMicrophone()
     @AppStorage("recordMic") private var recordMic: Bool = false
     @AppStorage("showOnDock") private var showOnDock: Bool = true
@@ -36,67 +34,65 @@ struct ContentView: View {
                 }.cornerRadius(14)
                 HStack {
                     if !fromStatusBar { Spacer() }
-                    if #available(macOS 13, *) {
-                        ZStack(alignment: Alignment(horizontal: .center, vertical: .bottom)) {
-                            Button(action: {
-                                if let display = SCContext.getSCDisplayWithMouse() {
-                                    closeMainWindow()
-                                    appDelegate.createCountdownPanel(screen: display) {
-                                        AppDelegate.shared.prepRecord(type: "audio", screens: SCContext.getSCDisplayWithMouse(), windows: nil, applications: nil)
+                    ZStack(alignment: Alignment(horizontal: .center, vertical: .bottom)) {
+                        Button(action: {
+                            if let display = SCContext.getSCDisplayWithMouse() {
+                                closeMainWindow()
+                                appDelegate.createCountdownPanel(screen: display) {
+                                    AppDelegate.shared.prepRecord(type: "audio", screens: SCContext.getSCDisplayWithMouse(), windows: nil, applications: nil)
+                                }
+                            }
+                        }, label: {
+                            SelectorView(title: "System Audio".local, symbol: "waveform").cornerRadius(8)
+                        }).buttonStyle(.plain)
+                        Button {} label: {
+                            HStack(spacing: -2) {
+                                Button {
+                                    recordMic.toggle()
+                                } label: {
+                                    ZStack {
+                                        Image(systemName: "square.fill")
+                                            .font(.system(size: 15, weight: .medium))
+                                            .foregroundColor(.primary)
+                                            .colorInvert()
+                                            .opacity(0.2)
+                                        Image(systemName: recordMic ? "checkmark.square" : "square")
+                                            .font(.system(size: 16, weight: .medium))
                                     }
                                 }
-                            }, label: {
-                                SelectorView(title: "System Audio".local, symbol: "waveform").cornerRadius(8)
-                            }).buttonStyle(.plain)
-                            Button {} label: {
-                                HStack(spacing: -2) {
-                                    Button {
-                                        recordMic.toggle()
-                                    } label: {
+                                .buttonStyle(.plain)
+                                .onChange(of: recordMic) { _ in  Task { await SCContext.performMicCheck() }}
+                                .disabled(micList.isEmpty)
+                                Image(systemName: "mic.fill")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(recordMic ? .primary : .secondary)
+                                    .frame(width: 24)
+                                    .padding(.leading, 1)
+                                MicPicker(micList: micList)
+                                    .frame(width: 90)
+                                    .background(
                                         ZStack {
-                                            Image(systemName: "square.fill")
-                                                .font(.system(size: 15, weight: .medium))
-                                                .foregroundColor(.primary)
-                                                .colorInvert()
-                                                .opacity(0.2)
-                                            Image(systemName: recordMic ? "checkmark.square" : "square")
-                                                .font(.system(size: 16, weight: .medium))
+                                            Color.primary
+                                                .opacity(0.1)
+                                                .cornerRadius(4)
+                                                .padding(.vertical, -1)
+                                                .padding(.horizontal, 3)
+                                                .padding(.trailing, -16)
+                                            Image(systemName: "chevron.up.chevron.down")
+                                                .offset(x: 50)
                                         }
-                                    }
-                                    .buttonStyle(.plain)
-                                    .onChange(of: recordMic) { _ in  Task { await SCContext.performMicCheck() }}
-                                    .disabled(micList.isEmpty)
-                                    Image(systemName: "mic.fill")
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundColor(recordMic ? .primary : .secondary)
-                                        .frame(width: 24)
-                                        .padding(.leading, 1)
-                                    MicPicker(micList: micList)
-                                        .frame(width: 90)
-                                        .background(
-                                            ZStack {
-                                                Color.primary
-                                                    .opacity(0.1)
-                                                    .cornerRadius(4)
-                                                    .padding(.vertical, -1)
-                                                    .padding(.horizontal, 3)
-                                                    .padding(.trailing, -16)
-                                                Image(systemName: "chevron.up.chevron.down")
-                                                    .offset(x: 50)
-                                            }
-                                        )
-                                        .disabled(!recordMic)
-                                        .padding(.leading, -10)
-                                        .frame(width: 99)
-                                }.padding(.leading, -5)
-                            }.buttonStyle(.plain)
-                            .scaleEffect(0.69)
-                            .padding(.bottom, 4)
-                            .frame(width: 110)
-                            .background(.primary.opacity(0.00001))
-                        }
-                        Divider().frame(height: 70)
+                                    )
+                                    .disabled(!recordMic)
+                                    .padding(.leading, -10)
+                                    .frame(width: 99)
+                            }.padding(.leading, -5)
+                        }.buttonStyle(.plain)
+                        .scaleEffect(0.69)
+                        .padding(.bottom, 4)
+                        .frame(width: 110)
+                        .background(.primary.opacity(0.00001))
                     }
+                    Divider().frame(height: 70)
                     Button(action: {
                         closeMainWindow()
                         appDelegate.createNewWindow(view: ScreenSelector(), title: "Screen Selector".local)
@@ -138,26 +134,6 @@ struct ContentView: View {
                     }, label: {
                         SelectorView(title: "Window".local, symbol: "macwindow").cornerRadius(8)
                     }).buttonStyle(.plain)
-                    /*Divider().frame(height: 70)
-                    Button(action: {
-                        isPopoverShowing2 = true
-                    }, label: {
-                        SelectorView(title: "Camera".local, symbol: "camera").cornerRadius(8)
-                    })
-                    .buttonStyle(.plain)
-                    .popover(isPresented: $isPopoverShowing2, arrowEdge: .bottom) {
-                        CameraPopoverView(closePopover: { isPopoverShowing2 = false })
-                    }*/
-                    Divider().frame(height: 70)
-                    Button(action: {
-                        isPopoverShowing = true
-                    }, label: {
-                        SelectorView(title: "Mobile Device".local, symbol: "apps.ipad").cornerRadius(8)
-                    })
-                    .buttonStyle(.plain)
-                    .popover(isPresented: $isPopoverShowing, arrowEdge: .bottom) {
-                        iDevicePopoverView(closePopover: { isPopoverShowing = false })
-                    }
                     Divider().frame(height: 70)
                     Button(action: {
                         closeMainWindow()
@@ -362,16 +338,6 @@ extension AppDelegate {
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(self)
         window.orderFrontRegardless()
-    }
-}
-
-extension View {
-    func needScale() -> some View {
-        if #available(macOS 14, *) {
-            return self.scaleEffect(0.8).padding(.leading, -4)
-        } else {
-            return self
-        }
     }
 }
 

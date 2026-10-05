@@ -119,29 +119,7 @@ struct PreviewView: View {
                     closeWindow()
                 }
             }
-            if #available(macOS 13, *) {
-                if ["mp4", "mov"].contains(filePath.pathExtension) {
-                    Button("Make GIF") {
-                        if isAppInstalled(id: "com.sindresorhus.Gifski") {
-                            makeGif()
-                            closeWindow()
-                        } else {
-                            let alert = createAlert(title: "Gifski not found",
-                                                    message: "Please install \"Gifski\" first to make GIF!",
-                                                    button1: "Open App Store", button2: "Cancel").runModal()
-                            if alert == .alertFirstButtonReturn { openURL("https://apps.apple.com/app/id1351639930") }
-                        }
-                    }
-                    Divider()
-                }
-            }
             Button("Close") { closeWindow() }
-        }
-    }
-    
-    func openURL(_ urlString: String) {
-        if let url = URL(string: urlString) {
-            NSWorkspace.shared.open(url)
         }
     }
     
@@ -150,17 +128,6 @@ struct PreviewView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             nsWindow?.close()
         }
-    }
-    
-    private func isAppInstalled(id: String) -> Bool {
-        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) != nil
-    }
-    
-    private func makeGif() {
-        let task = Process()
-        task.arguments = ["-b", "com.sindresorhus.Gifski", filePath]
-        task.launchPath = "/usr/bin/open"
-        task.launch()
     }
     
     private func showSharingServicePicker(for url: URL) {

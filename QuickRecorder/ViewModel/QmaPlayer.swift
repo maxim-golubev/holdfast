@@ -689,3 +689,34 @@ class AudioPlayerManager: ObservableObject {
 extension UTType {
     static let qma = UTType(exportedAs: (Bundle.main.bundleIdentifier ?? "com.maximgolubev.QuickRecorder") + ".qma")
 }
+
+struct ActivityIndicator: View {
+    
+    @State var currentDegrees = 0.0
+    @State private var timer: Timer?
+    
+    let colorGradient = LinearGradient(gradient: Gradient(colors: [
+        .secondary, .secondary.opacity(0.75), .secondary.opacity(0.5), .secondary.opacity(0.2), .clear
+    ]), startPoint: .leading, endPoint: .trailing)
+    
+    var body: some View {
+        Circle()
+            .trim(from: 0.0, to: 0.85)
+            .stroke(colorGradient, style: StrokeStyle(lineWidth: 3))
+            .frame(width: 18, height: 18)
+            .rotationEffect(Angle(degrees: currentDegrees))
+            .onAppear {
+                timer?.invalidate()
+                timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+                    withAnimation {
+                        self.currentDegrees += 10
+                    }
+                }
+            }
+            .onDisappear {
+                // The timer would go on firing for the rest of the app's life otherwise
+                timer?.invalidate()
+                timer = nil
+            }
+    }
+}

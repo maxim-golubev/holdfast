@@ -82,10 +82,6 @@ extension AppDelegate {
             guard let title = $0.title else { return false }
             return $0.owningApplication?.bundleIdentifier == "com.apple.dock" && title != "LPSpringboard" && title != "Dock"
         })
-        let desktop = content.windows.filter({
-            guard let title = $0.title else { return false }
-            return $0.owningApplication?.bundleIdentifier == "" && title == "Desktop"
-        })
         let dockWindow = content.windows.filter({
             guard let title = $0.title else { return true }
             return $0.owningApplication?.bundleIdentifier == "com.apple.dock" && title == "Dock"
@@ -95,7 +91,6 @@ extension AppDelegate {
             && $0.title == "" && $0.frame == screen.frame })
         let controlCenterWindow = content.applications.filter({ $0.bundleIdentifier == "com.apple.controlcenter" })
         let mouseWindow = content.windows.filter({ $0.title == "Mouse Pointer".local && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
-        let camLayer = content.windows.filter({ $0.title == "Camera Overlayer".local && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
         var appBlackList = [String]()
         if let savedData = ud.data(forKey: "hiddenApps"),
            let decodedApps = try? JSONDecoder().decode([AppInfo].self, from: savedData) {
@@ -107,8 +102,8 @@ extension AppDelegate {
             if var includ = SCContext.window {
                 if includ.count > 1 {
                     if highlightMouse { includ += mouseWindow }
-                    if background.rawValue == BackgroundType.wallpaper.rawValue { if dockApp != nil { includ += wallpaper }}
-                    SCContext.filter = SCContentFilter(display: screen, including: includ + camLayer)
+                    if dockApp != nil { includ += wallpaper }
+                    SCContext.filter = SCContentFilter(display: screen, including: includ)
                     SCContext.filter?.includeMenuBar = includeMenuBar
                 } else if let only = includ.first {
                     SCContext.streamType = .window
@@ -129,10 +124,6 @@ extension AppDelegate {
                 excluded += excliudedApps
                 if hideCCenter { excluded += controlCenterWindow }
                 if hideSelf { if let qrWindows = qrWindows { except += qrWindows }}
-                if background.rawValue != BackgroundType.wallpaper.rawValue { if dockApp != nil {
-                    except += wallpaper
-                    except += desktop
-                }}
                 if hideDesktopFiles { except += desktopFiles }
                 SCContext.filter = SCContentFilter(display: screen, excludingApplications: excluded, exceptingWindows: except)
                 SCContext.filter?.includeMenuBar = includeMenuBar
@@ -145,7 +136,7 @@ extension AppDelegate {
                 if withFinder && hideDesktopFiles { except += desktopFiles }
                 if hideSelf { if let qrWindows = qrWindows { except += qrWindows }}
                 //if ud.bool(forKey: "highlightMouse") { if let qrSelf = qrSelf { includ.append(qrSelf) }}
-                if background.rawValue == BackgroundType.wallpaper.rawValue { if let dock = dockApp { includ.append(dock); except += dockWindow}}
+                if let dock = dockApp { includ.append(dock); except += dockWindow }
                 SCContext.filter = SCContentFilter(display: screen, including: includ, exceptingWindows: except)
                 SCContext.filter?.includeMenuBar = includeMenuBar
             }
@@ -261,7 +252,6 @@ extension AppDelegate {
             conf.height = Int(filter.contentRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
             
             conf.showsCursor = showMouse
-            if background.rawValue != BackgroundType.wallpaper.rawValue { conf.backgroundColor = SCContext.getBackgroundColor() }
             if !recordHDR {
                 conf.pixelFormat = kCVPixelFormatType_32BGRA
                 conf.colorSpaceName = CGColorSpace.sRGB
@@ -483,25 +473,6 @@ extension AppDelegate {
         SCContext.micInput = micInput
     }
     
-    func outputVideoEffectDidStart(for stream: SCStream) {
-        DispatchQueue.main.async { camWindow.close() }
-        print("[Presenter Overlay ON]")
-        isPresenterON = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(poSafeDelay)) {
-            self.isCameraReady = true
-        }
-    }
-    
-    func outputVideoEffectDidStop(for stream: SCStream) {
-        print("[Presenter Overlay OFF]")
-        presenterType = "OFF"
-        isPresenterON = false
-        isCameraReady = false
-        DispatchQueue.main.async {
-            if SCContext.stream != nil { camWindow.orderFront(self) }
-        }
-    }
-    
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
         if SCContext.saveFrame, let imageBuffer = sampleBuffer.imageBuffer {
             SCContext.saveFrame = false
@@ -602,18 +573,6 @@ extension AppDelegate {
                 frame = moved
             }
             if vwInput.isReadyForMoreMediaData {
-                if let rect = attachments[.presenterOverlayContentRect] as? [String: Any], let x = rect["X"] as? CGFloat {
-                    let type = x == .infinity ? "OFF" : (x == 0.0 ? "Small" : "Big")
-                    if type != presenterType {
-                        print("Presenter Overlay set to \"\(type)\"!")
-                        isCameraReady = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(poSafeDelay)) {
-                            self.isCameraReady = true
-                        }
-                        presenterType = type
-                    }
-                }
-                if isPresenterON && !isCameraReady { break }
                 // The preview picture is made from the first frame right away, so the frame itself is not kept
                 if SCContext.videoPTS == nil { SCContext.firstFrame = SCContext.thumbnail(of: frame) }
                 if SCContext.append(frame, to: vwInput) {

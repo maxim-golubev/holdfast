@@ -8,7 +8,6 @@
 import SwiftUI
 import ServiceManagement
 import KeyboardShortcuts
-import MatrixColorSelector
 
 struct SettingsView: View {
     @State private var selectedItem: String? = "General"
@@ -39,8 +38,6 @@ struct SettingsView: View {
 }
 
 struct GeneralView: View {
-    @AppStorage("countdown") private var countdown: Int = 0
-    @AppStorage("poSafeDelay") private var poSafeDelay: Int = 1
     @AppStorage("showOnDock") private var showOnDock: Bool = true
     @AppStorage("showMenubar") private var showMenubar: Bool = false
     
@@ -49,21 +46,19 @@ struct GeneralView: View {
     var body: some View {
         SForm {
             SGroupBox(label: "Startup") {
-                if #available(macOS 13, *) {
-                    SToggle("Launch at Login", isOn: $launchAtLogin)
-                        .onChange(of: launchAtLogin) { newValue in
-                            do {
-                                if newValue {
-                                    try SMAppService.mainApp.register()
-                                } else {
-                                    try SMAppService.mainApp.unregister()
-                                }
-                            }catch{
-                                print("Failed to \(newValue ? "enable" : "disable") launch at login: \(error.localizedDescription)")
+                SToggle("Launch at Login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { newValue in
+                        do {
+                            if newValue {
+                                try SMAppService.mainApp.register()
+                            } else {
+                                try SMAppService.mainApp.unregister()
                             }
+                        }catch{
+                            print("Failed to \(newValue ? "enable" : "disable") launch at login: \(error.localizedDescription)")
                         }
-                    SDivider()
-                }
+                    }
+                SDivider()
                 SToggle("Show QuickRecorder on Dock", isOn: $showOnDock)
                     //.disabled(!showMenubar)
                 SDivider()
@@ -78,7 +73,7 @@ struct GeneralView: View {
                 }
             }
         }
-        .onAppear{ if #available(macOS 13, *) { launchAtLogin = (SMAppService.mainApp.status == .enabled) }}
+        .onAppear{ launchAtLogin = (SMAppService.mainApp.status == .enabled) }
         .onChange(of: showMenubar) { _ in updateStatusBar() }
         .onChange(of: showOnDock) { newValue in
             if !newValue {
@@ -93,7 +88,6 @@ struct GeneralView: View {
 
 struct RecorderView: View {
     @AppStorage("countdown")        private var countdown: Int = 0
-    @AppStorage("poSafeDelay")      private var poSafeDelay: Int = 1
     @AppStorage("highlightMouse")   private var highlightMouse: Bool = false
     @AppStorage("includeMenuBar")   private var includeMenuBar: Bool = true
     @AppStorage("hideDesktopFiles") private var hideDesktopFiles: Bool = false
@@ -103,45 +97,26 @@ struct RecorderView: View {
     @AppStorage("preventSleep")     private var preventSleep: Bool = true
     @AppStorage("showPreview")      private var showPreview: Bool = true
     @AppStorage("hideCCenter")      private var hideCCenter: Bool = false
-    
-    @State private var userColor: Color = Color.black
 
     var body: some View {
         SForm(spacing: 10) {
             SGroupBox(label: "Recorder") {
                 SSteper("Delay Before Recording", value: $countdown, min: 0, max: 99)
-                SDivider()
-                if #available(macOS 14, *) {
-                    SSteper("Presenter Overlay Delay", value: $poSafeDelay, min: 0, max: 99, tips: "If enabling Presenter Overlay causes recording failure, please increase this value.")
-                    SDivider()
-                }
-                SItem(label: "Custom Background Color") {
-                    if #unavailable(macOS 13) {
-                        ColorPicker("", selection: $userColor)
-                    } else {
-                        MatrixColorSelector("", selection: $userColor)
-                            .onChange(of: userColor) { userColor in ud.setColor(userColor, forKey: "userColor") }
-                    }
-                }
             }
             SGroupBox {
                 SToggle("Mini size Menu Bar controller", isOn: $miniStatusBar)
                 SDivider()
                 SToggle("Prevent Mac from sleeping while recording", isOn: $preventSleep)
                 SDivider()
-                if #available(macOS 13, *) {
-                    SToggle("Show floating preview after recording", isOn: $showPreview)
-                    SDivider()
-                }
+                SToggle("Show floating preview after recording", isOn: $showPreview)
+                SDivider()
                 SToggle("Open video trimmer after recording", isOn: $trimAfterRecord)
             }
             SGroupBox {
                 SToggle("Exclude QuickRecorder itself", isOn: $hideSelf)
                 SDivider()
-                if #available (macOS 13, *) {
-                    SToggle("Include Menu Bar in Recording", isOn: $includeMenuBar)
-                    SDivider()
-                }
+                SToggle("Include Menu Bar in Recording", isOn: $includeMenuBar)
+                SDivider()
                 SToggle("Hide Control Center Icons", isOn: $hideCCenter, tips: "Hide the clock, Wi-Fi, bluetooth, volume and other system icons in the menu bar.")
                 SDivider()
                 SToggle("Highlight the Mouse Cursor", isOn: $highlightMouse, tips: "Not available for \"Single Window Capture\"")
@@ -150,7 +125,7 @@ struct RecorderView: View {
                 SDivider()
                 SToggle("Exclude Files on Desktop", isOn: $hideDesktopFiles, tips: "If enabled, all files on the Desktop will be hidden from the video when recording.")
             }
-        }.onAppear{ userColor = ud.color(forKey: "userColor") ?? Color.black }
+        }
     }
 }
 
@@ -159,7 +134,6 @@ struct OutputView: View {
     @AppStorage("videoFormat")      private var videoFormat: VideoFormat = .mp4
     @AppStorage("audioFormat")      private var audioFormat: AudioFormat = .aac
     @AppStorage("audioQuality")     private var audioQuality: AudioQuality = .high
-    @AppStorage("background")       private var background: BackgroundType = .wallpaper
     @AppStorage("remuxAudio")       private var remuxAudio: Bool = true
     @AppStorage("keepUnmixed")      private var keepUnmixed: Bool = true
     @AppStorage("withAlpha")        private var withAlpha: Bool = false
@@ -215,11 +189,7 @@ struct OutputView: View {
                 }
             }
         }.onChange(of: withAlpha) {alpha in
-            if alpha {
-                encoder = Encoder.h265; videoFormat = VideoFormat.mov
-            } else {
-                if background == .clear { background = .wallpaper }
-            }
+            if alpha { encoder = Encoder.h265; videoFormat = VideoFormat.mov }
         }
     }
     
@@ -278,38 +248,6 @@ struct BlocklistView: View {
     }
 }
 
-extension UserDefaults {
-    func setColor(_ color: Color?, forKey key: String) {
-        guard let color = color else {
-            removeObject(forKey: key)
-            return
-        }
-        
-        do {
-            let data = try NSKeyedArchiver.archivedData(withRootObject: NSColor(color), requiringSecureCoding: false)
-            set(data, forKey: key)
-        } catch {
-            print("Error archiving color:", error)
-        }
-    }
-    
-    func color(forKey key: String) -> Color? {
-        guard let data = data(forKey: key),
-              let nsColor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSColor.self, from: data) else {
-            return nil
-        }
-        return Color(nsColor)
-    }
-    
-    func cgColor(forKey key: String) -> CGColor? {
-        guard let data = data(forKey: key),
-              let nsColor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSColor.self, from: data) else {
-            return nil
-        }
-        return nsColor.cgColor
-    }
-}
-
 extension KeyboardShortcuts.Name {
     static let startWithAudio = Self("startWithAudio")
     static let startWithScreen = Self("startWithScreen")
@@ -320,17 +258,4 @@ extension KeyboardShortcuts.Name {
     static let pauseResume = Self("pauseResume")
     static let stop = Self("stop")
     static let showPanel = Self("showPanel")
-}
-
-extension AppDelegate {
-    @available(macOS 13.0, *)
-    @objc func setLoginItem(_ sender: NSMenuItem) {
-        sender.state = sender.state == .on ? .off : .on
-        do {
-            if sender.state == .on { try SMAppService.mainApp.register() }
-            if sender.state == .off { try SMAppService.mainApp.unregister() }
-        }catch{
-            print("Failed to \(sender.state == .on ? "enable" : "disable") launch at login: \(error.localizedDescription)")
-        }
-    }
 }

@@ -118,7 +118,7 @@ class RecorderPlayerModel: NSObject, ObservableObject {
     func cleanup() {
         removeObservers()
         playerView.player?.pause()
-        playerView.player = nil // 移除 player 对象
+        playerView.player = nil
     }
 }
 

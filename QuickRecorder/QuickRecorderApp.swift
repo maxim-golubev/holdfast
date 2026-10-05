@@ -13,7 +13,6 @@ import ScreenCaptureKit
 import UserNotifications
 import KeyboardShortcuts
 import ServiceManagement
-import CoreMediaIO
 import VideoToolbox
 
 var scPerm = false
@@ -27,8 +26,6 @@ var hideScreenMagnifier = false
 let updateTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 let mousePointer = NSWindow(contentRect: NSRect(x: -70, y: -70, width: 70, height: 70), styleMask: [.borderless], backing: .buffered, defer: false)
 let screenMagnifier = NSWindow(contentRect: NSRect(x: -402, y: -402, width: 402, height: 348), styleMask: [.borderless], backing: .buffered, defer: false)
-let camWindow = NSPanel(contentRect: NSRect(x: 200, y: 200, width: 200, height: 200), styleMask: [.fullSizeContentView, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
-let deviceWindow = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 200, height: 200), styleMask: [.fullSizeContentView, .resizable], backing: .buffered, defer: false)
 let controlPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
 let countdownPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 120), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
 let previewWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 266, height: 156), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
@@ -80,7 +77,7 @@ struct QuickRecorderApp: App {
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, AVCaptureVideoDataOutputSampleBufferDelegate, UNUserNotificationCenterDelegate  {
+class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, UNUserNotificationCenterDelegate {
     /// The delegate SwiftUI created for `@NSApplicationDelegateAdaptor`, which is the one the app's events and the
     /// stream's callbacks go to. `NSApp.delegate` is a SwiftUI object that forwards to it, so it is noted when it is created.
     private static var created: AppDelegate?
@@ -94,10 +91,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     
     var filter: SCContentFilter?
-    var isCameraReady = false
-    var isPresenterON = false
     var isResizing = false
-    var presenterType = "OFF"
     var frameQueue = FixedLengthArray<CMTime>(maxLength: 20)
     private var isMagnifierCapturing = false
     private var pendingMagnifierEvent: NSEvent?
@@ -118,7 +112,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     @AppStorage("withAlpha")        var withAlpha: Bool = false
     @AppStorage("saveDirectory")    var saveDirectory: String?
     @AppStorage("countdown")        var countdown: Int = 0
-    @AppStorage("poSafeDelay")      var poSafeDelay: Int = 1
     @AppStorage("highlightMouse")   var highlightMouse: Bool = false
     @AppStorage("includeMenuBar")   var includeMenuBar: Bool = true
     @AppStorage("hideDesktopFiles") var hideDesktopFiles: Bool = false
@@ -127,7 +120,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     @AppStorage("hideSelf")         var hideSelf: Bool = true
     @AppStorage("preventSleep")     var preventSleep: Bool = true
     @AppStorage("showPreview")      var showPreview: Bool = true
-    @AppStorage("background")       var background: BackgroundType = .wallpaper
     @AppStorage("showMouse")        var showMouse: Bool = true
     @AppStorage("frameRate")        var frameRate: Int = 30
     @AppStorage("videoQuality")     var videoQuality: Double = 0.7
@@ -226,10 +218,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if SCContext.state == .idle && !SCContext.isRecovering && !AVOutputClass.shared.isWritingFile { return .terminateNow }
+        if SCContext.state == .idle && !SCContext.isRecovering { return .terminateNow }
         // A recording is starting, running or still being saved. Quitting now would leave a file that was not closed,
         // or one under its temporary name with unmixed audio, so the recording is stopped (a no-op when it already
-        // is; in the idle state this stops an iDevice recording) and the app quits when its files are final.
+        // is) and the app quits when its files are final.
         // Meanwhile the main run loop keeps running.
         SCContext.stopRecording()
         if !quitWhenIdle {
@@ -241,9 +233,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             // And not before the report of a failure has been seen: the notification alone may be off or silenced.
             SCContext.whenIdle {
                 SCContext.whenRecovered {
-                    AVOutputClass.shared.whenFileClosed {
-                        SCContext.whenAlertsDismissed { NSApp.reply(toApplicationShouldTerminate: true) }
-                    }
+                    SCContext.whenAlertsDismissed { NSApp.reply(toApplicationShouldTerminate: true) }
                 }
             }
         }
@@ -287,7 +277,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             defaults: [
                 "audioFormat": AudioFormat.aac.rawValue,
                 "audioQuality": AudioQuality.high.rawValue,
-                "background": BackgroundType.wallpaper.rawValue,
                 "frameRate": 30,
                 "highRes": 2,
                 "hideSelf": true,
@@ -298,7 +287,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
                 "countdown": 0,
                 "videoFormat": VideoFormat.mp4.rawValue,
                 "encoder": Encoder.preferred.rawValue,
-                "poSafeDelay": 1,
                 "saveDirectory": userDesktop as NSString,
                 "showMouse": true,
                 "recordMic": false,
@@ -323,15 +311,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             if let error = error { print("Notification authorization denied: \(error.localizedDescription)") }
         }
         
-        var allow : UInt32 = 1
-        let dataSize : UInt32 = 4
-        let zero : UInt32 = 0
-        var prop = CMIOObjectPropertyAddress(
-            mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyAllowScreenCaptureDevices),
-            mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
-            mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain))
-        CMIOObjectSetPropertyData(CMIOObjectID(kCMIOObjectSystemObject), &prop, zero, nil, dataSize, &allow)
-
         statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusBarItem.button?.image = NSImage()
 
@@ -347,24 +326,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         screenMagnifier.isReleasedWhenClosed = false
         screenMagnifier.backgroundColor = NSColor.clear
         
-        camWindow.title = "Camera Overlayer".local
-        camWindow.level = .floating
-        camWindow.isReleasedWhenClosed = false
-        camWindow.isMovableByWindowBackground = true
-        camWindow.backgroundColor = NSColor.clear
-        camWindow.collectionBehavior = [.canJoinAllSpaces]
-        
         countdownPanel.title = "Countdown Panel".local
         countdownPanel.level = .floating
         countdownPanel.isReleasedWhenClosed = false
         countdownPanel.isMovableByWindowBackground = false
         countdownPanel.backgroundColor = NSColor.clear
-        
-        deviceWindow.title = "iDevice Overlayer".local
-        deviceWindow.level = .floating
-        deviceWindow.isReleasedWhenClosed = false
-        deviceWindow.isMovableByWindowBackground = true
-        deviceWindow.backgroundColor = NSColor.clear
         
         controlPanel.title = "Recording Controller".local
         controlPanel.level = .floating
@@ -434,7 +400,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             let w2 = w1.filter({ !$0.title.contains(".qma") })
             if (!w1.isEmpty && w2.isEmpty) || w1.isEmpty {
                 let offset = (!showOnDock && !showMenubar) ? 127 : 0
-                let width = 928
+                let width = 801
                 let mainPanel = EscPanel(contentRect: NSRect(x: 0, y: 0, width: width + offset, height: 100), styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
                 mainPanel.contentView = NSHostingView(rootView: ContentView())
                 mainPanel.title = "QuickRecorder".local
@@ -506,14 +472,9 @@ func getStatusBarWidth() -> CGFloat {
     @AppStorage("miniStatusBar") var miniStatusBar: Bool = false
     // "Saving…" or "Finishing… 100%" while a stopped recording is being closed and post-processed
     if SCContext.isSaving { return 124.0 }
-    var width = 158.0
-    switch SCContext.streamType {
     // "Recovering… 100%" while a recording of an earlier run is being mixed
-    case nil: return SCContext.showsRecovery ? 136.0 : 36.0
-    case .idevice: width = miniStatusBar ? 68.0 : 138.0
-    case .systemaudio: width = miniStatusBar ? 68.0 : 114.0
-    default: width = miniStatusBar ? 78.0 : 158.0
-    }
+    if SCContext.streamType == nil { return SCContext.showsRecovery ? 136.0 : 36.0 }
+    let width = miniStatusBar ? 68.0 : 114.0
     // The widths above are made for a timer that reads "07:05". From the first hour on it reads "1:07:05",
     // and every character more needs its own room (15 pt monospaced digits are about 9 pt wide).
     let extraCharacters = max(0, SCContext.getRecordingLength().count - 5)
@@ -726,6 +687,4 @@ enum Encoder: String {
     }()
 }
 
-enum StreamType: Int { case screen, window, windows, application, screenarea, systemaudio, idevice, camera }
-
-enum BackgroundType: String { case wallpaper, clear, black, white, red, green, yellow, orange, gray, blue, custom }
+enum StreamType: Int { case screen, window, windows, application, screenarea, systemaudio }

@@ -26,26 +26,7 @@ struct WinSelector: View {
     var body: some View {
         ZStack {
             VStack(spacing: 15) {
-                if #available(macOS 15, *) {
-                    Text("Please select the window(s) to record").offset(y: 12)
-                } else {
-                    HStack {
-                        Spacer()
-                        Text("Please select the window(s) to record")
-                        Spacer()
-                        HoverButton(action: {
-                            WindowHighlighter.shared.registerMouseMonitor(mode: 2)
-                        }, label: {
-                            ZStack {
-                                Color.white.opacity(0.0001)
-                                Image("window.select")
-                                    .resizable().scaledToFit()
-                            }.frame(width: 20, height: 20)
-                        })
-                        .help("Select Window Directly")
-                        .padding(.leading, -20)
-                    }.padding(.horizontal, 10)
-                }
+                Text("Please select the window(s) to record").offset(y: 12)
                 TabView(selection: $selectedTab) {
                     let allApps = viewModel.windowThumbnails.sorted(by: { $0.key.displayID < $1.key.displayID })
                     ForEach(allApps, id: \.key) { element in
@@ -314,7 +295,7 @@ class WindowSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
                             streamConfiguration.height = Int(height * factor)
                             streamConfiguration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(1))
                             streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA
-                            if #available(macOS 13, *) { streamConfiguration.capturesAudio = false }
+                            streamConfiguration.capturesAudio = false
                             streamConfiguration.showsCursor = false
                             streamConfiguration.scalesToFit = true
                             streamConfiguration.queueDepth = 3

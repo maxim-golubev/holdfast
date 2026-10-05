@@ -148,16 +148,11 @@ class SCContext {
     /// holds one of the stream's surfaces, and a full-size copy would sit in memory for the whole recording.
     static var firstFrame: NSImage?
     static var autoStop = 0
-    static var recordCam = ""
-    static var recordDevice = ""
-    static var captureSession: AVCaptureSession!
-    static var previewSession: AVCaptureSession!
     static var filter: SCContentFilter?
     static var isMagnifierEnabled = false
     static var saveFrame = false
     static var isPaused = false
     static var isResume = false
-    static var isSkipFrame = false
     /// The one queue all stream outputs are delivered on. The writer inputs and the timing state below are only used on it while capturing.
     static let sampleQueue = DispatchQueue(label: "QuickRecorder.samples")
     static var isCapturing = false
@@ -195,7 +190,6 @@ class SCContext {
     /// How much of a recording an unclosed .mp4, .mov or .m4a file can be missing at its end
     static let fragmentInterval = CMTime(seconds: 10, preferredTimescale: 600)
     static var screenArea: NSRect?
-    static var backgroundColor: CGColor = CGColor.black
     /// The recording in progress, set when it starts and taken by `stopRecording()`. Only assigned inside `sampleQueue.sync`.
     static var recording: RecordingContext?
     /// Where the recording side is. Main thread only, and only changed by `beginStart`, `endFailedStart`,
@@ -259,16 +253,16 @@ class SCContext {
                 default:
                     print("Error: failed to fetch available content: ".local, error.localizedDescription)
                 }
-                completion(nil) // 在错误情况下返回 nil
+                completion(nil)
                 return
             }
 
             availableContent = content
             if let displays = content?.displays, !displays.isEmpty {
-                completion(content) // 返回成功获取的 content
+                completion(content)
             } else {
                 print("There needs to be at least one display connected!".local)
-                completion(nil) // 如果没有显示器连接，则返回 nil
+                completion(nil)
             }
         }
     }
@@ -298,8 +292,6 @@ class SCContext {
             return $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
             && title != "Mouse Pointer".local
             && title != "Screen Magnifier".local
-            && title != "Camera Overlayer".local
-            && title != "iDevice Overlayer".local
         })
     }
     
@@ -397,24 +389,6 @@ class SCContext {
         return audioSettings
     }
     
-    static func getBackgroundColor() -> CGColor {
-        guard let color = ud.string(forKey: "background") else { return CGColor.black  }
-        if color == BackgroundType.wallpaper.rawValue { return CGColor.black }
-        switch color {
-            case "clear": backgroundColor = CGColor.clear
-            case "black": backgroundColor = CGColor.black
-            case "white": backgroundColor = CGColor.white
-            case "gray": backgroundColor = NSColor.systemGray.cgColor
-            case "yellow": backgroundColor = NSColor.systemYellow.cgColor
-            case "orange": backgroundColor = NSColor.systemOrange.cgColor
-            case "green": backgroundColor = NSColor.systemGreen.cgColor
-            case "blue": backgroundColor = NSColor.systemBlue.cgColor
-            case "red": backgroundColor = NSColor.systemRed.cgColor
-            default: backgroundColor = ud.cgColor(forKey: "userColor") ?? CGColor.black
-        }
-        return backgroundColor
-    }
-    
     static func performMicCheck() async {
         guard ud.bool(forKey: "recordMic") == true else { return }
         if await AVCaptureDevice.requestAccess(for: .audio) { return }
@@ -471,26 +445,6 @@ class SCContext {
         }
     }
     
-    static func requestCameraPermission() {
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        switch status {
-        case .authorized, .restricted, .notDetermined:
-            break
-        case .denied:
-            onMainRunLoop {
-                let alert = createAlert(title: "Permission Required",
-                                                           message: "QuickRecorder needs this permission to record your camera or mobile device.",
-                                                           button1: "Open Settings",
-                                                           button2: "Cancel")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    openPrivacySettings("Privacy_Camera")
-                }
-            }
-        @unknown default:
-            break
-        }
-    }
-    
     static func getWallpaper(_ display: SCDisplay) -> NSImage? {
         guard let screen = display.nsScreen else { return nil }
         guard let url = NSWorkspace.shared.desktopImageURL(for: screen) else { return nil }
@@ -514,14 +468,6 @@ class SCContext {
         let total = interval.isFinite ? max(0, Int(interval)) : 0
         let hours = total / 3600, minutes = total % 3600 / 60, seconds = total % 60
         return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, seconds) : String(format: "%02d:%02d", minutes, seconds)
-    }
-    
-    static func isCameraRunning() -> Bool {
-        var preview = false
-        var capture = false
-        if let session = previewSession { preview = session.isRunning }
-        if let session = captureSession { capture = session.isRunning }
-        return (preview || capture)
     }
     
     static func pauseRecording() {
@@ -635,7 +581,7 @@ class SCContext {
             window = nil
             screen = nil
             closeAreaOverlay()
-            closeRecordingWindows()
+            controlPanel.close()
             endFailedStart()
         }
         if Thread.isMainThread { reset() } else { DispatchQueue.main.async(execute: reset) }
@@ -644,18 +590,6 @@ class SCContext {
     /// Main thread. The dashed frame around the recorded area, which a selector puts up before it asks for the start.
     static func closeAreaOverlay() {
         for w in NSApp.windows where w.title == "Area Overlayer".local { w.close() }
-    }
-    
-    /// Main thread. The camera overlays that accompany a recording, and the floating controller unless it is to
-    /// stay for the "Saving…" pill (it is closed when the state is idle again).
-    private static func closeRecordingWindows(controller: Bool = true) {
-        if controller { controlPanel.close() }
-        if isCameraRunning() {
-            if camWindow.isVisible { camWindow.close() }
-            if deviceWindow.isVisible { deviceWindow.close() }
-            if let preview = previewSession { preview.stopRunning() }
-            if let capture = captureSession { capture.stopRunning() }
-        }
     }
     
     /// Runs `block` on the main thread as a run loop block. For everything that shows a modal alert: a modal alert
@@ -707,8 +641,7 @@ class SCContext {
     static func canStart() -> Bool {
         switch state {
         case .idle:
-            // Not while a device is being recorded, which has no state of its own
-            return streamType == nil
+            return true
         case .starting, .recording:
             return false
         case .stopping, .finalizing:
@@ -767,7 +700,6 @@ class SCContext {
     static func stopRecording(only id: UUID? = nil, earlyReason: String? = nil) {
         switch state {
         case .idle:
-            if streamType == .idevice && id == nil { AVOutputClass.shared.stopRecording() }
             return
         case .starting:
             if pendingStop == nil { pendingStop = (id, earlyReason) }
@@ -790,15 +722,13 @@ class SCContext {
         state = .stopping
         DiskSpace.stopMonitoring()
         autoStop = 0
-        recordCam = ""
-        recordDevice = ""
         isMagnifierEnabled = false
         mousePointer.orderOut(nil)
         screenMagnifier.orderOut(nil)
         AppDelegate.shared.stopGlobalMouseMonitor()
         AppDelegate.shared.stopRecordingMouseMonitor()
         closeAreaOverlay()
-        closeRecordingWindows(controller: false)
+        // The floating controller stays for the "Saving…" pill; it is closed when the state is idle again
         hideMousePointer = false
         PopoverState.shared.isPaused = false
         window = nil
@@ -985,7 +915,6 @@ class SCContext {
             await completion { done in finishAudioRecording(recording, completion: done) }
         }
         SleepPreventer.shared.allowSleep()
-        AppDelegate.shared.presenterType = "OFF"
         // A frame that arrived while the capture was being stopped may have set it again
         startTime = nil
         state = .idle
@@ -1355,11 +1284,6 @@ class SCContext {
         try await lameEncoder.encode(priority: .userInitiated)
     }
     
-    static func getCameras() -> [AVCaptureDevice] {
-        let discoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .externalUnknown], mediaType: .video, position: .unspecified)
-        return discoverySession.devices
-    }
-    
     static func getMicrophone() -> [AVCaptureDevice] {
         let discoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInMicrophone, .microphone], mediaType: .audio, position: .unspecified)
         return discoverySession.devices.filter({ !$0.localizedName.contains("CADefaultDeviceAggregate") })
@@ -1404,11 +1328,6 @@ class SCContext {
         }
         ud.set(name, forKey: "micDevice")
         return true
-    }
-    
-    static func getiDevice() -> [AVCaptureDevice] {
-        let discoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.externalUnknown], mediaType: .muxed, position: .unspecified)
-        return discoverySession.devices
     }
     
     /// Returns the buffer with `offset` subtracted from its timestamps, or the buffer itself when there is nothing to shift

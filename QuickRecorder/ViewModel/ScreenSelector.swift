@@ -202,7 +202,7 @@ class ScreenSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
                         streamConfiguration.height = Int(self.allScreens[index].frame.height)
                         streamConfiguration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(1))
                         streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA
-                        if #available(macOS 13, *) { streamConfiguration.capturesAudio = false }
+                        streamConfiguration.capturesAudio = false
                         streamConfiguration.showsCursor = false
                         streamConfiguration.queueDepth = 3
                         let stream = SCStream(filter: contentFilter, configuration: streamConfiguration, delegate: self)

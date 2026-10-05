@@ -204,7 +204,6 @@ struct OptionsView: View {
     @AppStorage("showMouse")      private var showMouse: Bool = true
     @AppStorage("recordMic")      private var recordMic: Bool = false
     @AppStorage("recordWinSound") private var recordWinSound: Bool = true
-    @AppStorage("background")     private var background: BackgroundType = .wallpaper
     @AppStorage("highRes")        private var highRes: Int = 2
     @AppStorage("recordHDR")      private var recordHDR: Bool = false
     
@@ -243,28 +242,12 @@ struct OptionsView: View {
                 Divider().frame(height: 50)
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Quality")
-                    Text("Background")
                 }.padding(.leading, 8)
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("", selection: $videoQuality) {
                         Text("High").tag(1.0)
                         Text("Medium").tag(0.7)
                         Text("Low").tag(0.3)
-                    }
-                    .buttonStyle(.borderless)
-                    .frame(minWidth: 10)
-                    Picker("", selection: $background) {
-                        Text("Wallpaper").tag(BackgroundType.wallpaper)
-                        if ud.bool(forKey: "withAlpha") { Text("Transparent").tag(BackgroundType.clear) }
-                        Text("Black").tag(BackgroundType.black)
-                        Text("White").tag(BackgroundType.white)
-                        Text("Gray").tag(BackgroundType.gray)
-                        Text("Yellow").tag(BackgroundType.yellow)
-                        Text("Orange").tag(BackgroundType.orange)
-                        Text("Green").tag(BackgroundType.green)
-                        Text("Blue").tag(BackgroundType.blue)
-                        Text("Red").tag(BackgroundType.red)
-                        Text("Custom").tag(BackgroundType.custom)
                     }
                     .buttonStyle(.borderless)
                     .frame(minWidth: 10)

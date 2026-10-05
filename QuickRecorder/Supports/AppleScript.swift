@@ -205,7 +205,7 @@ class stopRecording: NSScriptCommand {
 class setPreferences: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         // Settings are read while a recording starts and runs. One that is only being saved has its own copy.
-        if SCContext.state == .starting || SCContext.state == .recording || SCContext.streamType == .idevice {
+        if SCContext.state == .starting || SCContext.state == .recording {
             scriptErrorNumber = errOSAGeneralError
             scriptErrorString = "Settings cannot be changed while recording."
             return nil
