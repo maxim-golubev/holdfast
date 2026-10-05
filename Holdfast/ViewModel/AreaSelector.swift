@@ -150,13 +150,21 @@ struct AreaSelector: View {
     }
     
     func startRecording() {
-        guard let area = ScreenContent.screenArea, let nsScreen = screen.nsScreen else { return }
+        guard let area = ScreenContent.screenArea, area.width >= 1, area.height >= 1 else {
+            UserNotice.showAlertLater(title: "Failed to Record".local, message: "Select an area to record first.".local)
+            return
+        }
+        guard let nsScreen = screen.nsScreen else {
+            UserNotice.showAlertLater(title: "Failed to Record".local, message: "The display of the area is not connected any more.".local)
+            return
+        }
         closeAllWindow()
         appDelegate.stopAreaSelectorMonitor()
         // The area is relative to its screen
         appDelegate.showAreaOverlay(around: area.offsetBy(dx: nsScreen.frame.minX, dy: nsScreen.frame.minY), border: 4)
+        // The area as it is now: a selector opened during the countdown has an area of its own
         appDelegate.createCountdownPanel(screen: screen) {
-            RecorderController.shared.start(type: .screenarea, display: screen, windows: nil, applications: nil, autoStop: autoStop)
+            RecorderController.shared.start(type: .screenarea, display: screen, windows: nil, applications: nil, autoStop: autoStop, area: area)
         }
     }
 }
@@ -172,10 +180,14 @@ class ScreenshotOverlayView: NSView {
     var dragIng: Bool = false
     var activeHandle: ResizeHandle = .none
     var lastMouseLocation: NSPoint?
+    /// The area when the button went down, which a press that draws no area of its own keeps
+    private var selectionAtPress: NSRect?
     var maxFrame: NSRect?
     var size: NSSize
     var force: Bool
 
+    /// The smallest side of an area, whether resized with the handles or drawn
+    let minimumSide: CGFloat = 20
     let controlPointSize: CGFloat = 10.0
     let controlPointColor: NSColor = NSColor.systemYellow
 
@@ -314,6 +326,7 @@ class ScreenshotOverlayView: NSView {
         let location = convert(event.locationInWindow, from: nil)
         initialLocation = location
         lastMouseLocation = location
+        selectionAtPress = selectionRect
         activeHandle = handleForPoint(location)
         if let rect = selectionRect, NSPointInRect(location, rect) { dragIng = true }
         isResizing = true
@@ -335,31 +348,31 @@ class ScreenshotOverlayView: NSView {
 
             switch activeHandle {
             case .topLeft:
-                newRect.origin.x = min(newRect.origin.x + newRect.size.width - 20, newRect.origin.x + deltaX)
-                newRect.size.width = max(20, newRect.size.width - deltaX)
-                newRect.size.height = max(20, newRect.size.height + deltaY)
+                newRect.origin.x = min(newRect.origin.x + newRect.size.width - minimumSide, newRect.origin.x + deltaX)
+                newRect.size.width = max(minimumSide, newRect.size.width - deltaX)
+                newRect.size.height = max(minimumSide, newRect.size.height + deltaY)
             case .top:
-                newRect.size.height = max(20, newRect.size.height + deltaY)
+                newRect.size.height = max(minimumSide, newRect.size.height + deltaY)
             case .topRight:
-                newRect.size.width = max(20, newRect.size.width + deltaX)
-                newRect.size.height = max(20, newRect.size.height + deltaY)
+                newRect.size.width = max(minimumSide, newRect.size.width + deltaX)
+                newRect.size.height = max(minimumSide, newRect.size.height + deltaY)
             case .right:
-                newRect.size.width = max(20, newRect.size.width + deltaX)
+                newRect.size.width = max(minimumSide, newRect.size.width + deltaX)
             case .bottomRight:
-                newRect.origin.y = min(newRect.origin.y + newRect.size.height - 20, newRect.origin.y + deltaY)
-                newRect.size.width = max(20, newRect.size.width + deltaX)
-                newRect.size.height = max(20, newRect.size.height - deltaY)
+                newRect.origin.y = min(newRect.origin.y + newRect.size.height - minimumSide, newRect.origin.y + deltaY)
+                newRect.size.width = max(minimumSide, newRect.size.width + deltaX)
+                newRect.size.height = max(minimumSide, newRect.size.height - deltaY)
             case .bottom:
-                newRect.origin.y = min(newRect.origin.y + newRect.size.height - 20, newRect.origin.y + deltaY)
-                newRect.size.height = max(20, newRect.size.height - deltaY)
+                newRect.origin.y = min(newRect.origin.y + newRect.size.height - minimumSide, newRect.origin.y + deltaY)
+                newRect.size.height = max(minimumSide, newRect.size.height - deltaY)
             case .bottomLeft:
-                newRect.origin.y = min(newRect.origin.y + newRect.size.height - 20, newRect.origin.y + deltaY)
-                newRect.origin.x = min(newRect.origin.x + newRect.size.width - 20, newRect.origin.x + deltaX)
-                newRect.size.width = max(20, newRect.size.width - deltaX)
-                newRect.size.height = max(20, newRect.size.height - deltaY)
+                newRect.origin.y = min(newRect.origin.y + newRect.size.height - minimumSide, newRect.origin.y + deltaY)
+                newRect.origin.x = min(newRect.origin.x + newRect.size.width - minimumSide, newRect.origin.x + deltaX)
+                newRect.size.width = max(minimumSide, newRect.size.width - deltaX)
+                newRect.size.height = max(minimumSide, newRect.size.height - deltaY)
             case .left:
-                newRect.origin.x = min(newRect.origin.x + newRect.size.width - 20, newRect.origin.x + deltaX)
-                newRect.size.width = max(20, newRect.size.width - deltaX)
+                newRect.origin.x = min(newRect.origin.x + newRect.size.width - minimumSide, newRect.origin.x + deltaX)
+                newRect.size.width = max(minimumSide, newRect.size.width - deltaX)
             default:
                 break
             }
@@ -408,6 +421,12 @@ class ScreenshotOverlayView: NSView {
         activeHandle = .none
         dragIng = false
         isResizing = false
+        // A press that barely moved draws an area too small to record, or none: the one from before stays
+        if let rect = selectionRect, rect.width < minimumSide || rect.height < minimumSide, let before = selectionAtPress {
+            selectionRect = before
+            AppSettings.areaWidth = Int(before.width)
+            AppSettings.areaHeight = Int(before.height)
+        }
         if let rect = selectionRect {
             ScreenContent.screenArea = rect
         }

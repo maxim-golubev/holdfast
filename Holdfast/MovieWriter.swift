@@ -108,6 +108,10 @@ final class MovieWriter {
 
     /// Creates the video file and its tracks. When it throws, the caller discards what was created (`cancel`).
     func prepareVideo(width: Int, height: Int) throws {
+        // AVAssetWriterInput raises an exception, which ends the app, for a picture without width or height
+        guard width >= 1, height >= 1 else {
+            throw RecordingError(String(format: "The picture to record is %d x %d pixels: select a larger area.", width, height))
+        }
         let writer = try AVAssetWriter(outputURL: recording.rawURL, fileType: recording.fileType)
         self.writer = writer
         // The file is written in fragments, so a crash, a kill or a power loss costs the last few seconds instead of

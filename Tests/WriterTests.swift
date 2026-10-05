@@ -309,6 +309,16 @@ func writerTests() async {
         expect(finished.writer == nil && !finished.sessionStarted, "a recording that never created its file has none to save")
     }
 
+    await test("Writer: a picture without width or height is refused before any file exists") {
+        for (width, height) in [(0, 0), (0, 240), (320, 0)] {
+            let run = try TestRecording(folder: "writer-empty-\(width)x\(height)", microphone: false)
+            let message = await expectThrows("\(width) x \(height)") { try run.writer.prepareVideo(width: width, height: height) }
+            expect(message.contains("larger area"), "the reason says what to do: \(message)")
+            expect(!FileManager.default.fileExists(atPath: run.recording.rawURL.path), "no file for \(width) x \(height)")
+            expect(run.writer.finish().writer == nil, "nothing to close for \(width) x \(height)")
+        }
+    }
+
     await test("Writer: an audio-only recording with a microphone is a package of two files of the same length") {
         let run = try TestRecording(folder: "writer-audio", audioOnly: true, settings: ["remuxAudio": false])
         let writer = run.writer

@@ -63,12 +63,13 @@ struct HighlightMask: View {
         closeAllWindow()
         switch WindowHighlighter.shared.Mode {
         case 2:
-            guard let screen = display, let nsScreen = display?.nsScreen, var area = window?.frame else { return }
-            area = CGRectTransform(cgRect: area)
-            ScreenContent.screenArea = NSRect(x: area.origin.x - nsScreen.frame.minX, y: area.origin.y - nsScreen.frame.minY, width:area.width, height: area.height)
-            appDelegate.showAreaOverlay(around: area, border: 3)
+            guard let screen = display, let nsScreen = display?.nsScreen, let frame = window?.frame else { return }
+            let onDesktop = CGRectTransform(cgRect: frame)
+            // Relative to its screen, as the area selector gives it
+            let area = onDesktop.offsetBy(dx: -nsScreen.frame.minX, dy: -nsScreen.frame.minY)
+            appDelegate.showAreaOverlay(around: onDesktop, border: 3)
             appDelegate.createCountdownPanel(screen: screen) {
-                RecorderController.shared.start(type: .screenarea, display: display, windows: nil, applications: nil, autoStop: autoStop)
+                RecorderController.shared.start(type: .screenarea, display: screen, windows: nil, applications: nil, autoStop: autoStop, area: area)
             }
         default:
             if let d = display, let w = window {

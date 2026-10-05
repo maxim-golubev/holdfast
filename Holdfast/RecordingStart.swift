@@ -27,8 +27,9 @@ extension RecorderController {
     /// here. It does nothing unless the recorder is idle (`begin`), so a second start while one is starting,
     /// recording or still being saved cannot get in.
     /// `recordMic` overrides the "recordMic" setting for this recording only. `autoStop` is the number of minutes
-    /// after which this recording stops by itself (0: never); it is not set anywhere else.
-    func start(type streamType: StreamType, display: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil, autoStop: Int = 0) {
+    /// after which this recording stops by itself (0: never); it is not set anywhere else. `area` is what an area
+    /// recording captures, relative to `display`.
+    func start(type streamType: StreamType, display: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false, recordMic micOverride: Bool? = nil, autoStop: Int = 0, area: NSRect? = nil) {
         guard let session = begin(streamType, autoStop: autoStop) else { return }
         // Every reason not to start ends here, with one alert
         func failToRecord(_ message: String) {
@@ -63,11 +64,12 @@ extension RecorderController {
             return failToRecord("No application to record was given.".local)
         }
 
+        if streamType == .screenarea && area == nil { return failToRecord("No area to record was given.".local) }
         guard let screen = listedDisplay ?? ScreenContent.getSCDisplayWithMouse() else {
             return failToRecord("No display to record was found.".local)
         }
         var target = CaptureTarget(type: streamType, display: screen, areaDisplay: listedDisplay, windows: listedWindows,
-                                   applications: listedApplications, area: ScreenContent.screenArea)
+                                   applications: listedApplications, area: area)
         if target.type == .screenarea, let area = target.area, let name = screen.nsScreen?.localizedName {
             ScreenContent.saveArea(area, forScreen: name)
         }

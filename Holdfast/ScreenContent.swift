@@ -10,9 +10,10 @@ import Foundation
 import ScreenCaptureKit
 
 /// What can be recorded: the list of screens, windows and applications ScreenCaptureKit reports, the screen
-/// recording permission that list depends on, and the area the area selector chose.
+/// recording permission that list depends on, and the area selector's current selection.
 enum ScreenContent {
-    /// The area the area selector chose, which the next area recording captures
+    /// The area selected in the area selector, relative to its screen. Start hands it to the recording, which
+    /// keeps its own copy: a selector opened during the countdown changes only this.
     static var screenArea: NSRect?
     /// The screens, windows and applications of the last fetch. Assigned and read on the main thread only.
     static var availableContent: SCShareableContent?
