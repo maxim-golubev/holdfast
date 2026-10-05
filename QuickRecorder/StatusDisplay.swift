@@ -48,7 +48,7 @@ struct StatusDisplay: Equatable {
         switch input.state {
         case .starting:
             kind = .starting
-            title = "Starting…".local
+            title = "Starting".local
             line = "The recording is starting".local
             detail = line
         case .recording:
@@ -76,19 +76,21 @@ struct StatusDisplay: Equatable {
             detail = line
         case .stopping, .finalizing:
             kind = .saving
+            // One title for the whole of it: a title that changes its length makes the item jump in the menu bar.
+            // How far the mix is stands in the menu's status line.
+            title = "Saving".local
             if let progress = input.mixProgress {
-                title = StatusDisplay.percent("Finishing…".local, progress)
-                line = "Mixing the audio tracks of the recording".local
+                line = StatusDisplay.percent("Mixing the audio tracks of the recording".local, progress)
             } else {
-                title = "Saving…".local
                 line = "Saving the recording".local
             }
             detail = line + ". " + "A new one can be started when this is done.".local
         case .idle:
             if input.isRecovering {
                 kind = .recovering
-                title = input.recoveryProgress.map { StatusDisplay.percent("Recovering…".local, $0) } ?? "Recovering…".local
-                line = "Recovering a recording that was not finished".local
+                title = "Recovering".local
+                let recovering = "Recovering a recording that was not finished".local
+                line = input.recoveryProgress.map { StatusDisplay.percent(recovering, $0) } ?? recovering
                 detail = "A recording that an earlier run of QuickRecorder did not finish is being mixed. Quitting waits for it.".local
             } else {
                 kind = .idle
@@ -125,7 +127,7 @@ struct StatusDisplay: Equatable {
     var accessibilityLabel: String { "QuickRecorder: " + line }
 
     private static func percent(_ text: String, _ fraction: Double) -> String {
-        return text + " \(Int(min(1, max(0, fraction)) * 100))%"
+        return text + " — \(Int(min(1, max(0, fraction)) * 100))%"
     }
 }
 

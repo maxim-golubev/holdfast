@@ -41,6 +41,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var shown: StatusDisplay?
     private var menuIsOpen = false
     private var menuLayout: Layout?
+    /// The widest the item has been since it last was idle
+    private var heldLength: CGFloat = 0
 
     private var recorder: RecorderController { RecorderController.shared }
 
@@ -51,6 +53,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
         item.menu = menu
+        // The symbol stays where it is when the text next to it changes
+        item.button?.alignment = .left
         self.item = item
         refresh()
     }
@@ -67,7 +71,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             if display.kind != shown?.kind { button.image = StatusItemController.image(for: display) }
             // A symbol this system does not have must not leave an empty, unclickable item
             let title = button.image == nil && display.title.isEmpty ? "QuickRecorder" : display.title
-            button.attributedTitle = StatusItemController.attributed(title)
+            let text = StatusItemController.attributed(title)
+            // The width is set before the text, and never made smaller while there is something to show: an item
+            // that is resized for every new text shows the text cut off for a moment and pushes its neighbours about
+            if display.kind == .idle {
+                heldLength = 0
+                item.length = NSStatusItem.variableLength
+            } else {
+                let symbolWidth = button.image?.size.width ?? 0
+                let needed = (symbolWidth + (title.isEmpty ? 0 : 5 + text.size().width) + 14).rounded(.up)
+                heldLength = max(heldLength, needed)
+                if item.length != heldLength { item.length = heldLength }
+            }
+            button.attributedTitle = text
             button.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
             button.toolTip = display.detail
             button.setAccessibilityLabel(display.accessibilityLabel)
@@ -108,10 +124,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         NSAttributedString(string: title, attributes: [.font: titleFont, .baselineOffset: titleBaselineOffset])
     }
 
-    /// Moves the text so its digits sit on the symbol's centre line
+    /// Puts the middle of the digits on the menu bar's centre line, a whole pixel step from where AppKit sets them
     private static let titleBaselineOffset: CGFloat = -0.5
 
     private static func image(for display: StatusDisplay) -> NSImage? {
+        if display.kind == .recording { return recordGlyph }
         guard let plain = NSImage(systemSymbolName: display.symbol, accessibilityDescription: nil) else { return nil }
         // Drawn at the size and weight of the text next to it
         let sized = NSImage.SymbolConfiguration(pointSize: titleFont.pointSize, weight: .medium, scale: .medium)
@@ -127,6 +144,24 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         // One colour for every layer of the symbol: a hierarchy of it turns parts of the symbol pale
         return symbol.withSymbolConfiguration(sized.applying(NSImage.SymbolConfiguration(paletteColors: [colour]))) ?? symbol
     }
+
+    /// The recording symbol, drawn to the pixel on a 2x display: a red ring 12.5 pt across with a dot, centred on
+    /// the line through the middle of the timer's digits. The SF Symbol of that size is an even number of pixels
+    /// tall and so sits half a pixel below the digits; every edge here falls on a pixel boundary instead.
+    private static let recordGlyph: NSImage = {
+        // The box has the height of the SF Symbols beside it, so the menu bar places it the same way
+        let image = NSImage(size: NSSize(width: 13, height: 16), flipped: false) { _ in
+            let centre = NSPoint(x: 6.25, y: 7.75)
+            NSColor.systemRed.set()
+            let ring = NSBezierPath(ovalIn: NSRect(x: centre.x - 5.5, y: centre.y - 5.5, width: 11, height: 11))
+            ring.lineWidth = 1.5
+            ring.stroke()
+            NSBezierPath(ovalIn: NSRect(x: centre.x - 3.25, y: centre.y - 3.25, width: 6.5, height: 6.5)).fill()
+            return true
+        }
+        image.accessibilityDescription = "Recording".local
+        return image
+    }()
 
     private func runTimer(_ wanted: Bool) {
         if wanted, timer == nil {
