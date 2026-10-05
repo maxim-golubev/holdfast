@@ -25,10 +25,11 @@ Holdfast/
                             capture, the writer, the monitor, pause, mute, the timer, and the only stop.
   RecordingContext.swift    The files and the settings a recording keeps until it is saved; AudioFormat's file
                             endings; RecordingError.
-  CaptureSource.swift       The SCContentFilter and SCStreamConfiguration for a target, the SCStream with its three
-                            outputs, and CaptureSample, which hands every buffer on to the sample queue.
-  MovieWriter.swift         The AVAssetWriter and its inputs (or the files of a sound-only recording), the timeline
-                            with its pauses, video frames, system audio placement, the fills, finish().
+  CaptureSource.swift       CaptureTarget, the SCContentFilter and SCStreamConfiguration for it, and the SCStream with
+                            its three outputs, which hand every buffer on as a CaptureSample; MicDevice and
+                            MicrophoneChoice, the microphone a recording asked for and the one it uses.
+  MovieWriter.swift         CaptureSample; the AVAssetWriter and its inputs (or the files of a sound-only recording),
+                            the timeline with its pauses, video frames, system audio placement, the fills, finish().
   MicConverter.swift        Microphone buffers of any format to 48 kHz stereo on a continuous timeline;
                             AudioSilence, the one source of silent audio.
   RecordingMonitor.swift    A 0.5 s timer on the sample queue: keeps every track advancing, and the watchdog.
@@ -52,7 +53,8 @@ Holdfast/
                             Settings, the shared recording controls, the cursor highlight and magnifier, the preview,
                             the trimmer, the .qma player.
 Tests/                      The logic tests (Tools/test.sh).
-Tools/                      build.sh, test.sh, release.sh, app_icon.sh, and the probes used for the measurements.
+Tools/                      build.sh, test.sh, release.sh, app_icon.sh; rt.sh, the real-device test helpers; the
+                            probes used for the measurements and tonegen, a test signal for both audio tracks.
 ```
 
 ## A recording, end to end
@@ -92,9 +94,10 @@ Tools/                      build.sh, test.sh, release.sh, app_icon.sh, and the 
 
 `RecordingSession.state` is `starting`, `recording`, `stopping` or
 `finalizing`; with no session the recorder is `idle`. Only three methods change
-it, all on the main thread: `enterRecording`, `abandonStart` and `stop`. The UI
-never decides from whether a stream exists. A second way into a state, or out
-of one, is how a recording gets lost between states.
+it, all on the main thread: `enterRecording`, `abandonStart` and `stop`. No
+transition is decided from whether a stream exists: the UI reads that only to
+show or refuse a panel, a shortcut or the cursor highlight. A second way into a
+state, or out of one, is how a recording gets lost between states.
 
 - **One start.** Every start, from any source, ends in
   `RecorderController.start`, which begins with `begin`. `begin` refuses unless
@@ -186,8 +189,8 @@ started, because an append before it fails the writer. Audio that arrives
 before the first frame is left out, and the monitor warns when no frame has
 come 5 s after the start. A pause takes the paused time out of every track
 alike: the first time placed after a resume sets `timeOffset` so the
-recording continues where it left off, and the offset never shrinks. `lastPTS` is the
-latest end of anything on the timeline, fills included.
+recording continues where it left off, and the offset never shrinks. `lastPTS`
+is the latest end of anything on the timeline, fills included.
 
 **Fragments.** The movie is written with `movieFragmentInterval` = 10 s, so a
 file that is never closed still opens, missing up to about the last 12 s (one
@@ -283,11 +286,12 @@ idle, because sleep during the mix would leave a temporary file.
 and the result is checked), then:
 
 - **The mix.** A video with system audio and a microphone, with "Mix
-  Microphone into the Main Track" on, is written as `<name>.recording.mp4`. With room for a second copy on the disk,
-  `RecordingMixer.mix` writes `<name>.mixing.mp4` in one pass: the video
-  samples are copied as they are, and an `AVAssetReaderAudioMixOutput` mixes the
-  two audio tracks into one. Anything but `completed` is a failure, and a
-  watchdog cancels when no sample has moved for 60 s.
+  Microphone into the Main Track" on, is written as `<name>.recording.mp4`.
+  With room for a second copy on the disk, `RecordingMixer.mix` writes
+  `<name>.mixing.mp4` in one pass: the video samples are copied as they are,
+  and an `AVAssetReaderAudioMixOutput` mixes the two audio tracks into one.
+  Anything but `completed` is a failure, and a watchdog cancels when no sample
+  has moved for 60 s.
 - **The check.** `verify` runs before any rename: one video and one audio
   track, the same duration to within 1 s, no track more than 1 s short, and in
   up to 30 one-second windows where the microphone has sound (above -60 dBFS)
@@ -383,15 +387,15 @@ from screen capture (`sharingType = .none`), so it is not in the recording.
 ## Tests
 
 `Tools/test.sh` compiles the pipeline sources with `Tests/*.swift` into one
-executable and runs it in a few seconds, without the app, a screen or a
+executable and runs it in under half a minute, without the app, a screen or a
 microphone. What it compiles uses no ScreenCaptureKit stream and no UI, which
 is why the seams exist: the session sees its capture and writer through the
 `RecordingCapture` and `RecordingWriter` protocols, the writer reports through
 `events` closures, the app side is the closures of `RecorderEnvironment`, and
 the monitor's `tick(at:)` takes its time as a parameter. The writer, converter,
 mixer and recovery tests write real files with AVFoundation from synthetic
-buffers and read them back; the session tests drive the state machine through
-a fake capture and writer. Settings are read from the argument domain, never
+buffers and read them back; the session tests drive the state machine through a
+fake capture and writer. Settings are read from the argument domain, never
 written, and the log is kept in memory.
 
 ## Key constants

@@ -76,9 +76,9 @@ Most of the work went into five problems:
 
 One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
-final file. 106 tests run in a few seconds without the app, a screen, or a
-microphone: they drive the real writer, converter, monitor, mixer and recovery
-with synthetic buffers and check the files they write.
+final file. 106 tests run in under half a minute without the app, a screen, or
+a microphone: they drive the real writer, converter, monitor, mixer and
+recovery with synthetic buffers and check the files they write.
 
 ## Limits
 
@@ -107,12 +107,13 @@ Requires an Apple Silicon Mac on macOS 15 or later.
 ## Build from source
 
 Requires Xcode 26 (the app icon is an Icon Composer document) and runs on macOS
-15 or later. The project signs with its owner's development team; set your own
-team and bundle identifier in Xcode to build it yourself.
+15 or later. The project signs with its owner's development team, so
+`Tools/build.sh` stops at code signing until you set your own team and bundle
+identifier in Xcode.
 
 ```sh
 Tools/build.sh      # Release build into build/, prints BUILD SUCCEEDED
-Tools/test.sh       # the tests, a few seconds, no app, screen or microphone
+Tools/test.sh       # the tests, under half a minute, no app, screen or microphone
 Tools/release.sh    # build/release/Holdfast-<version>.zip, signed and verified
 ```
 

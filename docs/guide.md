@@ -7,9 +7,9 @@ in [validation.md](validation.md).
 ## Before the first meeting
 
 Holdfast needs two permissions. macOS asks for **Screen Recording** at the
-first launch; allow it under **System Settings → Privacy & Security → Screen
-Recording** and open Holdfast again, since macOS applies it only to a new
-launch. A start without it explains this and quits. The **Microphone**
+first launch; allow it under **System Settings → Privacy & Security → Screen &
+System Audio Recording** and open Holdfast again, since macOS applies it only
+to a new launch. A start without it explains this and quits. The **Microphone**
 permission is asked for when **Record Microphone** is first turned on, or at the
 first start that wants the microphone.
 
@@ -41,11 +41,12 @@ Then check three settings once:
   area selector.
 
 **Settings → General → Countdown Before a Recording** shows that many seconds
-on screen before a start from the panel, the menu or a script; its **Cancel**
-button, the **Stop Recording** shortcut or `stop recording` calls the start
-off. A start is refused with a message while
-the previous recording is still being saved: a second recording can only start
-once the first one's files are final.
+on screen before a start from the panel, the menu, or a script command that
+names a screen, application or window; its **Cancel** button, the **Stop
+Recording** shortcut or `stop recording` calls the start off. The shortcuts
+that start a recording, and `record system audio`, begin at once. A start is
+refused with a message while the previous recording is still being saved: a
+second recording can only start once the first one's files are final.
 
 If **Record Microphone** is on and the microphone cannot be recorded (no
 permission, no input device), the start stops at **Microphone Not Available**,
@@ -194,8 +195,9 @@ on, a mixed audio file next to it.
   quality, 30 frames a second, the display's full resolution. H.264 plays on
   older devices and makes larger files.
 - **Recording → On Screen:** **Leave Holdfast's Own Windows Out** (on) keeps
-  Holdfast's windows out of the picture. **Excluded Apps** leaves apps out of
-  screen recordings; one launched after the start cannot be left out.
+  Holdfast's windows out of the picture.
+- **Recording → Excluded Apps:** apps left out of screen and screen area
+  recordings; one launched after the start cannot be left out.
 - **Output:** **Save Folder**, **Show a Preview**, and **Recordings Log**, which
   opens the log.
 - **General:** **Show in the Menu Bar**, **Launch at Login** (the panel does not
@@ -253,10 +255,10 @@ what it records, whether system audio and microphone are on) and its video
 settings; its stop, with the reason when it stopped by itself; where it was
 saved; microphone device switches and format changes; mute and unmute; every
 track warning and its end; every failure that was reported; and at the end of
-each recording a summary of its microphone track: buffers received, written,
-dropped, failed and all zero, seconds of audio, seconds of silence filled,
-format changes, the loudest peak, and the device's last format. After a
-meeting, that summary says whether anything went missing.
+each recording with a microphone, a summary of its microphone track: buffers
+received, written, dropped, failed and all zero, seconds of audio, seconds of
+silence filled, format changes, the loudest peak, and the device's last format.
+After a meeting, that summary says whether anything went missing.
 
 ## Known limits
 

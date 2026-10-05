@@ -94,10 +94,10 @@ symbol beside the time is now drawn half a point (one pixel at 2x) higher.
 
 ## Tests
 
-`Tools/test.sh` runs 106 tests in a few seconds, without the app, a screen or a
-microphone. They compile the pipeline's own sources; the writer, converter,
-mixer and recovery tests write real files with AVFoundation from synthetic
-buffers and read them back.
+`Tools/test.sh` runs 106 tests in under half a minute, without the app, a screen
+or a microphone. They compile the pipeline's own sources; the writer,
+converter, mixer and recovery tests write real files with AVFoundation from
+synthetic buffers and read them back.
 
 | Area | Tests | What they cover |
 | --- | ---: | --- |
@@ -122,7 +122,4 @@ recording:
 - "Leave Holdfast's Own Windows Out" with windows that open during the
   recording.
 - The menu bar symbols at that higher position.
-
-## 90-minute recording
-
-Pending.
+- A 90-minute recording. The longest measured here is six minutes.
