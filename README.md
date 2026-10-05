@@ -40,6 +40,7 @@ Removed from upstream: the updater, iPhone/iPad recording, the camera and Presen
 - Only the current save folder is searched for interrupted recordings.
 - A second recording cannot start until the first one's file is final.
 - A muted microphone is recorded as silence; the system's microphone indicator stays on.
+- With QuickRecorder installed as well, Finder may go on opening `.qma` packages in it. Holdfast opens them too (it reads QuickRecorder's type for them): choose Holdfast under Get Info, "Open with", and click "Change All". The preview's Open button always uses Holdfast.
 
 ## Build
 

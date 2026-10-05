@@ -35,6 +35,7 @@
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>$(PRODUCT_BUNDLE_IDENTIFIER).qma</string>
+				<string>com.lihaoyun6.QuickRecorder.qma</string>
 			</array>
 			<key>LSTypeIsPackage</key>
 			<true/>
@@ -44,6 +45,30 @@
 	<true/>
 	<key>OSAScriptingDefinition</key>
 	<string>Scriptable</string>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>QuickRecorder Multi-Track Audio</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.lihaoyun6.QuickRecorder.qma</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>qma</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/x-qma</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

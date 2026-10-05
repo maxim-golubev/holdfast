@@ -127,11 +127,21 @@ struct PreviewView: View {
         }
     }
     
+    /// A .qma package opens in Holdfast's own player: the system's default for it may be another app (QuickRecorder,
+    /// whose type for it LaunchServices may prefer). Everything else opens in its default app.
     private func openRecording() {
-        if fd.fileExists(atPath: filePath) {
-            NSWorkspace.shared.open(filePath.url)
-            closeWindow()
+        guard fd.fileExists(atPath: filePath) else { return }
+        let url = filePath.url
+        if url.pathExtension.lowercased() == RecordingFileStore.packageEnding {
+            NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
+                if let error = error {
+                    UserNotice.showAlertLater(title: "Recording Not Opened", message: String(format: "%@ could not be opened: %@", url.lastPathComponent, error.localizedDescription))
+                }
+            }
+        } else {
+            NSWorkspace.shared.open(url)
         }
+        closeWindow()
     }
     
     private func moveToTrash() {

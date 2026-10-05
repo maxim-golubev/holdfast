@@ -322,7 +322,7 @@ struct PlayerSlider: View {
 /// A .qma package opened in the player. Only its `info.json` is read and written (`QmaInfo`): the player reads the
 /// audio files from disk, and saving a changed volume leaves them as they are.
 struct qmaPackageHandle: FileDocument {
-    static var readableContentTypes: [UTType] { [UTType.qma] }
+    static var readableContentTypes: [UTType] { [.qma, .quickRecorderQma] }
     
     var info: QmaInfo
     
@@ -567,6 +567,9 @@ class AudioPlayerManager: ObservableObject {
 
 extension UTType {
     static let qma = UTType(exportedAs: (Bundle.main.bundleIdentifier ?? "Holdfast") + ".qma")
+    /// The same package as QuickRecorder declares it. With QuickRecorder installed, LaunchServices gives a .qma
+    /// that type, which Holdfast reads as its own.
+    static let quickRecorderQma = UTType(importedAs: "com.lihaoyun6.QuickRecorder.qma", conformingTo: .package)
 }
 
 struct ActivityIndicator: View {
