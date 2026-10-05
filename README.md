@@ -43,7 +43,7 @@ Removed from upstream: the updater, iPhone/iPad recording, the camera and Presen
 
 ## Build
 
-Requires Xcode. There are no binary releases.
+Requires Xcode 26 or later: the app icon is an Icon Composer document, which earlier versions cannot compile. The app runs on macOS 15 and later. There are no binary releases.
 
 ```
 Tools/build.sh    # Release build into build/Build/Products/Release/Holdfast.app

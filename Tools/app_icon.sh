@@ -3,7 +3,8 @@
 # with the ictool inside Xcode's Icon Composer. Run it again after changing the icon.
 # Usage: Tools/app_icon.sh [size in pixels, default 256]
 cd "$(dirname "$0")/.."
-ictool="/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool"
+# Icon Composer comes with Xcode 26; the selected Xcode's, wherever it is installed
+ictool="$(xcode-select -p)/../Applications/Icon Composer.app/Contents/Executables/ictool"
 [[ -x $ictool ]] || { echo "ictool not found: $ictool"; exit 1 }
 size=${1:-256}
 mkdir -p docs/images
