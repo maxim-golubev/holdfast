@@ -237,21 +237,24 @@ extension RecorderEnvironment {
         return app
     }
 
-    /// Saves one frame as a picture in the folder of the recording (the "saveFrame" hotkey). On the sample queue.
+    /// Saves one frame as a picture in the folder of the recording (the "saveFrame" hotkey), under a name no file
+    /// has yet. One that cannot be saved is reported: the user pressed the key to keep that slide. On the sample queue.
     private static func savePicture(of sampleBuffer: CMSampleBuffer, in directory: String) {
         guard let imageBuffer = sampleBuffer.imageBuffer else { return }
-        let url = "\(RecordingFileStore(directory: directory).newFrameBase()).png".url
-        if !AppSettings.recordHDR {
-            sampleBuffer.nsImage?.saveToFile(url)
-        } else {
-            let colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpaceCreateDeviceRGB()
-            // Image exposure needs to be increased by one stop to match the original
-            let ciImage = CIImage(cvPixelBuffer: imageBuffer).applyingFilter("CIExposureAdjust", parameters: ["inputEV": 1.0])
-            do {
+        let url = RecordingFileStore.freeURL(base: RecordingFileStore(directory: directory).newFrameBase(), label: nil, ending: "png")
+        do {
+            if !AppSettings.recordHDR {
+                guard let image = sampleBuffer.nsImage else { throw RecordingError("The frame could not be read.") }
+                try image.saveToFile(url)
+            } else {
+                let colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpaceCreateDeviceRGB()
+                // Image exposure needs to be increased by one stop to match the original
+                let ciImage = CIImage(cvPixelBuffer: imageBuffer).applyingFilter("CIExposureAdjust", parameters: ["inputEV": 1.0])
                 try CIContext().writePNGRepresentation(of: ciImage, to: url, format: .RGB10, colorSpace: colorSpace)
-            } catch {
-                print("Error: \(error)")
             }
+        } catch {
+            print("Failed to save a frame: \(error)")
+            UserNotice.showNotification(title: "Frame Not Saved".local, body: String(format: "The frame could not be saved as %@: %@".local, url.path, error.localizedDescription), id: "holdfast.frame.\(UUID().uuidString)")
         }
     }
 }

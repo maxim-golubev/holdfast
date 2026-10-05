@@ -452,15 +452,12 @@ extension NSImage {
         }
     }
     
-    func saveToFile(_ url: URL, type: NSBitmapImageRep.FileType = .png) {
-        if let tiffData = self.tiffRepresentation,
-           let imageRep = NSBitmapImageRep(data: tiffData) {
-            let pngData = imageRep.representation(using: type, properties: [:])
-            do {
-                try pngData?.write(to: url)
-            } catch {
-                print("Error saving image: \(error.localizedDescription)")
-            }
+    /// Writes the image to `url`, which must not exist yet, as a PNG. Throws when it cannot be encoded or written.
+    func saveToFile(_ url: URL) throws {
+        guard let tiffData = tiffRepresentation, let imageRep = NSBitmapImageRep(data: tiffData),
+              let pngData = imageRep.representation(using: .png, properties: [:]) else {
+            throw RecordingError("The picture could not be encoded.")
         }
+        try pngData.write(to: url, options: .withoutOverwriting)
     }
 }
