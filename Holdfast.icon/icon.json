@@ -1,0 +1,31 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "linear-gradient": [
+          "srgb:0.93725,0.32157,0.29804,1.00000",
+          "srgb:0.69020,0.10196,0.12941,1.00000"
+        ],
+        "orientation": { "start": { "x": 0.5, "y": 0 }, "stop": { "x": 0.5, "y": 1 } }
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "linear-gradient": [
+          "srgb:0.78039,0.21961,0.21176,1.00000",
+          "srgb:0.47843,0.05882,0.08627,1.00000"
+        ],
+        "orientation": { "start": { "x": 0.5, "y": 0 }, "stop": { "x": 0.5, "y": 1 } }
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [ { "glass": true, "image-name": "Record.svg", "name": "Record" } ],
+      "shadow": { "kind": "neutral", "opacity": 0.5 },
+      "translucency": { "enabled": true, "value": 0.4 }
+    }
+  ],
+  "supported-platforms": { "squares": [ "macOS" ] }
+}

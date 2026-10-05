@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The menu bar's record symbol: a ring and a dot on one centre. The ring is an even-odd annulus because
+       Icon Composer fills paths and does not stroke them. -->
+  <path fill="#FFFFFF" fill-rule="evenodd" d="M512,196 A316,316 0 1 1 511.99,196 Z M512,268 A244,244 0 1 0 512.01,268 Z"/>
+  <circle fill="#FFFFFF" cx="512" cy="512" r="150"/>
+</svg>
