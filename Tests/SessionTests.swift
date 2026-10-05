@@ -60,10 +60,10 @@ final class FakeWriter: RecordingWriter {
     let hasSystemAudio = false
     var hasMicrophoneTrack: Bool { recording.recordMic }
 
-    init(_ journal: Journal, queue: DispatchQueue, folder: URL, microphone: Bool = false) {
+    init(_ journal: Journal, queue: DispatchQueue, folder: URL, microphone: Bool = false, audioOnly: Bool = false) {
         self.journal = journal
         self.queue = queue
-        recording = RecordingContext(audioOnly: false, recordMic: microphone, fastStart: false, saveDirectory: folder.path)
+        recording = RecordingContext(audioOnly: audioOnly, recordMic: microphone, fastStart: false, saveDirectory: folder.path)
     }
 
     private func onQueue() { dispatchPrecondition(condition: .onQueue(queue)) }
@@ -83,6 +83,9 @@ final class FakeWriter: RecordingWriter {
     func fillMicrophone(upTo time: CMTime) { onQueue() }
     func fillSystemAudio(upTo time: CMTime) { onQueue() }
     func repeatVideoFrame(at now: CMTime) { onQueue() }
+    /// What Save Frame takes from the writer; nil like a writer with no frame written yet
+    var picture: CMSampleBuffer?
+    func currentPicture() -> CMSampleBuffer? { onQueue(); return picture }
     func finish() -> MovieWriter.Finished {
         onQueue()
         isCapturing = false
@@ -119,10 +122,15 @@ final class Rig {
 
     init(_ name: String) throws {
         folder = try Suite.folder(name)
+        let rigQueue = queue
         var environment = RecorderEnvironment()
         environment.startRefused = { [journal] reason in journal.note(reason == .quitting ? "refused: quitting" : "refused") }
         environment.startAbandoned = { [journal] in journal.note("abandoned") }
         environment.tearDown = { [journal] in journal.note("tearDown") }
+        environment.savePicture = { [journal] frame, _ in
+            dispatchPrecondition(condition: .onQueue(rigQueue))
+            journal.note("picture \(Int(CMTimeGetSeconds(frame.presentationTimeStamp)))")
+        }
         var wasIdle = true
         environment.statusChanged = { [journal] recorder in
             let isIdle = recorder.state == .idle
@@ -146,9 +154,9 @@ final class Rig {
 
     /// What the app does between an accepted start and the running capture
     @discardableResult
-    func start(autoStop: Int = 0, enter: Bool = true, microphone: Bool = false) throws -> (session: RecordingSession, capture: FakeCapture, writer: FakeWriter) {
-        let session = try require(controller.begin(.screen, autoStop: autoStop), "an accepted start")
-        let writer = FakeWriter(journal, queue: queue, folder: folder, microphone: microphone)
+    func start(autoStop: Int = 0, enter: Bool = true, microphone: Bool = false, audioOnly: Bool = false) throws -> (session: RecordingSession, capture: FakeCapture, writer: FakeWriter) {
+        let session = try require(controller.begin(audioOnly ? .systemaudio : .screen, autoStop: autoStop), "an accepted start")
+        let writer = FakeWriter(journal, queue: queue, folder: folder, microphone: microphone, audioOnly: audioOnly)
         session.install(writer)
         let capture = FakeCapture(journal)
         session.attach(capture)
@@ -515,6 +523,40 @@ func sessionTests() async {
         expect(!rig.controller.isMicrophoneMuted, "the mute went with its recording")
         let next = try rig.start(microphone: true)
         expect(!rig.controller.isMicrophoneMuted && !next.writer.isMicrophoneMuted, "the next recording has its microphone on")
+        rig.controller.stop()
+        expect(await rig.idle(), "idle")
+    }
+
+    await test("session: Save Frame keeps the picture on screen now, or the first one written") {
+        let rig = try Rig("session-picture")
+        let (session, _, writer) = try rig.start()
+        func pictures() -> [String] { rig.journal.all.filter { $0.hasPrefix("picture") } }
+        func frame(_ seconds: Double, complete: Bool = true) throws -> CaptureSample {
+            CaptureSample(kind: .screen(complete: complete), buffer: try videoFrame(at: time(seconds)), pts: time(seconds))
+        }
+        // The writer has written a frame: that one is saved at once, whether or not another comes
+        writer.picture = try videoFrame(at: time(7))
+        expect(session.savePicture(), "a video recording has a picture")
+        rig.queue.sync {}
+        expectEqual(pictures(), ["picture 7"], "the frame the writer shows now")
+        // None yet: the next complete frame is, and only that one
+        writer.picture = nil
+        session.savePicture()
+        let audio = CaptureSample(kind: .audio, buffer: try audioBuffer(rate: 48000, channels: 2, frames: 480, at: time(8)), pts: time(8))
+        try rig.queue.sync {
+            session.received(audio)
+            session.received(try frame(8, complete: false))
+            session.received(try frame(9))
+            session.received(try frame(10))
+        }
+        expectEqual(pictures(), ["picture 7", "picture 9"], "the first complete frame after the request")
+        rig.controller.stop()
+        expect(await rig.idle(), "idle")
+
+        let (audioOnly, _, _) = try rig.start(audioOnly: true)
+        expect(!audioOnly.savePicture(), "an audio-only recording has no picture to save")
+        try rig.queue.sync { audioOnly.received(try frame(11)) }
+        expectEqual(pictures().count, 2, "not even the stream's 2 x 2 frames")
         rig.controller.stop()
         expect(await rig.idle(), "idle")
     }

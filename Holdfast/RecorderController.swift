@@ -23,7 +23,8 @@ struct RecorderEnvironment {
     var save: @MainActor (RecordingSession, RecordingContext, MovieWriter.Finished, String?, Bool) async -> Void = { _, _, _, _, _ in }
     /// Title and text of a notification of the watchdog. Sample queue.
     var notify: (String, String) -> Void = { _, _ in }
-    /// A frame to save as a picture, and the folder of the recording when it is known. Sample queue.
+    /// A frame with pixels of its own to save as a picture, and the folder of the recording when it is known.
+    /// Called on the sample queue, so it must not encode or write there.
     var savePicture: (CMSampleBuffer, String?) -> Void = { _, _ in }
     /// Title and text of the report of the launch recovery
     var report: @MainActor (String, String) -> Void = { _, _ in }

@@ -592,6 +592,15 @@ final class MovieWriter {
 
     // MARK: - Frames
 
+    /// The picture the recording shows now, for Save Frame: the last frame written, as a copy with pixels of its own
+    /// (the writer keeps that copy too, so the stream gets its surface back). Nil before the session has started,
+    /// while paused (what is on screen then is not written), or when the copy cannot be made.
+    func currentPicture() -> CMSampleBuffer? {
+        guard !isPaused else { return nil }
+        detachLastVideoFrame()
+        return lastVideoFrameIsCopy ? lastVideoFrame : nil
+    }
+
     /// Replaces `lastVideoFrame` by a copy with pixels of its own, so it no longer holds a surface of the stream.
     /// When the copy cannot be made the frame stays as it is and the next call tries again.
     private func detachLastVideoFrame() {

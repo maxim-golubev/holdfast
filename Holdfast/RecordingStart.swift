@@ -259,10 +259,19 @@ extension RecorderEnvironment {
         return app
     }
 
+    /// Where Save Frame encodes and writes its pictures, one after the other, away from the sample queue
+    private static let pictureQueue = DispatchQueue(label: "Holdfast.savePicture", qos: .utility)
+    private static let pictureContext = CIContext()
+
     /// Saves one frame as a picture in the folder of the recording (the "saveFrame" hotkey), under a name no file
-    /// has yet. One that cannot be saved is reported: the user pressed the key to keep that slide. On the sample queue.
+    /// has yet. One that cannot be saved is reported: the user pressed the key to keep that slide. Any thread: the
+    /// encoding (several hundred milliseconds for a large display) runs on `pictureQueue`.
     private static func savePicture(of sampleBuffer: CMSampleBuffer, in directory: String) {
         guard let imageBuffer = sampleBuffer.imageBuffer else { return }
+        pictureQueue.async { writePicture(of: imageBuffer, in: directory) }
+    }
+
+    private static func writePicture(of imageBuffer: CVImageBuffer, in directory: String) {
         let url = RecordingFileStore.freeURL(base: RecordingFileStore(directory: directory).newFrameBase(), label: nil, ending: "png")
         var image = CIImage(cvPixelBuffer: imageBuffer)
         let format: CIFormat
@@ -278,7 +287,7 @@ extension RecorderEnvironment {
         }
         do {
             // Encoded in one step from the frame, and written only where no file is
-            guard let png = CIContext().pngRepresentation(of: image, format: format, colorSpace: colorSpace ?? CGColorSpaceCreateDeviceRGB()) else {
+            guard let png = pictureContext.pngRepresentation(of: image, format: format, colorSpace: colorSpace ?? CGColorSpaceCreateDeviceRGB()) else {
                 throw RecordingError("The picture could not be encoded.")
             }
             try png.write(to: url, options: .withoutOverwriting)

@@ -349,6 +349,27 @@ func writerTests() async {
         }
     }
 
+    await test("Writer: Save Frame gets the last frame written, as a copy that holds no surface of the stream") {
+        let run = try TestRecording(folder: "writer-picture", microphone: false)
+        let writer = run.writer
+        try writer.prepareVideo(width: 320, height: 240)
+        writer.startCapturing()
+        expect(writer.currentPicture() == nil, "no picture before the session")
+        let delivered = try videoFrame(at: run.at(0), shade: 120)
+        writer.write(CaptureSample(kind: .screen(complete: true), buffer: delivered, pts: run.at(0)))
+        let picture = try require(writer.currentPicture(), "the frame written")
+        expect(picture.imageBuffer !== delivered.imageBuffer, "pixels of its own")
+        let pixels = try require(picture.imageBuffer, "pixels")
+        CVPixelBufferLockBaseAddress(pixels, .readOnly)
+        let first = CVPixelBufferGetBaseAddress(pixels).map { $0.load(as: UInt8.self) }
+        CVPixelBufferUnlockBaseAddress(pixels, .readOnly)
+        expectEqual(first, 120, "the same picture")
+        expect(writer.togglePause(), "paused")
+        expect(writer.currentPicture() == nil, "none while paused: what is on screen then is not the last frame written")
+        expect(!writer.togglePause(), "resumed")
+        _ = try await run.close()
+    }
+
     await test("Writer: an audio-only recording stopped before any system audio leaves no package") {
         let run = try TestRecording(folder: "writer-audio-empty", audioOnly: true)
         try run.writer.prepareAudio()

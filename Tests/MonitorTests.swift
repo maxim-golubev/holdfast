@@ -38,6 +38,7 @@ final class MonitorWriter: RecordingWriter {
     func fillMicrophone(upTo time: CMTime) { fills.append("microphone") }
     func fillSystemAudio(upTo time: CMTime) { fills.append("system audio"); audioEndPTS = time }
     func repeatVideoFrame(at now: CMTime) { fills.append("video") }
+    func currentPicture() -> CMSampleBuffer? { nil }
     func finish() -> MovieWriter.Finished { MovieWriter.Finished(writer: nil, frame: nil, sessionStarted: true) }
     func cancel() {}
 }

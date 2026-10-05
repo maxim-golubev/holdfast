@@ -50,6 +50,7 @@ protocol RecordingWriter: AnyObject {
     func fillMicrophone(upTo time: CMTime)
     func fillSystemAudio(upTo time: CMTime)
     func repeatVideoFrame(at now: CMTime)
+    func currentPicture() -> CMSampleBuffer?
     func finish() -> MovieWriter.Finished
     func cancel()
 }
@@ -125,6 +126,7 @@ final class RecordingSession: @unchecked Sendable {
     // MARK: - Sample queue
 
     private var writer: RecordingWriter?
+    /// Set when Save Frame found no picture written yet: the next complete frame is saved
     private var wantsPicture = false
 
     /// The writer, from `install` until the stop takes it or the start is abandoned. Sample queue only.
@@ -251,17 +253,28 @@ final class RecordingSession: @unchecked Sendable {
         // Read directly: nothing on the path of a delivered buffer traps, it trusts ScreenCaptureKit to deliver
         // on the queue it was given
         let writer = self.writer
-        if wantsPicture, sample.buffer.imageBuffer != nil {
+        if wantsPicture, case .screen(complete: true) = sample.kind, let picture = MovieWriter.detachedCopy(of: sample.buffer) {
             wantsPicture = false
-            environment.savePicture(sample.buffer, writer?.recording.saveDirectory)
+            environment.savePicture(picture, writer?.recording.saveDirectory)
         }
         writer?.write(sample)
     }
 
-    /// The next frame is also saved as a picture
+    /// Saves the picture the recording shows now (Save Frame); before the first frame has been written, the first
+    /// one that is. Only the frame is taken on the sample queue: `savePicture` encodes and writes it elsewhere, so no
+    /// append waits for it. False for an audio-only recording, which has no picture.
     @MainActor
-    func savePicture() {
-        queue.async { self.wantsPicture = true }
+    @discardableResult
+    func savePicture() -> Bool {
+        guard recording?.audioOnly != true else { return false }
+        queue.async {
+            if let writer = self.queueWriter, let picture = writer.currentPicture() {
+                self.environment.savePicture(picture, writer.recording.saveDirectory)
+            } else {
+                self.wantsPicture = true
+            }
+        }
+        return true
     }
 
     /// Pauses the running recording, or resumes it. Like the mute, only in the `recording` state: not while the

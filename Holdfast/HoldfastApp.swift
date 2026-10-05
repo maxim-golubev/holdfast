@@ -263,7 +263,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         countdownPanel.backgroundColor = NSColor.clear
         
         KeyboardShortcuts.onKeyDown(for: .showPanel) { [self] in openMainPanel() }
-        KeyboardShortcuts.onKeyDown(for: .saveFrame) { withRecorder { if $0.hasStream { $0.session?.savePicture() } } }
+        KeyboardShortcuts.onKeyDown(for: .saveFrame) {
+            withRecorder { recorder in
+                guard recorder.hasStream, let session = recorder.session, !session.savePicture() else { return }
+                UserNotice.showNotification(title: "No Frame to Save", body: "This recording has only audio, so there is no picture to save.", id: "holdfast.frame.\(UUID().uuidString)")
+            }
+        }
         KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { [self] in
             guard withRecorder({ $0.hasStream }) else { return }
             withRecorder { $0.session?.isMagnifierEnabled.toggle() }
