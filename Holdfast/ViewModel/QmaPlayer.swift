@@ -22,21 +22,25 @@ struct qmaPlayerView: View {
         ZStack(alignment: .top) {
             VisualEffectView().ignoresSafeArea()
             VStack(spacing: 3) {
-                Button {} label: {
-                    PlayerSlider(percentage: $audioPlayerManager.progress, audioLength: $audioPlayerManager.audioLength){ editing in
-                        if !editing {
-                            let newTime = audioPlayerManager.progress * audioPlayerManager.audioLength
-                            audioPlayerManager.seek(to: newTime)
-                            audioPlayerManager.shouldPlay = false
-                        } else {
-                            if audioPlayerManager.isPlaying {
-                                audioPlayerManager.pause()
-                                audioPlayerManager.shouldPlay = true
-                            }
+                PlayerSlider(percentage: $audioPlayerManager.progress, audioLength: $audioPlayerManager.audioLength){ editing in
+                    if !editing {
+                        let newTime = audioPlayerManager.progress * audioPlayerManager.audioLength
+                        audioPlayerManager.seek(to: newTime)
+                        audioPlayerManager.shouldPlay = false
+                    } else {
+                        if audioPlayerManager.isPlaying {
+                            audioPlayerManager.pause()
+                            audioPlayerManager.shouldPlay = true
                         }
-                    }.frame(height: 30)
+                    }
                 }
-                .buttonStyle(.plain)
+                .frame(height: 30)
+                .keepsWindowStill()
+                .accessibilityRepresentation {
+                    Slider(value: position, in: 0...max(audioPlayerManager.audioLength, 1), step: 10) { Text("Position") }
+                        .accessibilityValue(Timeline.lengthText(audioPlayerManager.progress * audioPlayerManager.audioLength))
+                }
+                .help("Position")
                 .disabled(audioPlayerManager.exporting)
                 
                 HStack(spacing: 4) {
@@ -132,24 +136,10 @@ struct qmaPlayerView: View {
                     .onHover { hovering in overExport = hovering }
                 }
                 
-                Button {} label: {
-                    HStack(spacing: 14) {
-                        HStack(spacing: 2) {
-                            Image(systemName: "speaker.wave.2.fill")
-                            Text("\(Int(audioPlayerManager.sysVol * 100))%").foregroundColor(.secondary).frame(width: 40)
-                            VolumeSlider(percentage: $audioPlayerManager.sysVol, maxValue: 4)
-                                .frame(height: 16)
-                                .disabled(audioPlayerManager.exporting)
-                        }
-                        HStack(spacing: 2) {
-                            Image(systemName: "mic.fill")
-                            Text("\(Int(audioPlayerManager.micVol * 100))%").foregroundColor(.secondary).frame(width: 40)
-                            VolumeSlider(percentage: $audioPlayerManager.micVol, maxValue: 4)
-                                .frame(height: 16)
-                                .disabled(audioPlayerManager.exporting)
-                        }
-                    }
-                }.buttonStyle(.plain)
+                HStack(spacing: 14) {
+                    volume("System Audio Volume", symbol: "speaker.wave.2.fill", value: $audioPlayerManager.sysVol)
+                    volume("Microphone Volume", symbol: "mic.fill", value: $audioPlayerManager.micVol)
+                }
             }.padding().padding(.top, -14)
         }
         .onAppear {
@@ -173,6 +163,29 @@ struct qmaPlayerView: View {
         }, onWindowClose: { audioPlayerManager.windowClosed() }))
     }
     
+    /// The playing position in seconds, for accessibility: setting it seeks
+    private var position: Binding<Double> {
+        Binding(get: { audioPlayerManager.progress * audioPlayerManager.audioLength },
+                set: { audioPlayerManager.seek(to: min(max(0, $0), audioPlayerManager.audioLength)) })
+    }
+
+    /// One track's volume, from 0 to 400 %
+    private func volume(_ title: String, symbol: String, value: Binding<Float>) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: symbol).accessibilityHidden(true)
+            Text("\(Int(value.wrappedValue * 100))%").foregroundColor(.secondary).frame(width: 40).accessibilityHidden(true)
+            VolumeSlider(percentage: value, maxValue: 4)
+                .frame(height: 16)
+                .keepsWindowStill()
+                .accessibilityRepresentation {
+                    Slider(value: value, in: 0...4, step: 0.1) { Text(title) }
+                        .accessibilityValue("\(Int(value.wrappedValue * 100)) %")
+                }
+                .help(title)
+                .disabled(audioPlayerManager.exporting)
+        }
+    }
+
     func saveQMA() {
         var save = 0
         if document.info.sysVol != audioPlayerManager.sysVol {
@@ -186,6 +199,14 @@ struct qmaPlayerView: View {
         if save != 0 {
             NSApp.sendAction(#selector(NSDocument.save(_:)), to: nil, from: nil)
         }
+    }
+}
+
+extension View {
+    /// The window moves by its background, so a drag on a drawn control would move the window instead: inside a
+    /// plain button it reaches the control.
+    func keepsWindowStill() -> some View {
+        Button {} label: { self }.buttonStyle(.plain)
     }
 }
 
@@ -387,6 +408,8 @@ class AudioPlayerManager: ObservableObject {
     private var mixerNode = AVAudioMixerNode()
     private var timer: Timer?
     private var lastStartFramePosition = AVAudioFramePosition(0.0)
+    /// Whether the players hold what is left to play: a pause keeps it, so Play only resumes them
+    private var scheduled = false
     private var audioFile1: AVAudioFile?
     private var audioFile2: AVAudioFile?
     private var exportMP3 = false
@@ -437,8 +460,11 @@ class AudioPlayerManager: ObservableObject {
     
     func play() {
         guard let audioFile1 = audioFile1, let audioFile2 = audioFile2 else { return }
-        playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
-        playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
+        if !scheduled {
+            playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
+            playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
+            scheduled = true
+        }
         playerNode1.play()
         playerNode2.play()
         stopProgressTimer()
@@ -456,6 +482,7 @@ class AudioPlayerManager: ObservableObject {
     func stop() {
         playerNode1.stop()
         playerNode2.stop()
+        scheduled = false
         stopProgressTimer()
         lastStartFramePosition = AVAudioFramePosition(0.0)
         progress = 0.0
@@ -466,6 +493,7 @@ class AudioPlayerManager: ObservableObject {
         guard let audioFile1 = audioFile1, let audioFile2 = audioFile2 else { return }
         playerNode1.stop()
         playerNode2.stop()
+        scheduled = false
         stopProgressTimer()
         
         let startFrame = AVAudioFramePosition(time * audioFile1.processingFormat.sampleRate)
@@ -475,6 +503,7 @@ class AudioPlayerManager: ObservableObject {
             lastStartFramePosition = startFrame
             playerNode1.scheduleSegment(audioFile1, startingFrame: startFrame, frameCount: frameCount, at: nil, completionHandler: nil)
             playerNode2.scheduleSegment(audioFile2, startingFrame: startFrame, frameCount: frameCount, at: nil, completionHandler: nil)
+            scheduled = true
             progress = time / audioLength
             if isPlaying || shouldPlay {
                 playerNode1.play()
@@ -598,6 +627,9 @@ class AudioPlayerManager: ObservableObject {
         engine.stop()
         try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 4096)
         defer {
+            // Played to the end; stopped, they start from the beginning again
+            playerNode1.stop()
+            playerNode2.stop()
             engine.disableManualRenderingMode()
             engine.stop()
             setupAudioEngine()
