@@ -45,17 +45,26 @@ enum ScreenContent {
     }
 
     /// The same fetch for the main thread, which it blocks until the list is there: the launch and the click-a-window
-    /// picker, which need the list before they go on. A failed fetch keeps the old list and asks for nothing.
+    /// picker, which need the list before they go on. A failed fetch keeps the old list and asks for nothing. It
+    /// waits 5 s at most, so a ScreenCaptureKit that does not answer cannot hang the app; the list then comes from
+    /// the next fetch.
     static func updateAvailableContentSync() {
         dispatchPrecondition(condition: .onQueue(.main))
+        final class Result: @unchecked Sendable {
+            let lock = NSLock()
+            var content: SCShareableContent?
+        }
+        let result = Result()
         let semaphore = DispatchSemaphore(value: 0)
-        var fetched: SCShareableContent?
         fetch { content, _ in
-            fetched = content
+            result.lock.withLock { result.content = content }
             semaphore.signal()
         }
-        semaphore.wait()
-        if let fetched { availableContent = fetched }
+        guard semaphore.wait(timeout: .now() + 5) == .success else {
+            RecLog.write("The list of screens and windows did not arrive within 5 s; going on without it")
+            return
+        }
+        if let fetched = result.lock.withLock({ result.content }) { availableContent = fetched }
     }
     
     static func getSelf() -> SCRunningApplication? {
