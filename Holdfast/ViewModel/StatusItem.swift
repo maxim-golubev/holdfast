@@ -133,16 +133,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         NSAttributedString(string: title, attributes: [.font: titleFont, .baselineOffset: titleBaselineOffset])
     }
 
-    /// Lowers the digits by a whole pixel step on a 2x display from where AppKit sets them. The button is 22 pt
-    /// high (44 rows at 2x) in its 24 pt status window. Measured in it: the ink of the digits of "1:23:45" runs from
-    /// row 11.7 to 31.3, so their middle is 0.25 pt above the button's centre line (`digitsAboveCentre`).
+    /// Lowers the digits by a whole pixel step on a 2x display from where AppKit sets them. Measured in a capture of
+    /// the 24 pt (48-row) menu bar: the symbol's 16 pt box spans rows 7–39, so its centre is row 23.0, and the ink of
+    /// the digits spans rows 14–32, so their middle (23.5) is 0.25 pt below the box's centre (`digitsMiddle`).
     private static let titleBaselineOffset: CGFloat = -0.5
-    private static let digitsAboveCentre: CGFloat = 0.25
-    /// Where the middle of a symbol's ink goes beside a title: one pixel at 2x above the digits' middle. A circle
-    /// centred on the digits' ink (measured: the same row in a capture of the menu bar) still looks low beside
-    /// them, since the eye puts the middle of a shape above its geometric middle. The idle symbol has no title and
-    /// goes on the button's centre, where the menu bar's other symbols are (the same capture).
-    private static let symbolsAboveCentre: CGFloat = digitsAboveCentre + 0.5
+    /// Where the middle of a symbol's ink goes beside a title, in points above the centre of its box: on the digits'
+    /// middle, so ring and digits share one centre row (measured: ring rows 11–35, digits 14–32). The idle symbol
+    /// has no title and keeps AppKit's own placement, the one the menu bar's other symbols have.
+    private static let digitsMiddle: CGFloat = -0.25
 
     /// The symbol of a state. Those of a running recording share one width (the widest of them) with the symbol in
     /// the middle, so pausing, muting or a warning neither changes the item's width nor moves the time, and no space
@@ -174,7 +172,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             // it turns parts of the symbol pale
             var configuration = NSImage.SymbolConfiguration(pointSize: titleFont.pointSize, weight: .medium, scale: .medium)
             if let colour { configuration = configuration.applying(NSImage.SymbolConfiguration(paletteColors: [colour])) }
-            image = moved(plain.withSymbolConfiguration(configuration) ?? plain, middleAboveCentre: kind == .idle ? 0 : symbolsAboveCentre)
+            let sized = plain.withSymbolConfiguration(configuration) ?? plain
+            image = kind == .idle ? sized : moved(sized, middleAboveCentre: digitsMiddle)
         }
         image.isTemplate = colour == nil
         return image
@@ -195,7 +194,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     /// The symbol in a box of its own size, moved up or down so that the middle of what it draws is
-    /// `middleAboveCentre` above the button's centre. AppKit centres the box, and the ink of SF Symbols at this size
+    /// `middleAboveCentre` above the box's centre. AppKit centres the box, and the ink of SF Symbols at this size
     /// sits below the box's centre (measured at 2x in the button: the middle of pause.circle.fill's ink is 0.7 pt
     /// below the digits'), so a paused, muted or warning symbol would otherwise sit low next to the time. Measured
     /// the same way after the move, put on the digits' middle then: every symbol's middle was within 0.2 px of it.
@@ -241,12 +240,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     /// The record symbol (`Symbol.recordDot`), drawn to the pixel on a 2x display: a ring 12.5 pt across with a
-    /// dot. Its centre is `symbolsAboveCentre` above the centre of its box, so it covers rows 8–33 of the 44-row
-    /// button, middle 20.5, one row above the digits' middle (21.5); every edge falls on a pixel boundary.
+    /// dot, centred on the digits' middle (`digitsMiddle`), so it covers rows 11–35 of the menu bar and every edge
+    /// falls on a pixel boundary.
     private static func recordDot(_ colour: NSColor) -> NSImage {
         // The box has the height of the SF Symbols beside it, so the menu bar places it the same way
         let image = NSImage(size: NSSize(width: 13, height: 16), flipped: false) { _ in
-            let centre = NSPoint(x: 6.25, y: 8 + symbolsAboveCentre)
+            let centre = NSPoint(x: 6.25, y: 8 + digitsMiddle)
             colour.set()
             let ring = NSBezierPath(ovalIn: NSRect(x: centre.x - 5.5, y: centre.y - 5.5, width: 11, height: 11))
             ring.lineWidth = 1.5
