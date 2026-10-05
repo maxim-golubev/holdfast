@@ -286,8 +286,14 @@ extension AppDelegate {
         return true
     }
     
+    /// Runs `action` after the countdown, shown on `screen`; at once when the countdown is off. A display that is
+    /// not connected any more is reported instead: the selector that asked has closed, and nothing else would show
+    /// that no recording started.
     func createCountdownPanel(screen: SCDisplay, action: @escaping () -> Void) {
-        guard let screen = screen.nsScreen else { return }
+        guard let screen = screen.nsScreen else {
+            UserNotice.showAlertLater(title: "Failed to Record", message: "The display to record is not connected any more.")
+            return
+        }
         let countdown = AppSettings.countdown
         if countdown == 0 {
             action()

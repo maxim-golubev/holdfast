@@ -46,6 +46,8 @@ struct ScreenSelector: View {
         } bar: {
             SelectorBar(autoStop: $autoStop, canStart: selected != nil, start: startRecording) {
                 SymbolButton("Refresh", symbol: "arrow.clockwise.circle.fill", color: .blue, help: "Look for the screens again") {
+                    // What was selected belongs to the list that is replaced: a display that has gone would stay selected unseen
+                    selected = nil
                     viewModel.reload()
                 }
             }

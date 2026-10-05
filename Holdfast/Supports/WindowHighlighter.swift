@@ -63,7 +63,12 @@ struct HighlightMask: View {
         closeAllWindow()
         switch WindowHighlighter.shared.mode {
         case .area:
-            guard let screen = display, let nsScreen = display?.nsScreen, let frame = window?.frame else { return }
+            // Both are set before the sheet with Start is shown
+            guard let screen = display, let frame = window?.frame else { return }
+            guard let nsScreen = screen.nsScreen else {
+                UserNotice.showAlertLater(title: "Failed to Record", message: "The display to record is not connected any more.")
+                return
+            }
             // Only what is on the display: a window can reach past its edge, and an area cannot be recorded there
             let onDesktop = CGRectTransform(cgRect: frame).intersection(nsScreen.frame)
             guard onDesktop.width >= 1, onDesktop.height >= 1 else {
