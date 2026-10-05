@@ -9,7 +9,7 @@ import Foundation
 import Cocoa
 
 struct MousePointerView: View {
-    @AppStorage("showMouse") private var showMouse: Bool = true
+    @AppStorage(AppSettings.$showMouse) private var showMouse: Bool
     var event: NSEvent!
     
     var body: some View {

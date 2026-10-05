@@ -36,15 +36,10 @@ struct BundleSelector: View {
             }.buttonStyle(.plain).offset(y: -1)
         }
         .onAppear {
-            if let savedData = ud.data(forKey: "hiddenApps"),
-               let decodedApps = try? JSONDecoder().decode([AppInfo].self, from: savedData) {
-                Bundles = decodedApps
-            }
+            Bundles = AppSettings.hiddenApps
         }
         .onChange(of: Bundles) { bundles in
-            if let encodedData = try? JSONEncoder().encode(bundles) {
-                ud.set(encodedData, forKey: "hiddenApps")
-            }
+            AppSettings.hiddenApps = bundles
         }
         .fileImporter(isPresented: $isShowingFilePicker, allowedContentTypes: [.application]) { result in
             do {
@@ -59,12 +54,6 @@ struct BundleSelector: View {
             }
         }
     }
-}
-
-struct AppInfo: Hashable, Codable {
-    let bundleID: String
-    let displayName: String
-
 }
 
 extension Bundle {

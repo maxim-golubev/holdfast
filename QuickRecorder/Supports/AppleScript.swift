@@ -102,7 +102,7 @@ class selectApps: NSScriptCommand {
                         return
                     }
                     if s.count != 1 {
-                        AppDelegate.shared.createNewWindow(view: AppSelector(), title: "App Selector".local)
+                        AppDelegate.shared.createNewWindow(view: AppSelector(), title: "App Selector".local, identifier: .appSelector)
                         createAlert(title: "Error".local, message: "This app exists in multiple screens, please select it manually!".local, button1: "OK".local).runModal()
                     } else {
                         AppDelegate.shared.createCountdownPanel(screen: s.first!) {
@@ -111,7 +111,7 @@ class selectApps: NSScriptCommand {
                     }
                 } else {
                     closeAllWindow()
-                    AppDelegate.shared.createNewWindow(view: AppSelector(), title: "App Selector".local)
+                    AppDelegate.shared.createNewWindow(view: AppSelector(), title: "App Selector".local, identifier: .appSelector)
                 }
             }
         }
@@ -139,7 +139,7 @@ class selectWindows: NSScriptCommand {
                         return
                     }
                     if windows.count > 1 {
-                        AppDelegate.shared.createNewWindow(view: WinSelector(), title: "Window Selector".local)
+                        AppDelegate.shared.createNewWindow(view: WinSelector(), title: "Window Selector".local, identifier: .windowSelector)
                         createAlert(title: "Error".local, message: "Duplicate window exists, please select it manually!".local, button1: "OK".local).runModal()
                         return
                     }
@@ -166,7 +166,7 @@ class selectWindows: NSScriptCommand {
                     }
                 } else {
                     closeAllWindow()
-                    AppDelegate.shared.createNewWindow(view: WinSelector(), title: "Window Selector".local)
+                    AppDelegate.shared.createNewWindow(view: WinSelector(), title: "Window Selector".local, identifier: .windowSelector)
                 }
             }
         }
@@ -211,17 +211,17 @@ class setPreferences: NSScriptCommand {
             return nil
         }
         // highRes is an Int setting: 2 = Retina resolution, 1 = normal
-        if let hires = self.evaluatedArguments!["hires"] as? Bool { UserDefaults.standard.set(hires ? 2 : 1, forKey: "highRes") }
-        if let fps = self.evaluatedArguments!["fps"] as? Int { UserDefaults.standard.set(fps, forKey: "frameRate") }
-        if let cursor = self.evaluatedArguments!["cursor"] as? Bool { UserDefaults.standard.set(cursor, forKey: "showMouse") }
-        if let sound = self.evaluatedArguments!["sound"] as? Bool { UserDefaults.standard.set(sound, forKey: "recordWinSound") }
-        if let microphone = self.evaluatedArguments!["microphone"] as? Bool { UserDefaults.standard.set(microphone, forKey: "recordMic") }
+        if let hires = self.evaluatedArguments!["hires"] as? Bool { AppSettings.highRes = hires ? 2 : 1 }
+        if let fps = self.evaluatedArguments!["fps"] as? Int { AppSettings.frameRate = fps }
+        if let cursor = self.evaluatedArguments!["cursor"] as? Bool { AppSettings.showMouse = cursor }
+        if let sound = self.evaluatedArguments!["sound"] as? Bool { AppSettings.recordWinSound = sound }
+        if let microphone = self.evaluatedArguments!["microphone"] as? Bool { AppSettings.recordMic = microphone }
         if let quality = self.evaluatedArguments!["quality"] as? Int {
             if [1,2,3].contains(quality) {
                 switch quality {
-                    case 1: UserDefaults.standard.set(0.3, forKey: "videoQuality")
-                    case 2: UserDefaults.standard.set(0.7, forKey: "videoQuality")
-                    default: UserDefaults.standard.set(1.0, forKey: "videoQuality")
+                    case 1: AppSettings.videoQuality = 0.3
+                    case 2: AppSettings.videoQuality = 0.7
+                    default: AppSettings.videoQuality = 1.0
                 }
             }
         }
@@ -230,7 +230,7 @@ class setPreferences: NSScriptCommand {
             scriptErrorNumber = errOSAGeneralError
             scriptErrorString = "No connected audio input device is named \"\(micname)\". The microphone selection was not changed."
         }
-        if let hdr = self.evaluatedArguments!["hdr"] as? Bool { UserDefaults.standard.set(hdr, forKey: "recordHDR") }
+        if let hdr = self.evaluatedArguments!["hdr"] as? Bool { AppSettings.recordHDR = hdr }
         return nil
     }
 }

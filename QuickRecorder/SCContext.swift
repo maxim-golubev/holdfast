@@ -65,23 +65,26 @@ struct RecordingContext {
         }
     }
     
+    /// The one place the settings of a recording are read from `AppSettings`. What depends on how this recording
+    /// was started is handed in: `recordMic` is whether it got a microphone, `saveDirectory` the folder
+    /// `prepRecord` has checked.
     init(audioOnly: Bool, recordMic: Bool, fastStart: Bool, saveDirectory: String) {
-        let systemAudio = ud.bool(forKey: "recordWinSound") || fastStart || audioOnly
-        let remuxAudio = ud.bool(forKey: "remuxAudio")
-        let videoFormat = VideoFormat(rawValue: ud.string(forKey: "videoFormat") ?? "") ?? .mp4
-        let audioFormat = AudioFormat(rawValue: ud.string(forKey: "audioFormat") ?? "") ?? .aac
+        let systemAudio = AppSettings.recordWinSound || fastStart || audioOnly
+        let remuxAudio = AppSettings.remuxAudio
+        let videoFormat = AppSettings.videoFormat
+        let audioFormat = AppSettings.audioFormat
         self.audioOnly = audioOnly
         self.recordMic = recordMic
         self.systemAudio = systemAudio
         self.remuxAudio = remuxAudio
-        self.preventSleep = ud.bool(forKey: "preventSleep")
-        self.showPreview = ud.bool(forKey: "showPreview")
-        self.trimAfterRecord = ud.bool(forKey: "trimAfterRecord")
+        self.preventSleep = AppSettings.preventSleep
+        self.showPreview = AppSettings.showPreview
+        self.trimAfterRecord = AppSettings.trimAfterRecord
         self.videoFormat = videoFormat
         self.audioFormat = audioFormat
         self.saveDirectory = saveDirectory
-        self.audioQuality = ud.integer(forKey: "audioQuality")
-        self.keepUnmixed = ud.bool(forKey: "keepUnmixed")
+        self.audioQuality = AppSettings.audioQuality.rawValue
+        self.keepUnmixed = AppSettings.keepUnmixed
         
         let files = RecordingFiles(base: SCContext.getFilePath(directory: saveDirectory), audioOnly: audioOnly,
                                    recordMic: recordMic, systemAudio: systemAudio, remuxAudio: remuxAudio,
@@ -264,8 +267,8 @@ class SCContext {
         return SCContext.availableContent?.windows.filter( {
             guard let title = $0.title else { return false }
             return $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
-            && title != "Mouse Pointer".local
-            && title != "Screen Magnifier".local
+            && title != WindowTitle.mousePointer
+            && title != WindowTitle.screenMagnifier
         })
     }
     
@@ -274,7 +277,7 @@ class SCContext {
         for app in getWindows(isOnScreen: isOnScreen, hideSelf: hideSelf).compactMap({ $0.owningApplication }) {
             if !apps.contains(app) { apps.append(app) }
         }
-        if hideSelf && ud.bool(forKey: "hideSelf") { apps = apps.filter({$0.bundleIdentifier != Bundle.main.bundleIdentifier}) }
+        if hideSelf && AppSettings.hideSelf { apps = apps.filter({$0.bundleIdentifier != Bundle.main.bundleIdentifier}) }
         return apps
     }
     
@@ -292,7 +295,7 @@ class SCContext {
             && $0.frame.height > 40
         }
         if isOnScreen { windows = windows.filter({$0.isOnScreen == true}) }
-        if hideSelf && ud.bool(forKey: "hideSelf") { windows = windows.filter({$0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier}) }
+        if hideSelf && AppSettings.hideSelf { windows = windows.filter({$0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier}) }
         return windows
     }
     
@@ -329,14 +332,14 @@ class SCContext {
     /// Path without extension for a new file. `directory` is the save directory a running recording was started with;
     /// without it the current setting is used.
     static func getFilePath(capture: Bool = false, directory: String? = nil) -> String {
-        let directory = directory ?? ud.string(forKey: "saveDirectory") ?? (NSHomeDirectory() + "/Desktop")
+        let directory = directory ?? AppSettings.saveDirectory
         return RecordingFiles.basePath(directory: directory, prefix: capture ? "Capturing at ".local : recordingNamePrefix.local, date: Date())
     }
     
     /// The defaults are the current settings. Code that works on a recording passes that recording's values instead.
-    static func updateAudioSettings(format: String = ud.string(forKey: "audioFormat") ?? "",
-                                    quality: Int = ud.integer(forKey: "audioQuality"),
-                                    videoFormat: String = ud.string(forKey: "videoFormat") ?? "") -> [String : Any] {
+    static func updateAudioSettings(format: String = AppSettings.audioFormat.rawValue,
+                                    quality: Int = AppSettings.audioQuality.rawValue,
+                                    videoFormat: String = AppSettings.videoFormat.rawValue) -> [String : Any] {
         var audioSettings: [String : Any] = [AVSampleRateKey : 48000, AVNumberOfChannelsKey : 2] // reset audioSettings
         let bitRate = quality * 1000
         switch format {
@@ -362,10 +365,10 @@ class SCContext {
     }
     
     static func performMicCheck() async {
-        guard ud.bool(forKey: "recordMic") == true else { return }
+        guard AppSettings.recordMic else { return }
         if await AVCaptureDevice.requestAccess(for: .audio) { return }
 
-        ud.setValue(false, forKey: "recordMic")
+        AppSettings.recordMic = false
         onMainRunLoop {
             let alert = createAlert(title: "Permission Required",
                                                        message: "QuickRecorder needs permission to record your microphone.",
@@ -390,7 +393,7 @@ class SCContext {
     
     /// The area last recorded on the screen with that name, as the area selector stored it
     static func savedArea(forScreen name: String) -> NSRect? {
-        guard let area = ud.dictionary(forKey: "savedArea")?[name] as? [String: Any] else { return nil }
+        guard let area = AppSettings.savedAreas[name] as? [String: Any] else { return nil }
         func value(_ key: String) -> CGFloat? { (area[key] as? NSNumber).map { CGFloat($0.doubleValue) } }
         guard let x = value("x"), let y = value("y"), let width = value("width"), let height = value("height"),
               width > 0, height > 0 else { return nil }
@@ -399,9 +402,9 @@ class SCContext {
     
     /// Remembers `area` for the screen with that name. The areas of the other screens stay as they are.
     static func saveArea(_ area: NSRect, forScreen name: String) {
-        var saved = ud.dictionary(forKey: "savedArea") ?? [:]
+        var saved = AppSettings.savedAreas
         saved[name] = ["x": Double(area.origin.x), "y": Double(area.origin.y), "width": Double(area.width), "height": Double(area.height)]
-        ud.set(saved, forKey: "savedArea")
+        AppSettings.savedAreas = saved
     }
     
     private static func requestPermissions() {
@@ -556,7 +559,7 @@ class SCContext {
     
     /// Main thread. The dashed frame around the recorded area, which a selector puts up before it asks for the start.
     static func closeAreaOverlay() {
-        for w in NSApp.windows where w.title == "Area Overlayer".local { w.close() }
+        for w in NSApp.windows(.areaOverlay) { w.close() }
     }
     
     /// Runs `block` on the main thread as a run loop block. For everything that shows a modal alert: a modal alert
@@ -1037,7 +1040,7 @@ class SCContext {
     /// Whether the status item shows the "Recovering…" pill: always while quitting waits for the recovery, so the
     /// app does not look hung, and otherwise only where it does not take the place of the menu bar icon, from which
     /// a recording can be started meanwhile.
-    static var showsRecovery: Bool { isRecovering && (quitRequested || !ud.bool(forKey: "showMenubar")) }
+    static var showsRecovery: Bool { isRecovering && (quitRequested || !AppSettings.showMenubar) }
     private static var recoveredHandlers = [() -> Void]()
     
     /// Main thread. Runs `handler` once launch recovery is over; at once when it is not running.
@@ -1053,7 +1056,8 @@ class SCContext {
     /// files of an earlier run. Quitting waits for it.
     static func recoverLeftovers() {
         let instances = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }
-        guard !isRecovering, instances.count <= 1, let directory = ud.string(forKey: "saveDirectory") else { return }
+        guard !isRecovering, instances.count <= 1 else { return }
+        let directory = AppSettings.saveDirectory
         let found = RecordingMixer.leftovers(in: directory, prefix: recordingNamePrefix.local)
         guard !found.isEmpty else { return }
         // The settings such a recording was started with are not known any more, so the mix uses the current ones
@@ -1229,7 +1233,7 @@ class SCContext {
         }
     }
     
-    static func m4a2mp3(inputUrl: URL, outputUrl: URL, bitrate: Int = ud.integer(forKey: "audioQuality")) async throws {
+    static func m4a2mp3(inputUrl: URL, outputUrl: URL, bitrate: Int = AppSettings.audioQuality.rawValue) async throws {
         let progress = Progress()
         let lameEncoder = try SwiftLameEncoder(
             sourceUrl: inputUrl,
@@ -1256,16 +1260,16 @@ class SCContext {
     /// if the device is absent then, its name stands in for the ID until the device is seen again.
     static func selectedMicID() -> String {
         let mics = getMicrophone()
-        if let id = ud.string(forKey: "micDeviceID") {
+        if let id = AppSettings.storedMicDeviceID {
             if id != "default", !mics.contains(where: { $0.uniqueID == id }), let device = mics.first(where: { $0.localizedName == id }) {
-                ud.set(device.uniqueID, forKey: "micDeviceID")
+                AppSettings.micDeviceID = device.uniqueID
                 return device.uniqueID
             }
             return id
         }
-        let name = ud.string(forKey: "micDevice") ?? "default"
+        let name = AppSettings.micName
         let id = name == "default" ? name : (mics.first(where: { $0.localizedName == name })?.uniqueID ?? name)
-        ud.set(id, forKey: "micDeviceID")
+        AppSettings.micDeviceID = id
         return id
     }
     
@@ -1273,20 +1277,20 @@ class SCContext {
     static func selectedMicName() -> String {
         let id = selectedMicID()
         if let device = getMicrophone().first(where: { $0.uniqueID == id }) { return device.localizedName }
-        let name = ud.string(forKey: "micDevice") ?? "default"
+        let name = AppSettings.micName
         return name == "default" ? id : name
     }
     
     /// Selects a microphone by name, or the system default for "default". Returns false when there is no such device.
     static func selectMic(named name: String) -> Bool {
         if name == "default" {
-            ud.set("default", forKey: "micDeviceID")
+            AppSettings.micDeviceID = "default"
         } else if let device = getMicrophone().first(where: { $0.localizedName == name }) {
-            ud.set(device.uniqueID, forKey: "micDeviceID")
+            AppSettings.micDeviceID = device.uniqueID
         } else {
             return false
         }
-        ud.set(name, forKey: "micDevice")
+        AppSettings.micName = name
         return true
     }
     

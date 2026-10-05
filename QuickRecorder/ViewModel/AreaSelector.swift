@@ -28,9 +28,9 @@ struct resizeView: View {
     private enum Field: Int, Hashable { case width, height }
     @FocusState private var focusedField: Field?
     
-    @AppStorage("areaWidth")  private var areaWidth: Int = 600
-    @AppStorage("areaHeight") private var areaHeight: Int = 450
-    @AppStorage("highRes")    private var highRes: Int = 2
+    @AppStorage(AppSettings.$areaWidth)  private var areaWidth: Int
+    @AppStorage(AppSettings.$areaHeight) private var areaHeight: Int
+    @AppStorage(AppSettings.$highRes)    private var highRes: Int
     
     var appDelegate = AppDelegate.shared
     var screen: SCDisplay!
@@ -70,7 +70,7 @@ struct resizeView: View {
     }
     
     func resize() {
-        closeAllWindow(except: "Start Recording".local)
+        closeAllWindow(except: .areaPanel)
         AppDelegate.shared.showAreaSelector(size: NSSize(width: areaWidth, height: areaHeight), noPanel: true)
     }
 }
@@ -93,7 +93,7 @@ struct AreaSelector: View {
                     Spacer()
                     Button(action: {
                         nsWindow?.close()
-                        for w in NSApp.windows.filter({$0.title == "Area Selector".local }) { w.close() }
+                        for w in NSApp.windows(.areaSelector) { w.close() }
                         appDelegate.stopGlobalMouseMonitor()
                         WindowHighlighter.shared.registerMouseMonitor(mode: 2)
                     }, label: {
@@ -187,12 +187,6 @@ struct AreaSelector: View {
                 }
             }.padding(.horizontal, 10)
             Button(action: {
-                /*for w in NSApp.windows.filter({ $0.title == "Area Selector".local || $0.title == "Start Recording".local}) { w.close() }
-                if let monitor = keyMonitor {
-                    NSEvent.removeMonitor(monitor)
-                    keyMonitor = nil
-                }
-                appDelegate.stopGlobalMouseMonitor()*/
                 nsWindow?.close()
             }, label: {
                 Image(systemName: "x.circle")
@@ -208,7 +202,7 @@ struct AreaSelector: View {
         .frame(width: 790, height: 90)
         .background(WindowAccessor(onWindowOpen: { w in nsWindow = w }, onWindowClose: {
             DispatchQueue.main.async {
-                for w in NSApp.windows.filter({ $0.title == "Area Selector".local }) { w.close() }
+                for w in NSApp.windows(.areaSelector) { w.close() }
                 if let monitor = keyMonitor {
                     NSEvent.removeMonitor(monitor)
                     keyMonitor = nil
@@ -233,6 +227,7 @@ struct AreaSelector: View {
         window.ignoresMouseEvents = true
         window.isReleasedWhenClosed = false
         window.title = "Area Overlayer".local
+        window.identifier = .areaOverlay
         window.backgroundColor = NSColor.clear
         window.contentView = NSHostingView(rootView: DashWindow())
         window.orderFront(self)
@@ -243,9 +238,6 @@ struct AreaSelector: View {
 }
 
 class ScreenshotOverlayView: NSView {
-    @AppStorage("areaWidth") private var areaWidth: Int = 600
-    @AppStorage("areaHeight") private var areaHeight: Int = 450
-    
     var selectionRect: NSRect? {
         didSet {
             updateMaskLayer()
@@ -286,8 +278,8 @@ class ScreenshotOverlayView: NSView {
         }
         selectionRect = selection
         if self.window != nil {
-            areaWidth = Int(selection.width)
-            areaHeight = Int(selection.height)
+            AppSettings.areaWidth = Int(selection.width)
+            AppSettings.areaHeight = Int(selection.height)
             SCContext.screenArea = selection
         }
         updateMaskLayer()
@@ -450,8 +442,10 @@ class ScreenshotOverlayView: NSView {
             self.selectionRect = newRect
             initialLocation = currentLocation // Update initial location for continuous dragging
             lastMouseLocation = currentLocation // Update last mouse location
-            areaWidth = Int(selectionRect!.width)
-            areaHeight = Int(selectionRect!.height)
+            if let selection = selectionRect {
+                AppSettings.areaWidth = Int(selection.width)
+                AppSettings.areaHeight = Int(selection.height)
+            }
         } else {
             if dragIng {
                 dragIng = true
@@ -478,8 +472,10 @@ class ScreenshotOverlayView: NSView {
                 if currentLocation.x < maxFrame.origin.x { maxW = initialLocation.x }
                 let size = NSSize(width: maxW, height: maxH)
                 self.selectionRect = NSIntersectionRect(maxFrame, NSRect(origin: origin, size: size))
-                areaWidth = Int(selectionRect!.width)
-                areaHeight = Int(selectionRect!.height)
+                if let selection = selectionRect {
+                    AppSettings.areaWidth = Int(selection.width)
+                    AppSettings.areaHeight = Int(selection.height)
+                }
                 //initialLocation = currentLocation
             }
             self.initialLocation = initialLocation
@@ -522,7 +518,7 @@ class ScreenshotWindow: NSPanel {
     func myKeyDownEvent(event: NSEvent) -> NSEvent? {
         if event.keyCode == 53 && !event.isARepeat {
             self.close()
-            for w in NSApp.windows.filter({ $0.title == "Start Recording".local }) { w.close() }
+            for w in NSApp.windows(.areaPanel) { w.close() }
             AppDelegate.shared.stopGlobalMouseMonitor()
             if let monitor = keyMonitor {
                 NSEvent.removeMonitor(monitor)

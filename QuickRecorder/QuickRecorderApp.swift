@@ -17,7 +17,6 @@ import VideoToolbox
 
 var scPerm = false
 let fd = FileManager.default
-let ud = UserDefaults.standard
 var statusBarItem: NSStatusItem!
 var mouseMonitor: Any?
 var keyMonitor: Any?
@@ -101,36 +100,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     private var tracksMouseForRecording = false
     private var mousePointerHost: NSHostingView<MousePointerView>?
     
-    @AppStorage("showOnDock")       var showOnDock: Bool = true
-    @AppStorage("showMenubar")      var showMenubar: Bool = false
-    @AppStorage("recordMic")        var recordMic: Bool = false
-    @AppStorage("remuxAudio")       var remuxAudio: Bool = true
-    @AppStorage("recordWinSound")   var recordWinSound: Bool = true
-    @AppStorage("recordHDR")        var recordHDR: Bool = false
-    @AppStorage("encoder")          var encoder: Encoder = .preferred
-    @AppStorage("highRes")          var highRes: Int = 2
-    @AppStorage("withAlpha")        var withAlpha: Bool = false
-    @AppStorage("saveDirectory")    var saveDirectory: String?
-    @AppStorage("countdown")        var countdown: Int = 0
-    @AppStorage("highlightMouse")   var highlightMouse: Bool = false
-    @AppStorage("includeMenuBar")   var includeMenuBar: Bool = true
-    @AppStorage("hideDesktopFiles") var hideDesktopFiles: Bool = false
-    @AppStorage("trimAfterRecord")  var trimAfterRecord: Bool = false
-    @AppStorage("miniStatusBar")    var miniStatusBar: Bool = false
-    @AppStorage("hideSelf")         var hideSelf: Bool = true
-    @AppStorage("preventSleep")     var preventSleep: Bool = true
-    @AppStorage("showPreview")      var showPreview: Bool = true
-    @AppStorage("showMouse")        var showMouse: Bool = true
-    @AppStorage("frameRate")        var frameRate: Int = 30
-    @AppStorage("videoQuality")     var videoQuality: Double = 0.7
-    @AppStorage("videoFormat")      var videoFormat: VideoFormat = .mp4
-    @AppStorage("audioFormat")      var audioFormat: AudioFormat = .aac
-    @AppStorage("audioQuality")     var audioQuality: AudioQuality = .high
-    @AppStorage("hideCCenter")      var hideCCenter: Bool = false
-    
     func mousePointerReLocation(event: NSEvent) {
         if event.type == .scrollWheel { return }
-        if !highlightMouse || hideMousePointer || SCContext.stream == nil || SCContext.streamType == .window {
+        if !AppSettings.highlightMouse || hideMousePointer || SCContext.stream == nil || SCContext.streamType == .window {
             mousePointer.orderOut(nil)
             return
         }
@@ -188,7 +160,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     /// video recording with "Highlight the Mouse Cursor" on or the magnifier switched on. Called when any of the
     /// three changes.
     func updateRecordingMouseMonitor() {
-        let highlight = tracksMouseForRecording && highlightMouse
+        let highlight = tracksMouseForRecording && AppSettings.highlightMouse
         let magnifier = tracksMouseForRecording && SCContext.isMagnifierEnabled
         if highlight || magnifier {
             if recordingMouseMonitor == nil {
@@ -271,40 +243,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             }
         }
         
-        let userDesktop = NSSearchPathForDirectoriesInDomains(.desktopDirectory, .userDomainMask, true).first ?? (NSHomeDirectory() + "/Desktop")
-        
-        ud.register( // default defaults (used if not set)
-            defaults: [
-                "audioFormat": AudioFormat.aac.rawValue,
-                "audioQuality": AudioQuality.high.rawValue,
-                "frameRate": 30,
-                "highRes": 2,
-                "hideSelf": true,
-                "highlightMouse" : false,
-                "hideDesktopFiles": false,
-                "includeMenuBar": true,
-                "videoQuality": 0.7,
-                "countdown": 0,
-                "videoFormat": VideoFormat.mp4.rawValue,
-                "encoder": Encoder.preferred.rawValue,
-                "saveDirectory": userDesktop as NSString,
-                "showMouse": true,
-                "recordMic": false,
-                "remuxAudio": true,
-                "keepUnmixed": true,
-                "recordWinSound": true,
-                "trimAfterRecord": false,
-                "showOnDock": true,
-                "showMenubar": false,
-                "recordHDR": false,
-                "preventSleep": true,
-                "showPreview": true,
-                "savedArea": [String: [String: CGFloat]]()
-            ]
-        )
-        
-        if highRes == 0 { highRes = 2 }
-        if showOnDock { NSApp.setActivationPolicy(.regular) }
+        // Whether the Mac encodes HEVC in hardware is asked once, here, not when the first recording starts
+        _ = Encoder.preferred
+        if AppSettings.showOnDock { NSApp.setActivationPolicy(.regular) }
         
         UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
@@ -314,19 +255,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusBarItem.button?.image = NSImage()
 
-        mousePointer.title = "Mouse Pointer".local
+        mousePointer.title = WindowTitle.mousePointer
         mousePointer.level = .screenSaver
         mousePointer.ignoresMouseEvents = true
         mousePointer.isReleasedWhenClosed = false
         mousePointer.backgroundColor = NSColor.clear
         
-        screenMagnifier.title = "Screen Magnifier".local
+        screenMagnifier.title = WindowTitle.screenMagnifier
         screenMagnifier.level = .floating
         screenMagnifier.ignoresMouseEvents = true
         screenMagnifier.isReleasedWhenClosed = false
         screenMagnifier.backgroundColor = NSColor.clear
         
         countdownPanel.title = "Countdown Panel".local
+        countdownPanel.identifier = .countdownPanel
         countdownPanel.level = .floating
         countdownPanel.isReleasedWhenClosed = false
         countdownPanel.isMovableByWindowBackground = false
@@ -391,7 +333,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
         SCContext.recoverLeftovers()
-        if showOnDock { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
+        if AppSettings.showOnDock { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -399,11 +341,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             let w1 = NSApp.windows.filter({ !$0.title.contains("Item-0") && !$0.title.isEmpty && $0.isVisible })
             let w2 = w1.filter({ !$0.title.contains(".qma") })
             if (!w1.isEmpty && w2.isEmpty) || w1.isEmpty {
-                let offset = (!showOnDock && !showMenubar) ? 127 : 0
+                let offset = (!AppSettings.showOnDock && !AppSettings.showMenubar) ? 127 : 0
                 let width = 801
                 let mainPanel = EscPanel(contentRect: NSRect(x: 0, y: 0, width: width + offset, height: 100), styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
                 mainPanel.contentView = NSHostingView(rootView: ContentView())
                 mainPanel.title = "QuickRecorder".local
+                mainPanel.identifier = .mainPanel
                 mainPanel.isOpaque = false
                 mainPanel.level = .floating
                 mainPanel.isRestorable = false
@@ -444,16 +387,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
 }
 
 func closeMainWindow() {
-    for w in NSApp.windows.filter({ $0.title == "QuickRecorder".local }) {
-        w.close()
-    }
+    for w in NSApp.windows(.mainPanel) { w.close() }
 }
 
-func closeAllWindow(except: String = "") {
+/// Closes every window that has a title, except the status item's, the audio documents' and the one with the
+/// identifier `except`. Windows that must survive this (the preview, alerts) have no title.
+func closeAllWindow(except: NSUserInterfaceItemIdentifier? = nil) {
     for w in NSApp.windows.filter({
         $0.title != "Item-0" && $0.title != ""
         && !$0.title.lowercased().contains(".qma")
-        && !$0.title.contains(except) }) { w.close() }
+        && (except == nil || $0.identifier != except) }) { w.close() }
 }
 
 func findNSSplitVIew(view: NSView?) -> NSSplitView? {
@@ -469,12 +412,11 @@ func findNSSplitVIew(view: NSView?) -> NSSplitView? {
 }
 
 func getStatusBarWidth() -> CGFloat {
-    @AppStorage("miniStatusBar") var miniStatusBar: Bool = false
     // "Saving…" or "Finishing… 100%" while a stopped recording is being closed and post-processed
     if SCContext.isSaving { return 124.0 }
     // "Recovering… 100%" while a recording of an earlier run is being mixed
     if SCContext.streamType == nil { return SCContext.showsRecovery ? 136.0 : 36.0 }
-    let width = miniStatusBar ? 68.0 : 114.0
+    let width = AppSettings.miniStatusBar ? 68.0 : 114.0
     // The widths above are made for a timer that reads "07:05". From the first hour on it reads "1:07:05",
     // and every character more needs its own room (15 pt monospaced digits are about 9 pt wide).
     let extraCharacters = max(0, SCContext.getRecordingLength().count - 5)
@@ -482,15 +424,15 @@ func getStatusBarWidth() -> CGFloat {
 }
 
 func tips(_ message: String, title: String? = nil, id: String, buttonTitle: String = "OK", switchButton: Bool = false, width: Int? = nil, action: (() -> Void)? = nil) {
-    let never = (ud.object(forKey: "neverRemindMe") as? [String]) ?? []
+    let never = AppSettings.dismissedTips
     if !never.contains(id) {
         if switchButton {
             let alert = createAlert(title: title ?? Bundle.main.appName + " Tips".local, message: message, button1: buttonTitle, button2: "Don't remind me again", width: width).runModal()
-            if alert == .alertSecondButtonReturn { ud.setValue(never + [id], forKey: "neverRemindMe") }
+            if alert == .alertSecondButtonReturn { AppSettings.dismissedTips = never + [id] }
             if alert == .alertFirstButtonReturn { action?() }
         } else {
             let alert = createAlert(title: title ?? Bundle.main.appName + " Tips".local, message: message, button1: "Don't remind me again", button2: buttonTitle, width: width).runModal()
-            if alert == .alertFirstButtonReturn { ud.setValue(never + [id], forKey: "neverRemindMe") }
+            if alert == .alertFirstButtonReturn { AppSettings.dismissedTips = never + [id] }
             if alert == .alertSecondButtonReturn { action?() }
         }
     }
@@ -655,36 +597,6 @@ extension utsname {
     static var isAppleSilicon: Bool {
         sMachine == "arm64"
     }
-}
-
-enum AudioQuality: Int { case normal = 128, good = 192, high = 256, extreme = 320 }
-
-enum AudioFormat: String { case aac, alac, flac, opus, mp3 }
-
-enum VideoFormat: String { case mov, mp4 }
-
-enum Encoder: String {
-    case h264, h265
-    
-    /// The encoder used while the user has not chosen one: HEVC where the Mac encodes it in hardware (every Apple
-    /// Silicon Mac does), which gives about half the file size of H.264 for the same picture, and H.264 otherwise.
-    static let preferred: Encoder = {
-        var session: VTCompressionSession?
-        let status = VTCompressionSessionCreate(
-            allocator: nil,
-            width: 1920,
-            height: 1080,
-            codecType: kCMVideoCodecType_HEVC,
-            encoderSpecification: [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true] as CFDictionary,
-            imageBufferAttributes: nil,
-            compressedDataAllocator: nil,
-            outputCallback: nil,
-            refcon: nil,
-            compressionSessionOut: &session
-        )
-        if let session = session { VTCompressionSessionInvalidate(session) }
-        return status == noErr ? .h265 : .h264
-    }()
 }
 
 enum StreamType: Int { case screen, window, windows, application, screenarea, systemaudio }

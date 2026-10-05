@@ -91,7 +91,7 @@ struct AppSelector: View {
                 .onReceive(viewModel.$isReady) { isReady in
                     if isReady {
                         let allApps = viewModel.allApps.sorted(by: { $0.key.displayID < $1.key.displayID })
-                        if let s = NSApp.windows.first(where: { $0.title == "App Selector".local })?.screen,
+                        if let s = NSApp.windows(.appSelector).first?.screen,
                            let index = allApps.firstIndex(where: { $0.key.displayID == s.displayID }) {
                             selectedTab = index
                         }
@@ -178,7 +178,7 @@ class AppSelectorViewModel: ObservableObject {
                 var apps = [SCRunningApplication]()
                 let windows = SCContext.getWindows().filter({ NSIntersectsRect(screen.frame, $0.frame) })
                 for app in windows.map({ $0.owningApplication }) { if !apps.contains(app!) { apps.append(app!) }}
-                if ud.bool(forKey: "hideSelf") { apps = apps.filter({$0.bundleIdentifier != Bundle.main.bundleIdentifier}) }
+                if AppSettings.hideSelf { apps = apps.filter({$0.bundleIdentifier != Bundle.main.bundleIdentifier}) }
                 DispatchQueue.main.async { self.allApps[screen] = apps }
             }
             DispatchQueue.main.async { self.isReady = true }
@@ -197,15 +197,13 @@ class AppSelectorViewModel: ObservableObject {
 struct OptionsView: View {
     @State private var micList = SCContext.getMicrophone()
     
-    @AppStorage("frameRate")      private var frameRate: Int = 30
-    @AppStorage("videoQuality")   private var videoQuality: Double = 0.7
-    @AppStorage("saveDirectory")  private var saveDirectory: String?
-    @AppStorage("hideSelf")       private var hideSelf: Bool = true
-    @AppStorage("showMouse")      private var showMouse: Bool = true
-    @AppStorage("recordMic")      private var recordMic: Bool = false
-    @AppStorage("recordWinSound") private var recordWinSound: Bool = true
-    @AppStorage("highRes")        private var highRes: Int = 2
-    @AppStorage("recordHDR")      private var recordHDR: Bool = false
+    @AppStorage(AppSettings.$frameRate)      private var frameRate: Int
+    @AppStorage(AppSettings.$videoQuality)   private var videoQuality: Double
+    @AppStorage(AppSettings.$showMouse)      private var showMouse: Bool
+    @AppStorage(AppSettings.$recordMic)      private var recordMic: Bool
+    @AppStorage(AppSettings.$recordWinSound) private var recordWinSound: Bool
+    @AppStorage(AppSettings.$highRes)        private var highRes: Int
+    @AppStorage(AppSettings.$recordHDR)      private var recordHDR: Bool
     
     var body: some View {
         VStack(spacing: 6) {
@@ -316,8 +314,8 @@ struct OptionsView: View {
 /// A selected device that is not connected stays selected and is listed as unavailable.
 struct MicPicker: View {
     let micList: [AVCaptureDevice]
-    @AppStorage("micDeviceID") private var micDeviceID: String = "default"
-    @AppStorage("micDevice")   private var micName: String = "default"
+    @AppStorage(AppSettings.$micDeviceID) private var micDeviceID: String
+    @AppStorage(AppSettings.$micName)   private var micName: String
     
     var body: some View {
         Picker("", selection: $micDeviceID) {

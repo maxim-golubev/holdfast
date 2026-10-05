@@ -16,9 +16,9 @@ struct ContentView: View {
     @State private var infoGlowing = false
     @State private var micGlowing = false
     @State private var micList = SCContext.getMicrophone()
-    @AppStorage("recordMic") private var recordMic: Bool = false
-    @AppStorage("showOnDock") private var showOnDock: Bool = true
-    @AppStorage("showMenubar") private var showMenubar: Bool = false
+    @AppStorage(AppSettings.$recordMic) private var recordMic: Bool
+    @AppStorage(AppSettings.$showOnDock) private var showOnDock: Bool
+    @AppStorage(AppSettings.$showMenubar) private var showMenubar: Bool
 
     var appDelegate = AppDelegate.shared
     
@@ -122,7 +122,7 @@ struct ContentView: View {
                     Divider().frame(height: 70)
                     Button(action: {
                         closeMainWindow()
-                        appDelegate.createNewWindow(view: AppSelector(), title: "App Selector".local)
+                        appDelegate.createNewWindow(view: AppSelector(), title: "App Selector".local, identifier: .appSelector)
                     }, label: {
                         SelectorView(title: "Application".local, symbol: "app", symbolSize: 38, overlayer: "App")
                             .cornerRadius(8)
@@ -130,7 +130,7 @@ struct ContentView: View {
                     Divider().frame(height: 70)
                     Button(action: {
                         closeMainWindow()
-                        appDelegate.createNewWindow(view: WinSelector(), title: "Window Selector".local)
+                        appDelegate.createNewWindow(view: WinSelector(), title: "Window Selector".local, identifier: .windowSelector)
                     }, label: {
                         SelectorView(title: "Window".local, symbol: "macwindow").cornerRadius(8)
                     }).buttonStyle(.plain)
@@ -266,6 +266,7 @@ extension AppDelegate {
         guard let screen = scDisplay.nsScreen else { return }
         let screenshotWindow = ScreenshotWindow(contentRect: screen.frame, backing: .buffered, defer: false, size: size, force: noPanel)
         screenshotWindow.title = "Area Selector".local
+        screenshotWindow.identifier = .areaSelector
         //screenshotWindow.orderFront(self)
         screenshotWindow.orderFrontRegardless()
         if !noPanel {
@@ -279,6 +280,7 @@ extension AppDelegate {
             areaPanel.setFrame(contentView.frame, display: true)
             areaPanel.level = .screenSaver
             areaPanel.title = "Start Recording".local
+            areaPanel.identifier = .areaPanel
             areaPanel.contentView = contentView
             areaPanel.backgroundColor = .clear
             areaPanel.titleVisibility = .hidden
@@ -296,16 +298,13 @@ extension AppDelegate {
         guard let timer = countdownTimer else { return false }
         timer.invalidate()
         countdownTimer = nil
-        for w in NSApp.windows.filter({
-            $0.title == "Countdown Panel".local ||
-            $0.title == "Area Overlayer".local
-        }) { w.close() }
+        for w in NSApp.windows(.countdownPanel, .areaOverlay) { w.close() }
         return true
     }
     
     func createCountdownPanel(screen: SCDisplay, action: @escaping () -> Void) {
         guard let screen = screen.nsScreen else { return }
-        let countdown = ud.integer(forKey: "countdown")
+        let countdown = AppSettings.countdown
         if countdown == 0 {
             action()
         } else {
@@ -320,7 +319,7 @@ extension AppDelegate {
         }
     }
     
-    func createNewWindow(view: some View, title: String, random: Bool = false, only: Bool = true) {
+    func createNewWindow(view: some View, title: String, identifier: NSUserInterfaceItemIdentifier? = nil, random: Bool = false, only: Bool = true) {
         guard let screen = SCContext.getScreenWithMouse() else { return }
         if only { closeAllWindow() }
         var seed = 0.0
@@ -331,6 +330,7 @@ extension AppDelegate {
         contentView.frame = NSRect(x: wX, y: wY, width: 780, height: 555)
         let window = NSWindow(contentRect: contentView.frame, styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = title
+        window.identifier = identifier
         window.contentView = contentView
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true

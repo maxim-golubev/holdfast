@@ -39,7 +39,7 @@ extension AppDelegate {
         }
         
         var isDirectory: ObjCBool = false
-        guard let outputPath = saveDirectory else { return failToRecord("No output folder is set.".local) }
+        let outputPath = AppSettings.saveDirectory
         if fd.fileExists(atPath: outputPath, isDirectory: &isDirectory) {
             if !isDirectory.boolValue { return failToRecord("The output path is a file instead of a folder!".local) }
         } else {
@@ -90,21 +90,17 @@ extension AppDelegate {
             $0.owningApplication?.bundleIdentifier == "com.apple.finder"
             && $0.title == "" && $0.frame == screen.frame })
         let controlCenterWindow = content.applications.filter({ $0.bundleIdentifier == "com.apple.controlcenter" })
-        let mouseWindow = content.windows.filter({ $0.title == "Mouse Pointer".local && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
-        var appBlackList = [String]()
-        if let savedData = ud.data(forKey: "hiddenApps"),
-           let decodedApps = try? JSONDecoder().decode([AppInfo].self, from: savedData) {
-            appBlackList = (decodedApps as [AppInfo]).map({ $0.bundleID })
-        }
+        let mouseWindow = content.windows.filter({ $0.title == WindowTitle.mousePointer && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
+        let appBlackList = AppSettings.hiddenApps.map({ $0.bundleID })
         let excliudedApps = content.applications.filter({ appBlackList.contains($0.bundleIdentifier) })
         
         if SCContext.streamType == .window || SCContext.streamType == .windows {
             if var includ = SCContext.window {
                 if includ.count > 1 {
-                    if highlightMouse { includ += mouseWindow }
+                    if AppSettings.highlightMouse { includ += mouseWindow }
                     if dockApp != nil { includ += wallpaper }
                     SCContext.filter = SCContentFilter(display: screen, including: includ)
-                    SCContext.filter?.includeMenuBar = includeMenuBar
+                    SCContext.filter?.includeMenuBar = AppSettings.includeMenuBar
                 } else if let only = includ.first {
                     SCContext.streamType = .window
                     SCContext.filter = SCContentFilter(desktopIndependentWindow: only)
@@ -122,26 +118,25 @@ extension AppDelegate {
                 var excluded = [SCRunningApplication]()
                 var except = [SCWindow]()
                 excluded += excliudedApps
-                if hideCCenter { excluded += controlCenterWindow }
-                if hideSelf { if let qrWindows = qrWindows { except += qrWindows }}
-                if hideDesktopFiles { except += desktopFiles }
+                if AppSettings.hideCCenter { excluded += controlCenterWindow }
+                if AppSettings.hideSelf { if let qrWindows = qrWindows { except += qrWindows }}
+                if AppSettings.hideDesktopFiles { except += desktopFiles }
                 SCContext.filter = SCContentFilter(display: screen, excludingApplications: excluded, exceptingWindows: except)
-                SCContext.filter?.includeMenuBar = includeMenuBar
+                SCContext.filter?.includeMenuBar = AppSettings.includeMenuBar
             }
             if SCContext.streamType == .application {
                 var includ = SCContext.application ?? []
                 var except = [SCWindow]()
                 if let qrSelf = qrSelf { includ.append(qrSelf) }
                 let withFinder = includ.map{ $0.bundleIdentifier }.contains("com.apple.finder")
-                if withFinder && hideDesktopFiles { except += desktopFiles }
-                if hideSelf { if let qrWindows = qrWindows { except += qrWindows }}
-                //if ud.bool(forKey: "highlightMouse") { if let qrSelf = qrSelf { includ.append(qrSelf) }}
+                if withFinder && AppSettings.hideDesktopFiles { except += desktopFiles }
+                if AppSettings.hideSelf { if let qrWindows = qrWindows { except += qrWindows }}
                 if let dock = dockApp { includ.append(dock); except += dockWindow }
                 SCContext.filter = SCContentFilter(display: screen, including: includ, exceptingWindows: except)
-                SCContext.filter?.includeMenuBar = includeMenuBar
+                SCContext.filter?.includeMenuBar = AppSettings.includeMenuBar
             }
         }
-        if let problem = prepareMicCapture(wanted: micOverride ?? recordMic) {
+        if let problem = prepareMicCapture(wanted: micOverride ?? AppSettings.recordMic) {
             // A recording that was asked to have the microphone never starts without it unnoticed: a microphone
             // that turns up later cannot be added to it. Cancel is the default button.
             NSApp.activate(ignoringOtherApps: true)
@@ -243,19 +238,18 @@ extension AppDelegate {
         let audioOnly = recording.audioOnly
         
         // HDR uses the local display preset; see https://developer.apple.com/videos/play/wwdc2024/10088/?time=191 for the canonical display alternative
-        let conf = recordHDR ? SCStreamConfiguration(preset: .captureHDRStreamLocalDisplay) : SCStreamConfiguration()
+        let conf = AppSettings.recordHDR ? SCStreamConfiguration(preset: .captureHDRStreamLocalDisplay) : SCStreamConfiguration()
         conf.width = 2
         conf.height = 2
         
         if !audioOnly {
-            conf.width = Int(filter.contentRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
-            conf.height = Int(filter.contentRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+            conf.width = Int(filter.contentRect.width) * (AppSettings.highRes == 2 ? Int(filter.pointPixelScale) : 1)
+            conf.height = Int(filter.contentRect.height) * (AppSettings.highRes == 2 ? Int(filter.pointPixelScale) : 1)
             
-            conf.showsCursor = showMouse
-            if !recordHDR {
+            conf.showsCursor = AppSettings.showMouse
+            if !AppSettings.recordHDR {
                 conf.pixelFormat = kCVPixelFormatType_32BGRA
                 conf.colorSpaceName = CGColorSpace.sRGB
-                //if withAlpha { conf.pixelFormat = kCVPixelFormatType_32BGRA }
             } else {
                 // For recording HDR in a BT2020 PQ container
                 conf.colorSpaceName = CGColorSpace.itur_2100_PQ
@@ -280,7 +274,7 @@ extension AppDelegate {
 
         // Always an explicit interval: a timescale of 0 is not a valid time, and leaving the stream unthrottled
         // delivers frames at the display's rate whatever the setting says. An audio-only stream gets next to no frames.
-        let fps = SCContext.captureFrameRate(frameRate)
+        let fps = SCContext.captureFrameRate(AppSettings.frameRate)
         conf.minimumFrameInterval = CMTime(value: 1, timescale: audioOnly ? CMTimeScale.max : CMTimeScale(fps))
         print("Frame interval passed to ScreenCaptureKit: \(conf.minimumFrameInterval)")
 
@@ -288,12 +282,12 @@ extension AppDelegate {
             if let nsRect = SCContext.screenArea, let display = SCContext.screen {
                 let newY = display.frame.height - nsRect.size.height - nsRect.origin.y
                 conf.sourceRect = CGRect(x: nsRect.origin.x, y: newY, width: nsRect.size.width, height: nsRect.size.height)
-                conf.width = Int(conf.sourceRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
-                conf.height = Int(conf.sourceRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                conf.width = Int(conf.sourceRect.width) * (AppSettings.highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                conf.height = Int(conf.sourceRect.height) * (AppSettings.highRes == 2 ? Int(filter.pointPixelScale) : 1)
             }
         }
         
-        let encoderIsH265 = (encoder.rawValue == Encoder.h265.rawValue) || recordHDR
+        let encoderIsH265 = (AppSettings.encoder == .h265) || AppSettings.recordHDR
         if !audioOnly && !encoderIsH265 {
             var session: VTCompressionSession?
             let status = VTCompressionSessionCreate(
@@ -317,7 +311,7 @@ extension AppDelegate {
                     button1: "Use H.265",
                     button2: "Continue with H.264"
                 )
-                if button == .alertFirstButtonReturn { ud.setValue(Encoder.h265.rawValue, forKey: "encoder") }
+                if button == .alertFirstButtonReturn { AppSettings.encoder = .h265 }
             }
         }
         
@@ -404,26 +398,26 @@ extension AppDelegate {
         // the recording: without them a .mp4 or .mov cannot be opened at all unless it was closed properly.
         // Closing the file normally turns it into an ordinary movie file.
         writer.movieFragmentInterval = SCContext.fragmentInterval
-        let encoderIsH265 = (encoder.rawValue == Encoder.h265.rawValue) || recordHDR
-        let fps = SCContext.captureFrameRate(frameRate)
+        let encoderIsH265 = (AppSettings.encoder == .h265) || AppSettings.recordHDR
+        let fps = SCContext.captureFrameRate(AppSettings.frameRate)
         let fpsMultiplier: Double = Double(fps)/8
         let encoderMultiplier: Double = encoderIsH265 ? 0.5 : 0.9
         let resolution = Double(max(600, conf.width)) * Double(max(600, conf.height))
         var qualityMultiplier = 1 - (log10(sqrt(resolution) * fpsMultiplier) / 5)
-        switch videoQuality {
+        switch AppSettings.videoQuality {
             case 0.3: qualityMultiplier = max(0.1, qualityMultiplier)
             case 0.7: qualityMultiplier = max(0.4, min(0.6, qualityMultiplier * 3))
             default: qualityMultiplier = 1.0
         }
         let h264Level = AVVideoProfileLevelH264HighAutoLevel
-        let h265Level = recordHDR ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel
+        let h265Level = AppSettings.recordHDR ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel
 
-        let targetBitrate = resolution * fpsMultiplier * encoderMultiplier * qualityMultiplier * (recordHDR ? 2 : 1)
+        let targetBitrate = resolution * fpsMultiplier * encoderMultiplier * qualityMultiplier * (AppSettings.recordHDR ? 2 : 1)
         print("framerate set in app: \(fps)")
         print("target bitrate: \(targetBitrate/1000000)")
 
         var videoSettings: [String: Any] = [
-            AVVideoCodecKey: encoderIsH265 ? ((withAlpha && !recordHDR) ? AVVideoCodecType.hevcWithAlpha : AVVideoCodecType.hevc) : AVVideoCodecType.h264,
+            AVVideoCodecKey: encoderIsH265 ? ((AppSettings.withAlpha && !AppSettings.recordHDR) ? AVVideoCodecType.hevcWithAlpha : AVVideoCodecType.hevc) : AVVideoCodecType.h264,
             // yes, not ideal if we want more than these encoders in the future, but it's ok for now
             AVVideoWidthKey: conf.width,
             AVVideoHeightKey: conf.height,
@@ -434,7 +428,7 @@ extension AppDelegate {
             ] as [String : Any]
         ]
         
-        if !recordHDR {
+        if !AppSettings.recordHDR {
             videoSettings[AVVideoColorPropertiesKey] = [
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
@@ -480,7 +474,7 @@ extension AppDelegate {
             var ciImage = CIImage(cvPixelBuffer: imageBuffer)
             // On the sample queue, where SCContext.recording is assigned
             let url = "\(SCContext.getFilePath(capture: true, directory: SCContext.recording?.saveDirectory)).png".url
-            if !recordHDR {
+            if !AppSettings.recordHDR {
                 sampleBuffer.nsImage?.saveToFile(url)
             } else {
                 let context = CIContext()

@@ -21,8 +21,7 @@ struct StatusBarItem: View {
     @StateObject private var popoverState = PopoverState.shared
     @ObservedObject private var health = RecordingHealth.shared
     //@NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @AppStorage("miniStatusBar") private var miniStatusBar: Bool = false
-    //@AppStorage("highlightMouse") private var highlightMouse: Bool = false
+    @AppStorage(AppSettings.$miniStatusBar) private var miniStatusBar: Bool
     private var appDelegate = AppDelegate.shared
     
     var body: some View {
@@ -150,7 +149,7 @@ struct StatusBarItem: View {
                 }
                 .help("A recording that an earlier run of QuickRecorder did not finish is being mixed. Quitting waits for it.")
                 .padding([.leading,.trailing], 4)
-            } else if ud.bool(forKey: "showMenubar") {
+            } else if AppSettings.showMenubar {
                 Button(action: {
                     popoverState.isShowing = true
                 }, label: {
@@ -213,7 +212,7 @@ func updateFloatingController() {
 
 func updateStatusBar() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-        if SCContext.streamType == nil && !SCContext.isSaving && !SCContext.showsRecovery && !ud.bool(forKey: "showMenubar") {
+        if SCContext.streamType == nil && !SCContext.isSaving && !SCContext.showsRecovery && !AppSettings.showMenubar {
             statusBarItem.isVisible = false
             return
         }

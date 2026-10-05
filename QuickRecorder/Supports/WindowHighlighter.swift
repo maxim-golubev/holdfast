@@ -124,6 +124,7 @@ struct HighlightMask: View {
             dashWindow.ignoresMouseEvents = true
             dashWindow.isReleasedWhenClosed = false
             dashWindow.title = "Area Overlayer".local
+            dashWindow.identifier = .areaOverlay
             dashWindow.backgroundColor = NSColor.clear
             dashWindow.contentView = NSHostingView(rootView: DashWindow())
             dashWindow.orderFront(self)
@@ -175,6 +176,7 @@ class WindowHighlighter {
             cover.isReleasedWhenClosed = false
             cover.collectionBehavior = [.canJoinAllSpaces, .stationary]
             cover.title = "Screen Cover"
+            cover.identifier = .screenCover
             cover.orderFront(self)
         }
         
@@ -191,7 +193,7 @@ class WindowHighlighter {
         
     func stopMouseMonitor() {
         DispatchQueue.main.async {
-            for w in NSApp.windows.filter({ $0.title == "Screen Cover" }) { w.close() }
+            for w in NSApp.windows(.screenCover) { w.close() }
         }
         if let monitor = mouseMonitor {
             NSEvent.removeMonitor(monitor)

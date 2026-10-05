@@ -17,7 +17,7 @@ struct PreviewView: View {
     @State private var isSharing: Bool = false
     @State private var nsWindow: NSWindow?
     @State private var opacity: Double = 0.0
-    @AppStorage("trimAfterRecord")  private var trimAfterRecord: Bool = false
+    @AppStorage(AppSettings.$trimAfterRecord)  private var trimAfterRecord: Bool
     
     var body: some View {
         ZStack(alignment: Alignment(horizontal: .leading, vertical: .top)) {

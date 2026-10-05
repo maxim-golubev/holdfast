@@ -38,8 +38,8 @@ struct SettingsView: View {
 }
 
 struct GeneralView: View {
-    @AppStorage("showOnDock") private var showOnDock: Bool = true
-    @AppStorage("showMenubar") private var showMenubar: Bool = false
+    @AppStorage(AppSettings.$showOnDock) private var showOnDock: Bool
+    @AppStorage(AppSettings.$showMenubar) private var showMenubar: Bool
     
     @State private var launchAtLogin = false
 
@@ -87,16 +87,16 @@ struct GeneralView: View {
 }
 
 struct RecorderView: View {
-    @AppStorage("countdown")        private var countdown: Int = 0
-    @AppStorage("highlightMouse")   private var highlightMouse: Bool = false
-    @AppStorage("includeMenuBar")   private var includeMenuBar: Bool = true
-    @AppStorage("hideDesktopFiles") private var hideDesktopFiles: Bool = false
-    @AppStorage("trimAfterRecord")  private var trimAfterRecord: Bool = false
-    @AppStorage("miniStatusBar")    private var miniStatusBar: Bool = false
-    @AppStorage("hideSelf")         private var hideSelf: Bool = true
-    @AppStorage("preventSleep")     private var preventSleep: Bool = true
-    @AppStorage("showPreview")      private var showPreview: Bool = true
-    @AppStorage("hideCCenter")      private var hideCCenter: Bool = false
+    @AppStorage(AppSettings.$countdown)        private var countdown: Int
+    @AppStorage(AppSettings.$highlightMouse)   private var highlightMouse: Bool
+    @AppStorage(AppSettings.$includeMenuBar)   private var includeMenuBar: Bool
+    @AppStorage(AppSettings.$hideDesktopFiles) private var hideDesktopFiles: Bool
+    @AppStorage(AppSettings.$trimAfterRecord)  private var trimAfterRecord: Bool
+    @AppStorage(AppSettings.$miniStatusBar)    private var miniStatusBar: Bool
+    @AppStorage(AppSettings.$hideSelf)         private var hideSelf: Bool
+    @AppStorage(AppSettings.$preventSleep)     private var preventSleep: Bool
+    @AppStorage(AppSettings.$showPreview)      private var showPreview: Bool
+    @AppStorage(AppSettings.$hideCCenter)      private var hideCCenter: Bool
 
     var body: some View {
         SForm(spacing: 10) {
@@ -130,14 +130,14 @@ struct RecorderView: View {
 }
 
 struct OutputView: View {
-    @AppStorage("encoder")          private var encoder: Encoder = .preferred
-    @AppStorage("videoFormat")      private var videoFormat: VideoFormat = .mp4
-    @AppStorage("audioFormat")      private var audioFormat: AudioFormat = .aac
-    @AppStorage("audioQuality")     private var audioQuality: AudioQuality = .high
-    @AppStorage("remuxAudio")       private var remuxAudio: Bool = true
-    @AppStorage("keepUnmixed")      private var keepUnmixed: Bool = true
-    @AppStorage("withAlpha")        private var withAlpha: Bool = false
-    @AppStorage("saveDirectory")    private var saveDirectory: String?
+    @AppStorage(AppSettings.$encoder)          private var encoder: Encoder
+    @AppStorage(AppSettings.$videoFormat)      private var videoFormat: VideoFormat
+    @AppStorage(AppSettings.$audioFormat)      private var audioFormat: AudioFormat
+    @AppStorage(AppSettings.$audioQuality)     private var audioQuality: AudioQuality
+    @AppStorage(AppSettings.$remuxAudio)       private var remuxAudio: Bool
+    @AppStorage(AppSettings.$keepUnmixed)      private var keepUnmixed: Bool
+    @AppStorage(AppSettings.$withAlpha)        private var withAlpha: Bool
+    @AppStorage(AppSettings.$saveDirectory)    private var saveDirectory: String
 
     var body: some View {
         SForm(spacing: 30) {
@@ -180,7 +180,7 @@ struct OutputView: View {
             }
             SGroupBox(label: "Save") {
                 SItem(label: "Output Folder") {
-                    Text(String(format: "Currently set to \"%@\"".local, saveDirectory!.lastPathComponent))
+                    Text(String(format: "Currently set to \"%@\"".local, saveDirectory.lastPathComponent))
                         .font(.footnote)
                         .foregroundColor(Color.secondary)
                         .lineLimit(1)

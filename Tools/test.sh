@@ -5,6 +5,7 @@
 # Usage: Tools/test.sh [-v] [word in the test names to run]
 cd "$(dirname "$0")/.."
 sources=(
+  QuickRecorder/AppSettings.swift
   QuickRecorder/MicConverter.swift
   QuickRecorder/RecordingLogic.swift
   QuickRecorder/RecordingMixer.swift

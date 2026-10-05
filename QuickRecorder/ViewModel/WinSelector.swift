@@ -122,7 +122,7 @@ struct WinSelector: View {
                 .onReceive(viewModel.$isReady) { isReady in
                     if isReady {
                         let allApps = viewModel.windowThumbnails.sorted(by: { $0.key.displayID < $1.key.displayID })
-                        if let s = NSApp.windows.first(where: { $0.title == "Window Selector".local })?.screen,
+                        if let s = NSApp.windows(.windowSelector).first?.screen,
                            let index = allApps.firstIndex(where: { $0.key.displayID == s.displayID }) {
                             selectedTab = index
                         }

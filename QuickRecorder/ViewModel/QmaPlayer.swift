@@ -561,8 +561,8 @@ class AudioPlayerManager: ObservableObject {
     /// `audioQuality` and `videoFormat` default to the current settings; finishing a recording passes the ones it was
     /// started with. `completion` is called once, when the export has ended, whether it worked or not.
     func saveFile(_ url: URL, saveAsMP3: Bool = false,
-                  audioQuality: Int = ud.integer(forKey: "audioQuality"),
-                  videoFormat: String = ud.string(forKey: "videoFormat") ?? "",
+                  audioQuality: Int = AppSettings.audioQuality.rawValue,
+                  videoFormat: String = AppSettings.videoFormat.rawValue,
                   completion: (() -> Void)? = nil) {
         var url = url
         if url.pathExtension == "mp3" { url = url.deletingPathExtension() }
