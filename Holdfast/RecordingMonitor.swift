@@ -127,7 +127,8 @@ final class RecordingMonitor {
         lastTick = uptime
         guard let writer = writer, writer.isCapturing, !writer.isPaused else { return }
         let recording = writer.recording
-        let startTitle = "Nothing is being recorded yet"
+        // A title for the notifications, a sentence for the status line
+        let startTitle = "Nothing Is Being Recorded Yet"
         guard let sessionStart = writer.sessionStart else {
             // The file starts with the first complete picture (the first system audio of an audio-only recording),
             // and all audio that arrives before it is left out. When that takes this long it may never come, a
@@ -140,7 +141,7 @@ final class RecordingMonitor {
             }
             report(problem, was: startWarning, title: startTitle, backTitle: "", backBody: "")
             startWarning = problem
-            if problem != nil { show(warning: startTitle, silent: nil) }
+            if problem != nil { show(warning: "Nothing is being recorded yet", silent: nil) }
             return
         }
         if startWarning != nil {

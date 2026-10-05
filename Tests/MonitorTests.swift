@@ -160,7 +160,7 @@ func monitorTests() async {
         run.ticks(after: 0, through: 5)
         expectEqual(run.notified, [], "5 s without a first picture is not yet a problem")
         run.tick(at: 5.5)
-        expectEqual(run.notified, ["Nothing is being recorded yet"], "more than 5 s is")
+        expectEqual(run.notified, ["Nothing Is Being Recorded Yet"], "more than 5 s is")
         expectEqual(run.warning, "Nothing is being recorded yet", "and shown")
         expectEqual(run.fills("video") + run.fills("microphone"), 0, "nothing is filled before the file starts")
         run.queue.sync {
@@ -169,7 +169,7 @@ func monitorTests() async {
         }
         run.microphone(upTo: 6.5)
         run.tick(at: 6.5)
-        expectEqual(run.notified, ["Nothing is being recorded yet", "Recording Started"], "the start is reported")
+        expectEqual(run.notified, ["Nothing Is Being Recorded Yet", "Recording Started"], "the start is reported")
         expectEqual(run.warning, nil, "and the warning goes")
     }
 

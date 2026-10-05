@@ -58,7 +58,7 @@ struct qmaPlayerView: View {
                         }
                     }
                     .buttonStyle(.plain)
-                    .help("Stop Play")
+                    .help("Stop")
                     .accessibilityLabel("Stop")
                     .frame(width: 30, height: 30)
                     .disabled(audioPlayerManager.exporting)
