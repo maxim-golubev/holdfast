@@ -557,6 +557,8 @@ class AudioPlayerManager: ObservableObject {
         let format = exportMP3 ? "mp3" : self.fileFormat
         showSavePanel(defaultFileName: "\(packageURL.deletingPathExtension().appendingPathExtension(format).lastPathComponent)", format: format, exportMP3: exportMP3) { url, saveAsMP3 in
             guard let url = url else { return }
+            // Quitting waits for it
+            withRecorder { $0.exportStarted() }
             // The panel has asked whether to replace a file of that name
             self.saveFile(url, saveAsMP3: saveAsMP3, replacing: true) { result in
                 switch result {
@@ -565,6 +567,7 @@ class AudioPlayerManager: ObservableObject {
                 case .failure(let error):
                     UserNotice.reportFailure(title: "Export Failed", message: error.localizedDescription)
                 }
+                RecorderController.shared.exportEnded()
             }
         }
     }

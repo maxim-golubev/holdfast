@@ -12,7 +12,7 @@ import Foundation
 /// line of the menu and the accessibility label of the button.
 struct StatusDisplay: Equatable {
     enum Kind: CaseIterable {
-        case idle, starting, recording, muted, paused, warning, saving, recovering
+        case idle, starting, recording, muted, paused, warning, saving, recovering, exporting
     }
 
     enum Tint {
@@ -32,6 +32,8 @@ struct StatusDisplay: Equatable {
         var mixProgress: Double?
         var isRecovering = false
         var recoveryProgress: Double?
+        /// A file the user started exporting is being written
+        var isExporting = false
         /// The app waits to quit until what it saves or recovers is done
         var isQuitting = false
         /// The elapsed time as text (`Timeline.lengthText`)
@@ -94,6 +96,11 @@ struct StatusDisplay: Equatable {
                 let recovering = "Recovering a recording that was not finished".local
                 line = input.recoveryProgress.map { StatusDisplay.percent(recovering, $0) } ?? recovering
                 detail = "A recording that an earlier run of Holdfast did not finish is being mixed. " + (input.isQuitting ? "Holdfast quits when it is done." : "Quitting waits for it.")
+            } else if input.isExporting {
+                kind = .exporting
+                title = "Exporting".local
+                line = "Exporting a file".local
+                detail = "A file made from a recording is being written. " + (input.isQuitting ? "Holdfast quits when it is done." : "Quitting waits for it.")
             } else {
                 kind = .idle
                 title = ""
@@ -114,6 +121,7 @@ struct StatusDisplay: Equatable {
         case .warning: return "exclamationmark.triangle"
         case .saving: return "square.and.arrow.down"
         case .recovering: return "arrow.triangle.2.circlepath"
+        case .exporting: return "square.and.arrow.up"
         }
     }
 
@@ -121,7 +129,7 @@ struct StatusDisplay: Equatable {
         switch kind {
         case .recording, .muted: return .red
         case .warning: return .orange
-        case .idle, .starting, .paused, .saving, .recovering: return .standard
+        case .idle, .starting, .paused, .saving, .recovering, .exporting: return .standard
         }
     }
 
@@ -139,6 +147,7 @@ extension RecorderController {
         return StatusDisplay.Input(state: state, isPaused: isPaused, hasMicrophone: session?.hasMicrophone ?? false,
                                    isMicrophoneMuted: isMicrophoneMuted, micSilent: health.micSilent, warning: health.warning,
                                    mixProgress: health.mixProgress, isRecovering: recovery.isRunning,
-                                   recoveryProgress: recovery.progress, isQuitting: quitRequested, length: recordingLength())
+                                   recoveryProgress: recovery.progress, isExporting: exportsRunning > 0, isQuitting: quitRequested,
+                                   length: recordingLength())
     }
 }

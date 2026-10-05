@@ -23,6 +23,7 @@ func statusTests() async {
             case .warning: input.state = .recording; input.warning = "Microphone is not being recorded"
             case .saving: input.state = .finalizing
             case .recovering: input.isRecovering = true
+            case .exporting: input.isExporting = true
             }
             let display = StatusDisplay(input)
             expect(display.kind == kind, "\(kind) is shown as \(display.kind)")
@@ -94,6 +95,11 @@ func statusTests() async {
         expectEqual(display.title, "Recovering", "the title does not change its length during the recovery")
         expect(display.line.hasSuffix("50%"), "recovery in percent, in the status line")
         expectEqual(StatusDisplay(Input(state: .recording, isRecovering: true, length: "00:03")).kind, .recording, "a recording comes before the recovery")
+        display = StatusDisplay(Input(isExporting: true))
+        expectEqual(display.title, "Exporting", "an export the user started")
+        expect(display.detail.contains("Quitting waits"), "says that quitting waits for it")
+        expectEqual(StatusDisplay(Input(isRecovering: true, isExporting: true)).kind, .recovering, "the recovery comes before an export")
+        expectEqual(StatusDisplay(Input(state: .recording, isExporting: true, length: "00:03")).kind, .recording, "a recording comes before an export")
         display = StatusDisplay(Input())
         expectEqual(display.kind, .idle, "idle")
         expectEqual(display.title, "", "only the symbol when idle")

@@ -383,6 +383,25 @@ func sessionTests() async {
         expectEqual(rig.journal.count("save"), 1, "saved once")
     }
 
+    await test("session: quitting waits for the exports the user started") {
+        let rig = try Rig("session-quit-export")
+        var replies = 0
+        rig.controller.exportStarted()
+        rig.controller.exportStarted()
+        expectEqual(StatusDisplay(rig.controller.statusInput).kind, .exporting, "the status item shows the export")
+        expect(!rig.controller.canQuit { replies += 1 }, "does not quit while an export is written")
+        expect(rig.controller.quitRequested, "waits")
+        expect(StatusDisplay(rig.controller.statusInput).detail.contains("quits when it is done"), "and says so")
+        rig.controller.exportEnded()
+        await rig.settle()
+        expectEqual(replies, 0, "not while the other one is still written")
+        rig.controller.exportEnded()
+        await rig.settle()
+        expectEqual(replies, 1, "quits once both are done")
+        rig.controller.exportEnded()
+        expectEqual(rig.controller.exportsRunning, 0, "an extra end does not count below zero")
+    }
+
     await test("session: no recording starts while a quit waits, and the quit goes ahead only when idle") {
         let rig = try Rig("session-quit-pending")
         try rig.start()

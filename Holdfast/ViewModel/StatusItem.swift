@@ -281,7 +281,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         case .saving:
             addStatusLine()
         case .idle:
-            // Shown while a recovery runs
+            // Shown while a recovery or an export runs
             addStatusLine()
             let separator = NSMenuItem.separator()
             separator.tag = Tag.lineSeparator.rawValue
@@ -336,7 +336,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             set(.mute, title: "Mute Microphone".local, symbol: "mic.slash", enabled: recorder.canMuteMicrophone)
         }
         if let line = menu.item(withTag: Tag.line.rawValue), line.title != display.line { line.title = display.line }
-        let lineShown = state != .idle || display.kind == .recovering
+        let lineShown = display.kind != .idle
         show(.line, lineShown)
         show(.lineSeparator, lineShown)
     }

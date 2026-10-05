@@ -50,6 +50,9 @@ final class RecorderController {
     /// Set when the app was asked to quit and is waiting for its files to be final
     private(set) var quitRequested = false
     private var idleHandlers = [() -> Void]()
+    /// Files the user is exporting (a `.qma` player's Export, a trimmed clip), which quitting waits for
+    private(set) var exportsRunning = 0
+    private var exportHandlers = [() -> Void]()
 
     init(queue: DispatchQueue, environment: RecorderEnvironment) {
         self.queue = queue
@@ -152,11 +155,36 @@ final class RecorderController {
         if state == .idle { handler() } else { idleHandlers.append(handler) }
     }
 
+    /// An export the user started is being written: quitting waits for it. Each call is ended by one `exportEnded`.
+    func exportStarted() {
+        exportsRunning += 1
+        environment.statusChanged(self)
+    }
+
+    /// The export is over, whatever came of it. What it has to tell the user is reported before this is called:
+    /// a quit that waits for it goes ahead at once.
+    func exportEnded() {
+        exportsRunning = max(0, exportsRunning - 1)
+        environment.statusChanged(self)
+        guard exportsRunning == 0 else { return }
+        let handlers = exportHandlers
+        exportHandlers = []
+        handlers.forEach { $0() }
+    }
+
+    private func whenExportsDone(_ handler: @escaping () -> Void) {
+        if exportsRunning == 0 { handler() } else { exportHandlers.append(handler) }
+    }
+
+    /// Nothing is being recorded, saved, recovered or exported: quitting cuts nothing off
+    private var isQuiet: Bool { state == .idle && !recovery.isRunning && exportsRunning == 0 }
+
     /// For `applicationShouldTerminate`. True when the app can quit now. Otherwise a recording that is starting or
     /// running is stopped, no new one can be started (`canStart`), and `reply` is called, once, when its files are
-    /// final, a recording of an earlier run that is being mixed is done too, and the report of any failure has been seen.
+    /// final, a recording of an earlier run that is being mixed is done too, so are the exports, and the report of
+    /// any failure has been seen.
     func canQuit(orReply reply: @escaping () -> Void) -> Bool {
-        if state == .idle && !recovery.isRunning { return true }
+        if isQuiet { return true }
         stop()
         if !quitRequested {
             quitRequested = true
@@ -166,13 +194,15 @@ final class RecorderController {
         return false
     }
 
-    /// Calls `reply` once idle, the recovery done and the alerts dismissed, all at the same time: checked again
-    /// at the end, since the waits follow each other and the reply ends whatever runs then.
+    /// Calls `reply` once idle, the recovery and the exports done and the alerts dismissed, all at the same time:
+    /// checked again at the end, since the waits follow each other and the reply ends whatever runs then.
     private func replyWhenDone(_ reply: @escaping () -> Void) {
         whenIdle { [self] in
             recovery.whenDone { [self] in
-                environment.whenAlertsDismissed { [self] in
-                    if state == .idle && !recovery.isRunning { reply() } else { replyWhenDone(reply) }
+                whenExportsDone { [self] in
+                    environment.whenAlertsDismissed { [self] in
+                        if isQuiet { reply() } else { replyWhenDone(reply) }
+                    }
                 }
             }
         }

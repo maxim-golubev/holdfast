@@ -104,7 +104,9 @@ class RecorderPlayerModel: NSObject, ObservableObject {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
         let output = URL(fileURLWithPath: fileUrl.deletingPathExtension().path + " (trimmed \(dateFormatter.string(from: Date.now))).\(fileEnding)")
-        Task {
+        // Quitting waits for it: a clip cut off halfway would not open
+        withRecorder { $0.exportStarted() }
+        Task { @MainActor in
             do {
                 try await exportSession.export(to: output, as: fileType)
                 UserNotice.showNotification(title: "Clip Saved", body: String(format: "File saved to: %@", output.path), id: "holdfast.completed.\(UUID().uuidString)")
@@ -112,6 +114,7 @@ class RecorderPlayerModel: NSObject, ObservableObject {
                 try? fd.removeItem(at: output)
                 UserNotice.showAlertLater(title: "Clip Not Saved", message: String(format: "The trimmed clip of %@ could not be written: %@ The recording itself is unchanged.", fileUrl.lastPathComponent, error.localizedDescription))
             }
+            RecorderController.shared.exportEnded()
         }
     }
     
