@@ -6,6 +6,6 @@ out=$(xcodebuild -project Holdfast.xcodeproj -scheme Holdfast -configuration Rel
   -derivedDataPath build build 2>&1)
 rc=$?
 echo "$out" | grep -E 'error:|BUILD (SUCCEEDED|FAILED)' | sort -u
-[ "$1" = "-q" ] || echo "$out" | grep -E 'warning:' | grep -v -E 'SourcePackages|deprecated' | sort -u | head -40
+[ "$1" = "-q" ] || echo "$out" | grep -E 'warning:' | grep -v -E 'SourcePackages|appintentsmetadataprocessor' | sort -u | head -40
 [ $rc -eq 0 ] && ls -d build/Build/Products/Release/Holdfast.app
 exit $rc

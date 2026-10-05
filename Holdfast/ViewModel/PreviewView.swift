@@ -83,7 +83,7 @@ struct PreviewView: View {
                 if !isHovered && !isSharing { closeWindow() }
             }
         }
-        .onChange(of: isHovered) { newValue in
+        .onChange(of: isHovered) { _, newValue in
             if !newValue {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
                     if !isHovered && !isSharing { closeWindow() }
