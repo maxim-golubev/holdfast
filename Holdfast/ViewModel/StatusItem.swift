@@ -16,8 +16,9 @@ import AppKit
 final class StatusItemController: NSObject, NSMenuDelegate {
     static let shared = StatusItemController()
 
-    /// Which set of items the menu has. Within one set the items are changed in place; the sets differ in
-    /// what is under the pointer, so an open menu is never turned from one into another.
+    /// Which set of items the menu has. Within one set the items are changed in place, and none is hidden or shown:
+    /// that would move the items below it. The sets differ in what is under the pointer, so an open menu is never
+    /// turned from one into another.
     private enum Layout {
         case recording, saving, idle
 
@@ -32,7 +33,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     /// The items whose text changes while the menu is open
     private enum Tag: Int {
-        case pause = 1, mute, line, lineSeparator
+        case pause = 1, mute, line
     }
 
     private var item: NSStatusItem?
@@ -309,11 +310,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         case .saving:
             addStatusLine()
         case .idle:
-            // Shown while a recovery or an export runs
+            // "Ready to record", or the recovery or export that runs
             addStatusLine()
-            let separator = NSMenuItem.separator()
-            separator.tag = Tag.lineSeparator.rawValue
-            menu.addItem(separator)
+            menu.addItem(.separator())
             add("Open Main Panel", symbol: "rectangle.on.rectangle", #selector(openMainPanel))
             menu.addItem(.separator())
             // Nothing can be started while the app waits to quit (`canStart`)
@@ -347,11 +346,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             }
             if item.isEnabled != enabled { item.isEnabled = enabled }
         }
-        func show(_ tag: Tag, _ visible: Bool) {
-            guard let item = menu.item(withTag: tag.rawValue), item.isHidden == visible else { return }
-            item.isHidden = !visible
-        }
-
         let state = recorder.state
         if recorder.isPaused {
             set(.pause, title: "Resume Recording", symbol: "play.circle", enabled: state == .recording)
@@ -364,9 +358,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             set(.mute, title: "Mute Microphone", symbol: "mic.slash", enabled: recorder.canMuteMicrophone)
         }
         if let line = menu.item(withTag: Tag.line.rawValue), line.title != display.line { line.title = display.line }
-        let lineShown = display.kind != .idle
-        show(.line, lineShown)
-        show(.lineSeparator, lineShown)
     }
 
     // MARK: - Commands
