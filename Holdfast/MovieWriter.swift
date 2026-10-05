@@ -114,7 +114,7 @@ final class MovieWriter {
         // the recording: without them a .mp4 or .mov cannot be opened at all unless it was closed properly.
         // Closing the file normally turns it into an ordinary movie file.
         writer.movieFragmentInterval = MovieWriter.fragmentInterval
-        let encoderIsH265 = (AppSettings.encoder == .h265) || AppSettings.recordHDR
+        let encoderIsH265 = AppSettings.usesHEVC
         let fps = AppSettings.captureFrameRate
         let fpsMultiplier: Double = Double(fps)/8
         let encoderMultiplier: Double = encoderIsH265 ? 0.5 : 0.9

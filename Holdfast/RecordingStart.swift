@@ -147,32 +147,15 @@ extension RecorderController {
         let audioOnly = recording.audioOnly
         let conf = CaptureSource.configuration(for: recording, target: target, filter: filter, microphoneDeviceID: microphone?.captureDeviceID)
 
-        let encoderIsH265 = (AppSettings.encoder == .h265) || AppSettings.recordHDR
-        if !audioOnly && !encoderIsH265 {
-            var probe: VTCompressionSession?
-            let status = VTCompressionSessionCreate(
-                allocator: nil,
-                width: Int32(conf.width),
-                height: Int32(conf.height),
-                codecType: kCMVideoCodecType_H264,
-                encoderSpecification: [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true] as CFDictionary,
-                imageBufferAttributes: nil,
-                compressedDataAllocator: nil,
-                outputCallback: nil,
-                refcon: nil,
-                compressionSessionOut: &probe
+        if !audioOnly && !AppSettings.usesHEVC && !Encoder.encodesInHardware(kCMVideoCodecType_H264, width: Int32(conf.width), height: Int32(conf.height)) {
+            let button = showAlertSyncOnMainThread(
+                level: .critical,
+                title: "Encoder Warning",
+                message: "This Mac cannot encode H.264 at this resolution in hardware. Recording with the software encoder uses much more of the processor.\n\nUse H.265 instead?",
+                button1: "Use H.265",
+                button2: "Continue with H.264"
             )
-
-            if status != noErr {
-                let button = showAlertSyncOnMainThread(
-                    level: .critical,
-                    title: "Encoder Warning",
-                    message: "VideoToolbox H.264 hardware encoder doesn't support the current resolution.\nContinue with a software encoder will significantly increase the CPU usage.\n\nWould you like to use H.265 instead?".local,
-                    button1: "Use H.265",
-                    button2: "Continue with H.264"
-                )
-                if button == .alertFirstButtonReturn { AppSettings.encoder = .h265 }
-            }
+            if button == .alertFirstButtonReturn { AppSettings.encoder = .h265 }
         }
 
         // The stream hands its buffers to this session and reports its end to it, so neither can reach another recording

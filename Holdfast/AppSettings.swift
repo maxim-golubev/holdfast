@@ -127,6 +127,8 @@ enum AppSettings {
     /// 0.3 low, 0.7 medium, anything else high
     @Setting("videoQuality", default: 0.7) static var videoQuality: Double
     @Setting("recordHDR", default: false) static var recordHDR: Bool
+    /// HDR is only written as HEVC, whatever the encoder setting says
+    static var usesHEVC: Bool { encoder == .h265 || recordHDR }
     @Setting("encoder", default: Encoder.preferred) static var encoder: Encoder
     @Setting("videoFormat", default: .mp4) static var videoFormat: VideoFormat
     @Setting("withAlpha", default: false) static var withAlpha: Bool
@@ -190,13 +192,16 @@ enum Encoder: String {
 
     /// The encoder used while the user has not chosen one: HEVC where the Mac encodes it in hardware (every Apple
     /// Silicon Mac does), which gives about half the file size of H.264 for the same picture, and H.264 otherwise.
-    static let preferred: Encoder = {
+    static let preferred: Encoder = encodesInHardware(kCMVideoCodecType_HEVC, width: 1920, height: 1080) ? .h265 : .h264
+
+    /// Whether this Mac has a hardware encoder for `codec` at that size. The session made to find out is torn down at once.
+    static func encodesInHardware(_ codec: CMVideoCodecType, width: Int32, height: Int32) -> Bool {
         var session: VTCompressionSession?
         let status = VTCompressionSessionCreate(
             allocator: nil,
-            width: 1920,
-            height: 1080,
-            codecType: kCMVideoCodecType_HEVC,
+            width: width,
+            height: height,
+            codecType: codec,
             encoderSpecification: [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true] as CFDictionary,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
@@ -205,6 +210,6 @@ enum Encoder: String {
             compressionSessionOut: &session
         )
         if let session = session { VTCompressionSessionInvalidate(session) }
-        return status == noErr ? .h265 : .h264
-    }()
+        return status == noErr
+    }
 }
