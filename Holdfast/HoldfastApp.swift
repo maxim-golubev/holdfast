@@ -34,6 +34,9 @@ struct HoldfastApp: App {
             CommandGroup(replacing: .saveItem) {}
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .textEditing) {}
+            // An audio package has nothing to print, and there is no help book: "Holdfast Help" only said so
+            CommandGroup(replacing: .printItem) {}
+            CommandGroup(replacing: .help) {}
         }
         
         Settings {
