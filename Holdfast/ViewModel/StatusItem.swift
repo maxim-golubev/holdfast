@@ -41,7 +41,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var shown: StatusDisplay?
     private var menuIsOpen = false
     private var menuLayout: Layout?
-    /// The widest the item has been since it last was idle
+    /// The widest the item has been since it last was idle or starting
     private var heldLength: CGFloat = 0
 
     private var recorder: RecorderController { RecorderController.shared }
@@ -78,6 +78,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 heldLength = 0
                 item.length = NSStatusItem.variableLength
             } else {
+                // "Starting" is there for a moment and is wider than the time: the recording is not held to it
+                if shown?.kind == .starting { heldLength = 0 }
                 let symbolWidth = button.image?.size.width ?? 0
                 let needed = (symbolWidth + (title.isEmpty ? 0 : 5 + text.size().width) + 14).rounded(.up)
                 heldLength = max(heldLength, needed)
@@ -124,34 +126,81 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         NSAttributedString(string: title, attributes: [.font: titleFont, .baselineOffset: titleBaselineOffset])
     }
 
-    /// Puts the middle of the digits on the menu bar's centre line, a whole pixel step from where AppKit sets them
+    /// Lowers the digits by a whole pixel step on a 2x display from where AppKit sets them. Measured in a 22 pt
+    /// menu bar at 2x: the digits of "10:23" cover rows 12–30 of the 44, so their middle is 0.25 pt above the bar's
+    /// centre line (`digitsAboveCentre`), which is where the symbol beside them is put.
     private static let titleBaselineOffset: CGFloat = -0.5
+    private static let digitsAboveCentre: CGFloat = 0.25
 
     private static func image(for display: StatusDisplay) -> NSImage? {
         if display.kind == .recording { return recordGlyph }
         guard let plain = NSImage(systemSymbolName: display.symbol, accessibilityDescription: nil) else { return nil }
         // Drawn at the size and weight of the text next to it
         let sized = NSImage.SymbolConfiguration(pointSize: titleFont.pointSize, weight: .medium, scale: .medium)
-        let symbol = plain.withSymbolConfiguration(sized) ?? plain
-        let colour: NSColor
+        var symbol = plain.withSymbolConfiguration(sized) ?? plain
         switch display.tint {
         case .standard:
             symbol.isTemplate = true
-            return symbol
-        case .red: colour = .systemRed
-        case .orange: colour = .systemOrange
+        case .red, .orange:
+            // One colour for every layer of the symbol: a hierarchy of it turns parts of the symbol pale
+            let colour: NSColor = display.tint == .red ? .systemRed : .systemOrange
+            symbol = symbol.withSymbolConfiguration(sized.applying(NSImage.SymbolConfiguration(paletteColors: [colour]))) ?? symbol
         }
-        // One colour for every layer of the symbol: a hierarchy of it turns parts of the symbol pale
-        return symbol.withSymbolConfiguration(sized.applying(NSImage.SymbolConfiguration(paletteColors: [colour]))) ?? symbol
+        return onDigitsLine(symbol)
     }
 
-    /// The recording symbol, drawn to the pixel on a 2x display: a red ring 12.5 pt across with a dot, centred on
-    /// the line through the middle of the timer's digits. The SF Symbol of that size is an even number of pixels
-    /// tall and so sits half a pixel below the digits; every edge here falls on a pixel boundary instead.
+    /// The symbol in a box of its own size, moved up or down so that the middle of what it draws is on the middle of
+    /// the digits. AppKit centres the box, and the ink of SF Symbols at this size sits 0.75 to 1 pt below the box's
+    /// centre (measured at 2x: rows 10–35 of the bar for 12–30 of the digits), so a paused, muted or warning
+    /// symbol would otherwise sit low next to the time. Measured the same way after the move: within 0.2 px.
+    private static func onDigitsLine(_ symbol: NSImage) -> NSImage {
+        guard let ink = inkRows(of: symbol) else { return symbol }
+        // In points, upwards. The symbol's edges are smooth curves, so it may move by a fraction of a pixel.
+        let inkMiddle = symbol.size.height - (ink.top + ink.bottom) / 2
+        let raise = symbol.size.height / 2 + digitsAboveCentre - inkMiddle
+        let moved = NSImage(size: symbol.size, flipped: false) { rect in
+            symbol.draw(in: rect.offsetBy(dx: 0, dy: raise))
+            return true
+        }
+        moved.isTemplate = symbol.isTemplate
+        return moved
+    }
+
+    /// Where what `image` draws begins and ends, in points from the top of its box. Drawn at the screen's scale,
+    /// since symbols are fitted to its pixels: each edge is the first or last row with ink, less the part of that row
+    /// its coverage leaves empty.
+    private static func inkRows(of image: NSImage) -> (top: CGFloat, bottom: CGFloat)? {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let width = Int((image.size.width * scale).rounded(.up)), height = Int((image.size.height * scale).rounded(.up))
+        guard width > 0, height > 0,
+              let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4,
+                                            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 32) else { return nil }
+        // Before the context is made from it: the context draws at this size in points
+        bitmap.size = image.size
+        guard let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        image.draw(in: NSRect(origin: .zero, size: image.size))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let pixels = bitmap.bitmapData else { return nil }
+        // Rows of the bitmap go from the top; the coverage of a row is its most opaque pixel
+        var coverage = [CGFloat]()
+        for row in 0..<height {
+            var most: UInt8 = 0
+            for column in 0..<width { most = max(most, pixels[row * bitmap.bytesPerRow + column * 4 + 3]) }
+            coverage.append(CGFloat(most) / 255)
+        }
+        guard let top = coverage.firstIndex(where: { $0 > 0.02 }), let bottom = coverage.lastIndex(where: { $0 > 0.02 }) else { return nil }
+        return ((CGFloat(top) + 1 - coverage[top]) / scale, (CGFloat(bottom) + coverage[bottom]) / scale)
+    }
+
+    /// The recording symbol, drawn to the pixel on a 2x display: a red ring 12.5 pt across with a dot. Its centre is
+    /// `digitsAboveCentre` above the centre of its box, so it covers rows 9–33 of the bar, middle 21.5, the middle of
+    /// the digits; every edge falls on a pixel boundary.
     private static let recordGlyph: NSImage = {
         // The box has the height of the SF Symbols beside it, so the menu bar places it the same way
         let image = NSImage(size: NSSize(width: 13, height: 16), flipped: false) { _ in
-            let centre = NSPoint(x: 6.25, y: 7.75)
+            let centre = NSPoint(x: 6.25, y: 8 + digitsAboveCentre)
             NSColor.systemRed.set()
             let ring = NSBezierPath(ovalIn: NSRect(x: centre.x - 5.5, y: centre.y - 5.5, width: 11, height: 11))
             ring.lineWidth = 1.5
