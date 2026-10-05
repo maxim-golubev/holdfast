@@ -72,6 +72,7 @@ func statusTests() async {
         expectEqual(display.line, "System audio is not being recorded — microphone muted", "the warning is the status line, and the mute is not forgotten")
         expectEqual(display.detail, display.line, "and the tooltip")
         expectEqual(display.title, "1:07:05", "with the time")
+        expectEqual(display.banner, "System audio is not being recorded.", "and is shown on screen over every app")
         input.isMicrophoneMuted = false
         expectEqual(StatusDisplay(input).line, "System audio is not being recorded", "the warning alone")
 
@@ -81,6 +82,11 @@ func statusTests() async {
         expectEqual(display.kind, .paused, "paused comes first: nothing is being recorded on purpose")
         expectEqual(display.line, "Paused — microphone OK", "status line when paused")
         expect(display.kind.tint == .standard, "not the colour of a running recording")
+        expectEqual(display.banner, nil, "nor is a warning shown on screen while nothing is being recorded on purpose")
+        for state in [RecordingState.idle, .starting, .stopping, .finalizing] {
+            expectEqual(StatusDisplay(Input(state: state, warning: "Microphone is not being recorded")).banner, nil, "no warning on screen when \(state)")
+        }
+        expectEqual(StatusDisplay(Input(state: .recording)).banner, nil, "nor without a warning")
     }
 
     await test("status: saving, finishing and recovering show how far they are") {

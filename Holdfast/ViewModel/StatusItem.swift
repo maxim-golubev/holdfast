@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import SwiftUI
 
 /// The app's item in the menu bar: a plain `NSStatusItem` whose button shows a symbol and a title
 /// (`StatusDisplay`), and whose click opens a menu. AppKit lays the button out and opens the menu; nothing here
@@ -74,6 +75,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let visible = AppSettings.showMenubar || display.kind != .idle
         if item.isVisible != visible { item.isVisible = visible }
         runTimer(recorder.streamType != nil)
+        WarningPanel.shared.show(display.banner)
         if display != shown, let button = item.button {
             if display.kind != shown?.kind { button.image = StatusItemController.image(for: display.kind) }
             // A symbol this system does not have must not leave an empty, unclickable item
@@ -404,5 +406,106 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+}
+
+/// The warning of a running recording (`StatusDisplay.banner`) in a small panel at the top right of the screen with
+/// the pointer, over every app and on every Space, for as long as the warning is up. The status item alone is not
+/// enough: a full-screen meeting app hides the menu bar, and macOS by default holds back notifications while the
+/// display is being shared, which a capture may count as. The panel never takes the focus, plays no sound (system
+/// audio is being recorded) and is left out of captures; its close button hides it until the warning changes.
+@MainActor
+final class WarningPanel {
+    static let shared = WarningPanel()
+
+    private var panel: NSPanel?
+    private var shown: String?
+    /// The warning the user closed the panel on: it stays closed until another one is up
+    private var dismissed: String?
+
+    func show(_ warning: String?) {
+        guard warning != shown else { return }
+        shown = warning
+        guard let warning = warning, warning != dismissed else {
+            if warning == nil { dismissed = nil }
+            close()
+            return
+        }
+        dismissed = nil
+        let content = FirstClickHostingView(rootView: WarningBanner(text: warning) { [weak self] in
+            self?.dismissed = warning
+            self?.close()
+        })
+        let size = content.fittingSize
+        let panel = self.panel ?? WarningPanel.makePanel()
+        panel.contentView = content
+        let pointer = NSEvent.mouseLocation
+        if let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main {
+            let margin: CGFloat = 12
+            let area = screen.visibleFrame
+            panel.setFrame(NSRect(x: area.maxX - size.width - margin, y: area.maxY - size.height - margin, width: size.width, height: size.height), display: true)
+        }
+        panel.orderFrontRegardless()
+        self.panel = panel
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: "Holdfast: " + warning, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+
+    private func close() {
+        panel?.orderOut(nil)
+    }
+
+    private static func makePanel() -> NSPanel {
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        // No title: `closeAllWindow` and the Dock's reopen rule leave it alone, it belongs to the recording
+        panel.identifier = .warningPanel
+        panel.level = .statusBar
+        // Over a full-screen meeting app's Space, too
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        // Not a part of the meeting: left out of every capture, this recording's included
+        panel.sharingType = .none
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = true
+        return panel
+    }
+}
+
+/// A hosting view whose buttons take the first click: the panel is never key and its app is usually not active
+private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+private struct WarningBanner: View {
+    let text: String
+    let close: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.title2)
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Holdfast").font(.headline)
+                Text(text).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(width: 240, alignment: .leading)
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Hide this warning. It shows again when another problem comes up.")
+            .accessibilityLabel("Hide Warning")
+        }
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.orange.opacity(0.6), lineWidth: 1))
+        .accessibilityElement(children: .combine)
     }
 }

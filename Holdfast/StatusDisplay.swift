@@ -47,6 +47,9 @@ struct StatusDisplay: Equatable {
     let line: String
     /// The tooltip: the line, or more about it
     let detail: String
+    /// The warning of a running recording, also shown on screen over every app while it is up (`WarningPanel`): a
+    /// full-screen meeting hides the menu bar, and notifications may not show while the display is captured
+    private(set) var banner: String?
 
     init(_ input: Input) {
         switch input.state {
@@ -73,6 +76,7 @@ struct StatusDisplay: Equatable {
             } else if let warning = input.warning {
                 kind = .warning
                 line = input.isMicrophoneMuted ? warning + " — " + microphone : warning
+                banner = warning + "."
             } else {
                 kind = input.isMicrophoneMuted ? .muted : .recording
                 line = "Recording" + " — " + microphone

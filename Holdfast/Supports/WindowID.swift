@@ -23,6 +23,8 @@ extension NSUserInterfaceItemIdentifier {
     static let screenCover = NSUserInterfaceItemIdentifier("Holdfast.screenCover")
     /// The floating preview of a finished recording
     static let preview = NSUserInterfaceItemIdentifier("Holdfast.preview")
+    /// The warning of a running recording over every app (`WarningPanel`)
+    static let warningPanel = NSUserInterfaceItemIdentifier("Holdfast.warningPanel")
 }
 
 extension NSApplication {
