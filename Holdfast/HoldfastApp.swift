@@ -204,7 +204,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            if trimingList.contains(url) { continue }
             openTrimmer(url, random: true)
             closeMainWindow()
         }

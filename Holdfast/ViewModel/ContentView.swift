@@ -314,8 +314,9 @@ extension AppDelegate {
     /// A titled window around `view`, centred on the screen with the mouse. It is as large as the view asks for,
     /// or `size` for a view that takes what it is given. `random` moves it a little, so that several do not
     /// cover each other exactly.
-    func createNewWindow(view: some View, title: String, identifier: NSUserInterfaceItemIdentifier? = nil, size: NSSize? = nil, random: Bool = false, only: Bool = true) {
-        guard let screen = ScreenContent.getScreenWithMouse() else { return }
+    @discardableResult
+    func createNewWindow(view: some View, title: String, identifier: NSUserInterfaceItemIdentifier? = nil, size: NSSize? = nil, random: Bool = false, only: Bool = true) -> NSWindow? {
+        guard let screen = ScreenContent.getScreenWithMouse() else { return nil }
         if only { closeAllWindow() }
         let contentView = NSHostingView(rootView: view)
         let size = size ?? contentView.fittingSize
@@ -331,12 +332,22 @@ extension AppDelegate {
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(self)
         window.orderFrontRegardless()
+        return window
     }
 
     /// The trimmer's window. Every way of opening the trimmer goes through here, because its view has no size
-    /// of its own and the window has to be given one.
+    /// of its own and the window has to be given one. A video that has a trimmer open gets that one brought
+    /// forward, not a second one.
     func openTrimmer(_ url: URL, random: Bool = false) {
-        createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, size: VideoTrimmerView.windowSize, random: random, only: false)
+        let file = url.standardizedFileURL
+        if let open = NSApp.windows(.trimmer).first(where: { ($0.isVisible || $0.isMiniaturized) && $0.representedURL?.standardizedFileURL == file }) {
+            if open.isMiniaturized { open.deminiaturize(self) }
+            open.makeKeyAndOrderFront(self)
+            open.orderFrontRegardless()
+            return
+        }
+        let window = createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, identifier: .trimmer, size: VideoTrimmerView.windowSize, random: random, only: false)
+        window?.representedURL = file
     }
 }
 

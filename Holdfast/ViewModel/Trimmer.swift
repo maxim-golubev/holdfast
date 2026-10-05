@@ -1,10 +1,13 @@
+//
+//  Trimmer.swift
+//  Holdfast
+//
+
 import SwiftUI
 import AVKit
 
-/// The videos open in a trimmer window, which opening such a file again does not open a second time. Main thread.
-var trimingList = [URL]()
-
-class RecorderPlayerModel: NSObject, ObservableObject {
+/// The trimmer of one video: the player, its trimming controls, and the export of the clip
+class TrimmerModel: NSObject, ObservableObject {
     @Published var playerView: AVPlayerView
     var asset: AVAsset?
     var fileUrl: URL?
@@ -67,7 +70,7 @@ class RecorderPlayerModel: NSObject, ObservableObject {
                         let fileUrl = self.fileUrl, asset = self.asset
                         self.nsWindow?.close()
                         guard result == .okButton, let fileUrl, let asset else { return }
-                        RecorderPlayerModel.exportClip(of: asset, from: fileUrl, timeRange: timeRange)
+                        TrimmerModel.exportClip(of: asset, from: fileUrl, timeRange: timeRange)
                     }
                 }
             }
@@ -125,7 +128,7 @@ class RecorderPlayerModel: NSObject, ObservableObject {
     }
 }
 
-struct RecorderPlayerView: NSViewRepresentable {
+struct TrimmerPlayerView: NSViewRepresentable {
     typealias NSViewType = AVPlayerView
 
     var playerView: AVPlayerView
@@ -142,7 +145,7 @@ struct VideoTrimmerView: View {
     /// The size its window opens with; the player takes whatever it is given. Open it with `AppDelegate.openTrimmer`.
     static let windowSize = NSSize(width: 780, height: 555)
     let videoURL: URL
-    @StateObject var playerViewModel: RecorderPlayerModel = .init()
+    @StateObject var playerViewModel: TrimmerModel = .init()
 
     var body: some View {
         VStack {
@@ -154,7 +157,7 @@ struct VideoTrimmerView: View {
                     .font(.system(size: 13, weight: .bold))
             }
             ZStack {
-                RecorderPlayerView(playerView: playerViewModel.playerView)
+                TrimmerPlayerView(playerView: playerViewModel.playerView)
                     .onAppear { playerViewModel.loadVideo(fromUrl: videoURL) }
                     .padding(4)
                     .background(
@@ -168,11 +171,9 @@ struct VideoTrimmerView: View {
         .background(WindowAccessor(onWindowOpen: { window in
             window?.styleMask.insert(.resizable)
             playerViewModel.nsWindow = window
-            trimingList.append(videoURL)
         }, onWindowClose: {
             playerViewModel.playerView.player?.replaceCurrentItem(with: nil)
             playerViewModel.cleanup()
-            trimingList.removeAll(where: { $0 == videoURL })
         }))
     }
 }
