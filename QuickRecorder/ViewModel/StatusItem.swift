@@ -51,8 +51,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
         item.menu = menu
-        // Digits of one width, so the item does not change its size with every second
-        item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .regular)
         self.item = item
         refresh()
     }
@@ -69,7 +67,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             if display.kind != shown?.kind { button.image = StatusItemController.image(for: display) }
             // A symbol this system does not have must not leave an empty, unclickable item
             let title = button.image == nil && display.title.isEmpty ? "QuickRecorder" : display.title
-            button.title = title
+            button.attributedTitle = StatusItemController.attributed(title)
             button.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
             button.toolTip = display.detail
             button.setAccessibilityLabel(display.accessibilityLabel)
@@ -94,8 +92,30 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return menu
     }
 
+    /// The menu bar's own text style: digits of one width, so the item does not change its size with every
+    /// second, colons centred on the digits as in the system clock, and the weight the clock uses.
+    private static let titleFont: NSFont = {
+        let size = NSFont.menuBarFont(ofSize: 0).pointSize
+        let base = NSFont.monospacedDigitSystemFont(ofSize: size, weight: .medium)
+        let descriptor = base.fontDescriptor.addingAttributes([.featureSettings: [[
+            NSFontDescriptor.FeatureKey.typeIdentifier: kCaseSensitiveLayoutType,
+            NSFontDescriptor.FeatureKey.selectorIdentifier: kCaseSensitiveLayoutOnSelector,
+        ]]])
+        return NSFont(descriptor: descriptor, size: size) ?? base
+    }()
+
+    private static func attributed(_ title: String) -> NSAttributedString {
+        NSAttributedString(string: title, attributes: [.font: titleFont, .baselineOffset: titleBaselineOffset])
+    }
+
+    /// Moves the text so its digits sit on the symbol's centre line
+    private static let titleBaselineOffset: CGFloat = -0.5
+
     private static func image(for display: StatusDisplay) -> NSImage? {
-        guard let symbol = NSImage(systemSymbolName: display.symbol, accessibilityDescription: nil) else { return nil }
+        guard let plain = NSImage(systemSymbolName: display.symbol, accessibilityDescription: nil) else { return nil }
+        // Drawn at the size and weight of the text next to it
+        let sized = NSImage.SymbolConfiguration(pointSize: titleFont.pointSize, weight: .medium, scale: .medium)
+        let symbol = plain.withSymbolConfiguration(sized) ?? plain
         let colour: NSColor
         switch display.tint {
         case .standard:
@@ -105,7 +125,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         case .orange: colour = .systemOrange
         }
         // One colour for every layer of the symbol: a hierarchy of it turns parts of the symbol pale
-        return symbol.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [colour])) ?? symbol
+        return symbol.withSymbolConfiguration(sized.applying(NSImage.SymbolConfiguration(paletteColors: [colour]))) ?? symbol
     }
 
     private func runTimer(_ wanted: Bool) {

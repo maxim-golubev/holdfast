@@ -17,7 +17,7 @@ rt_start() { osascript -e 'with timeout of 20 seconds' -e "tell application id \
 rt_stop() { osascript -e "tell application id \"$RT_ID\" to stop recording" }
 rt_wait_final() { # waits until no temporary recording/mixing file is left
   for i in {1..${1:-120}}; do sleep 1; ls "$RT_DIR" | grep -q -E '\.(recording|mixing)\.' || return 0; done; echo "rt: still not final"; return 1 }
-rt_tracks() { for f in "$RT_DIR"/*.mp4(N) "$RT_DIR"/*.m4a(N); do echo "== ${f:t}"; ffprobe -v error -show_entries stream=index,codec_type,codec_name,sample_rate,duration -of compact "$f" 2>&1; done }
+rt_tracks() { ls "$RT_DIR" | grep -E "\.(mp4|m4a|mov)$" | while read n; do f="$RT_DIR/$n"; echo "== ${f:t}"; ffprobe -v error -show_entries stream=index,codec_type,codec_name,sample_rate,duration -of compact "$f" 2>&1; done }
 rt_levels() { # rt_levels <file> <audio-track-index>: level per 2 s, -180 = digital silence
   ffmpeg -hide_banner -loglevel error -y -i "$1" -map 0:a:$2 -vn -ac 1 -ar 8000 -f s16le /tmp/_rt.raw || return 1
   python3 -c "
