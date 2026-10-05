@@ -20,15 +20,25 @@ struct CaptureTarget {
     let area: NSRect?
 }
 
+/// An audio input device as a recording knows it: by the name it had when it was seen, which is still there to
+/// tell the user about it once it has gone
+struct MicDevice: Equatable {
+    /// `AVCaptureDevice.uniqueID`
+    let id: String
+    let name: String
+}
+
 /// The microphone of a recording, decided when it starts (`prepareMicCapture`)
 struct MicrophoneChoice {
     let converter: MicConverter
     /// The setting the recording was started with: a device's uniqueID, or "default"
     let selection: String
+    /// What that setting was called then: the device's name, or "default"
+    let selectionName: String
     /// The device ScreenCaptureKit is asked to capture, nil for the system default input
     let captureDeviceID: String?
     /// The device the microphone is captured from at the start
-    let activeDeviceID: String?
+    let active: MicDevice
 }
 
 /// The ScreenCaptureKit side of one recording: what is captured (`filter(for:content:)`), how
@@ -39,10 +49,12 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     /// The configuration the stream was started with, kept to update it when the microphone changes
     let configuration: SCStreamConfiguration
     let recordsMic: Bool
-    /// The microphone setting this recording was started with: a device's uniqueID, or "default"
+    /// The microphone setting this recording was started with: a device's uniqueID, or "default", and its name
+    /// then. The setting itself may be changed while the recording runs; this recording keeps its own.
     let micSelection: String
+    let micSelectionName: String
     /// The device the microphone is being captured from. `MicDevices` changes it when the devices change.
-    var micActiveDeviceID: String?
+    var micActiveDevice: MicDevice?
 
     private var stream: SCStream?
     private let queue: DispatchQueue
@@ -56,7 +68,8 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         self.configuration = configuration
         self.recordsMic = recording.recordMic
         self.micSelection = microphone?.selection ?? "default"
-        self.micActiveDeviceID = microphone?.activeDeviceID
+        self.micSelectionName = microphone?.selectionName ?? "default"
+        self.micActiveDevice = microphone?.active
         self.queue = queue
         self.onSample = onSample
         self.onStop = onStop

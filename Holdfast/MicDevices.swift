@@ -103,7 +103,8 @@ enum MicDevices {
         return found.takeRetainedValue() as String
     }
 
-    /// Installs the listeners once. They stay for the life of the app and do nothing while no microphone is being recorded.
+    /// Installs the listeners, once, when the app launches: a change while the first recording starts must reach it
+    /// too. They stay for the life of the app and do nothing while no microphone is being recorded.
     static func watch() {
         guard !watching else { return }
         watching = true
@@ -118,9 +119,22 @@ enum MicDevices {
         }
     }
 
+    /// A recording with a microphone has entered `recording`. What its capture was set up with at the start
+    /// (`prepareMicCapture`) is checked against the devices now, so a change while it was starting is followed even
+    /// when no listener's check falls after it. A check that is waiting already finds this recording by itself.
+    static func recordingStarted() {
+        guard pending == nil else { return }
+        retriesLeft = 3
+        schedule(after: 0, announce: true)
+    }
+
     private static func schedule(after delay: Double, announce: Bool) {
         pending?.cancel()
-        let work = DispatchWorkItem { followDevices(announce: announce) }
+        let work = DispatchWorkItem {
+            // Runs only while it is the one waiting: a later one cancels it
+            pending = nil
+            followDevices(announce: announce)
+        }
         pending = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
@@ -131,21 +145,20 @@ enum MicDevices {
         let devices = MicSelection.getMicrophone()
         let selection = capture.micSelection
         let selectedIsPresent = selection != "default" && devices.contains(where: { $0.uniqueID == selection })
-        guard let wanted = selectedIsPresent ? selection : defaultInputUID() else { return }
-        let previous = capture.micActiveDeviceID
-        guard wanted != previous else { return }
-        func name(_ id: String?) -> String {
-            guard let id = id else { return "none" }
-            return devices.first(where: { $0.uniqueID == id })?.localizedName ?? id
-        }
-        let wantedName = name(wanted)
-        RecLog.write("Microphone switch: from \"\(name(previous))\" to \"\(wantedName)\" (\(selection == "default" ? "the default input changed" : (selectedIsPresent ? "the chosen microphone is back" : "the chosen microphone is gone")))")
+        guard let wantedID = selectedIsPresent ? selection : defaultInputUID() else { return }
+        let previous = capture.micActiveDevice
+        guard wantedID != previous?.id else { return }
+        // A device that has gone is not in the list any more: the recording knows its name
+        let wanted = MicDevice(id: wantedID, name: devices.first(where: { $0.uniqueID == wantedID })?.localizedName ?? wantedID)
+        let wantedName = wanted.name
+        RecLog.write("Microphone switch: from \"\(previous?.name ?? "none")\" to \"\(wantedName)\" (\(selection == "default" ? "the default input changed" : (selectedIsPresent ? "the chosen microphone is back" : "the chosen microphone is gone")))")
         // A default input that is not among the capture devices is left to the system to pick
         let previousCaptureID = conf.microphoneCaptureDeviceID
-        conf.microphoneCaptureDeviceID = devices.contains(where: { $0.uniqueID == wanted }) ? wanted : nil
-        capture.micActiveDeviceID = wanted
+        conf.microphoneCaptureDeviceID = devices.contains(where: { $0.uniqueID == wantedID }) ? wantedID : nil
+        capture.micActiveDevice = wanted
         if announce && selection != "default" && !selectedIsPresent {
-            let body = String(format: "\"%@\" is not connected any more. Recording continues with the default microphone \"%@\".", MicSelection.selectedMicName(), wantedName)
+            // The microphone this recording was started with, whatever the setting says now
+            let body = String(format: "\"%@\" is not connected any more. Recording continues with the default microphone \"%@\".", capture.micSelectionName, wantedName)
             UserNotice.showNotification(title: "Microphone Unavailable", body: body, id: "holdfast.microphone.\(UUID().uuidString)")
         }
         capture.applyConfiguration { error in
@@ -156,8 +169,8 @@ enum MicDevices {
             RecLog.write("Microphone switch to \"\(wantedName)\" failed: \(error.localizedDescription)")
             DispatchQueue.main.async {
                 // Back to what the stream is still capturing, then a few more tries; after those, at the next device change
-                guard currentCapture() === capture, capture.micActiveDeviceID == wanted else { return }
-                capture.micActiveDeviceID = previous
+                guard currentCapture() === capture, capture.micActiveDevice == wanted else { return }
+                capture.micActiveDevice = previous
                 conf.microphoneCaptureDeviceID = previousCaptureID
                 if retriesLeft > 0 {
                     retriesLeft -= 1

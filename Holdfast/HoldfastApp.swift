@@ -223,6 +223,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // Whether the Mac encodes HEVC in hardware is asked once, here, not when the first recording starts
         _ = Encoder.preferred
+        // Before any recording: a device change while the first one starts must reach it
+        MicDevices.watch()
         if AppSettings.showOnDock { NSApp.setActivationPolicy(.regular) }
         
         UNUserNotificationCenter.current().delegate = self

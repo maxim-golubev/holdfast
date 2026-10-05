@@ -147,16 +147,21 @@ extension RecorderController {
         // The selection is kept for the recording: MicDevices follows the default input, or goes back to the chosen
         // device when it returns
         let selected = MicSelection.selectedMicID()
-        let defaultID = MicDevices.defaultInputUID() ?? defaultMic.uniqueID
+        let selectedName = MicSelection.selectedMicName()
+        let devices = MicSelection.getMicrophone()
+        func device(_ id: String) -> MicDevice {
+            return MicDevice(id: id, name: devices.first(where: { $0.uniqueID == id })?.localizedName ?? defaultMic.localizedName)
+        }
+        let defaultDevice = device(MicDevices.defaultInputUID() ?? defaultMic.uniqueID)
         if selected == "default" {
-            return (MicrophoneChoice(converter: converter, selection: selected, captureDeviceID: nil, activeDeviceID: defaultID), nil)
+            return (MicrophoneChoice(converter: converter, selection: selected, selectionName: selectedName, captureDeviceID: nil, active: defaultDevice), nil)
         }
-        if MicSelection.getMicrophone().contains(where: { $0.uniqueID == selected }) {
-            return (MicrophoneChoice(converter: converter, selection: selected, captureDeviceID: selected, activeDeviceID: selected), nil)
+        if devices.contains(where: { $0.uniqueID == selected }) {
+            return (MicrophoneChoice(converter: converter, selection: selected, selectionName: selectedName, captureDeviceID: selected, active: device(selected)), nil)
         }
-        let body = String(format: "\"%@\" is not connected. Recording with the default microphone \"%@\" instead.", MicSelection.selectedMicName(), defaultMic.localizedName)
+        let body = String(format: "\"%@\" is not connected. Recording with the default microphone \"%@\" instead.", selectedName, defaultDevice.name)
         UserNotice.showNotification(title: "Microphone Unavailable", body: body, id: "holdfast.microphone.\(UUID().uuidString)")
-        return (MicrophoneChoice(converter: converter, selection: selected, captureDeviceID: nil, activeDeviceID: defaultID), nil)
+        return (MicrophoneChoice(converter: converter, selection: selected, selectionName: selectedName, captureDeviceID: nil, active: defaultDevice), nil)
     }
 
     /// Not on the main thread: creating the stream and starting the capture take their time.
@@ -202,7 +207,7 @@ extension RecorderController {
                 RecLog.write("Recording started: \(recording.rawURL.lastPathComponent) (\(audioOnly ? "audio only" : "screen"), system audio \(recording.systemAudio ? "on" : "off"), microphone \(recording.recordMic ? "on" : "off"))")
                 if !audioOnly { AppDelegate.shared.startRecordingMouseMonitor() }
                 if recording.preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
-                if recording.recordMic { MicDevices.watch() }
+                if recording.recordMic { MicDevices.recordingStarted() }
                 // The file that is written to all along: in a package, its system audio file
                 let file = recording.systemAudioURL ?? recording.rawURL
                 let watch = RecordingFileStore(directory: recording.saveDirectory).watch(file: file, onLow: { [weak session] free in
