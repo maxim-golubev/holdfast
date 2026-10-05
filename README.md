@@ -85,4 +85,4 @@ end tell
 - [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) by Sindre Sorhus: global shortcuts.
 - [SwiftLAME](https://github.com/hidden-spectrum/SwiftLAME) by Hidden Spectrum: MP3 output.
 
-Licensed under the [GNU AGPL-3.0](./LICENSE), like the original. Copyright © 2024 lihaoyun6; modifications by Maxim Golubev.
+Licensed under the [GNU AGPL-3.0](./LICENSE), like the original. Copyright © 2024 lihaoyun6; modifications © 2026 Maxim Golubev.

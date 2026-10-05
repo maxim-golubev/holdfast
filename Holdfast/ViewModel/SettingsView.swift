@@ -355,7 +355,7 @@ struct GeneralSettings: View {
                         Link("Original Project", destination: upstream)
                     }
                 } label: {
-                    RowLabel("Based on QuickRecorder", "Holdfast is a modified version of QuickRecorder by lihaoyun6, under the same GNU AGPL-3.0 license. It is not an official QuickRecorder release.")
+                    RowLabel("Based on QuickRecorder", "Holdfast is a modified version of QuickRecorder by lihaoyun6, modified in 2026 by Maxim Golubev, under the same GNU AGPL-3.0 license. It is not an official QuickRecorder release.")
                 }
             }
         }

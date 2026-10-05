@@ -484,7 +484,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Holdfast;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2024 lihaoyun6. All rights reserved. Holdfast is a modified version of QuickRecorder, licensed under the GNU AGPL-3.0.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2024 lihaoyun6. All rights reserved. Modifications © 2026 Maxim Golubev. Holdfast is a modified version of QuickRecorder, licensed under the GNU AGPL-3.0.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Holdfast records your voice from the microphone you choose.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -518,7 +518,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Holdfast;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2024 lihaoyun6. All rights reserved. Holdfast is a modified version of QuickRecorder, licensed under the GNU AGPL-3.0.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2024 lihaoyun6. All rights reserved. Modifications © 2026 Maxim Golubev. Holdfast is a modified version of QuickRecorder, licensed under the GNU AGPL-3.0.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Holdfast records your voice from the microphone you choose.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
