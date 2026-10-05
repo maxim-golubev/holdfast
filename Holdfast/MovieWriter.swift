@@ -95,8 +95,8 @@ final class MovieWriter {
     /// Small picture of the recording's first frame for the preview. An image, not the frame: a frame as delivered
     /// holds one of the stream's surfaces, and a full-size copy would sit in memory for the whole recording.
     private var firstFrame: NSImage?
-    /// End times of the frames seen last; a frame that ends before one of them is left out
-    private var frameEnds = FixedLengthArray<CMTime>(maxLength: 20)
+    /// End time of the last frame taken; a frame that does not end after it is left out
+    private var lastFrameEnd: CMTime?
 
     var hasSystemAudio: Bool { audioInput != nil || audioFile != nil }
     var hasMicrophoneTrack: Bool { micInput != nil }
@@ -136,8 +136,8 @@ final class MovieWriter {
         let h265Level = AppSettings.recordHDR ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel
 
         let targetBitrate = resolution * fpsMultiplier * encoderMultiplier * qualityMultiplier * (AppSettings.recordHDR ? 2 : 1)
-        print("framerate set in app: \(fps)")
-        print("target bitrate: \(targetBitrate/1000000)")
+        let bitrate = max(200000, Int(targetBitrate))
+        RecLog.write("Video: \(width) x \(height), \(fps) fps, \(encoderIsH265 ? "H.265" : "H.264"), \(bitrate / 1000) kbit/s")
 
         var videoSettings: [String: Any] = [
             AVVideoCodecKey: encoderIsH265 ? ((AppSettings.withAlpha && !AppSettings.recordHDR) ? AVVideoCodecType.hevcWithAlpha : AVVideoCodecType.hevc) : AVVideoCodecType.h264,
@@ -145,7 +145,7 @@ final class MovieWriter {
             AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: [
                 AVVideoProfileLevelKey: encoderIsH265 ? h265Level : h264Level,
-                AVVideoAverageBitRateKey: max(200000, Int(targetBitrate)),
+                AVVideoAverageBitRateKey: bitrate,
                 AVVideoExpectedSourceFrameRateKey: fps,
             ] as [String : Any]
         ]
@@ -402,8 +402,9 @@ final class MovieWriter {
     private func writeFrame(_ sampleBuffer: CMSampleBuffer, from pts: CMTime, to endPTS: CMTime) {
         // The first complete frame starts the session; until then nothing is appended to any track
         if sessionStart == nil { guard beginSession(at: pts) else { return } }
+        if let last = lastFrameEnd, endPTS <= last { return }
         guard var frame = MovieWriter.retime(sampleBuffer, by: timeOffset) else { return }
-        if frameEnds.getArray().contains(where: { $0 >= endPTS }) { print("Skip this frame"); return } else { frameEnds.append(endPTS) }
+        lastFrameEnd = endPTS
         guard let videoInput = videoInput else { return }
         var framePTS = pts
         if let last = videoPTS, pts <= last {
@@ -654,26 +655,6 @@ final class MovieWriter {
             if timing[i].decodeTimeStamp.isValid { timing[i].decodeTimeStamp = CMTimeSubtract(timing[i].decodeTimeStamp, offset) }
         }
         return try? CMSampleBuffer(copying: sample, withNewTiming: timing)
-    }
-}
-
-struct FixedLengthArray<T> {
-    private var array: [T] = []
-    private let maxLength: Int
-
-    init(maxLength: Int) {
-        self.maxLength = maxLength
-    }
-
-    mutating func append(_ element: T) {
-        if array.count >= maxLength {
-            array.removeFirst()
-        }
-        array.append(element)
-    }
-
-    func getArray() -> [T] {
-        return array
     }
 }
 

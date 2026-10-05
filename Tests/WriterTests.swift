@@ -164,6 +164,22 @@ func writerTests() async {
         expect(inspection.mixable && !inspection.fragmented, "a closed recording is an ordinary movie the mix can read")
     }
 
+    await test("Writer: a frame that does not end after the last one taken is left out") {
+        let run = try TestRecording(folder: "writer-old-frame", microphone: false)
+        try run.writer.prepareVideo(width: 320, height: 240)
+        run.writer.startCapturing()
+        try run.frame(0)
+        expectEqual(run.writer.videoPTS, run.at(0), "the first frame")
+        try run.frame(-0.05)
+        expectEqual(run.writer.videoPTS, run.at(0), "one that ends before it is left out")
+        try run.frame(0)
+        expectEqual(run.writer.videoPTS, run.at(0), "and one that ends with it")
+        try run.frame(0.05)
+        expectEqual(run.writer.videoPTS, run.at(0.05), "one that ends after it is taken")
+        _ = try await run.close()
+        expect(run.failures.isEmpty, "no failure: \(run.failures)")
+    }
+
     await test("Writer: a pause is taken out of every track alike") {
         let run = try TestRecording(folder: "writer-pause")
         let writer = run.writer
