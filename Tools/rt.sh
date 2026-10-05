@@ -2,15 +2,15 @@
 # Real-device test helpers. Source it: `source Tools/rt.sh`. The app is launched from this shell so it runs
 # under the terminal's Screen Recording / Microphone grants.
 RT_ROOT="${0:A:h:h}"
-RT_APP="$RT_ROOT/build/Build/Products/Release/QuickRecorder.app"
-RT_ID=com.maximgolubev.QuickRecorder
-RT_LOG=~/Library/Logs/QuickRecorder/recordings.log
+RT_APP="$RT_ROOT/build/Build/Products/Release/Holdfast.app"
+RT_ID=com.maximgolubev.Holdfast
+RT_LOG=~/Library/Logs/Holdfast/recordings.log
 
-rt_quit() { osascript -e "tell application id \"$RT_ID\" to quit" 2>/dev/null; for i in {1..40}; do pgrep -f "Release/QuickRecorder.app" >/dev/null || return 0; sleep 0.5; done; echo "rt: app did not quit"; return 1 }
+rt_quit() { osascript -e "tell application id \"$RT_ID\" to quit" 2>/dev/null; for i in {1..40}; do pgrep -f "Release/Holdfast.app" >/dev/null || return 0; sleep 0.5; done; echo "rt: app did not quit"; return 1 }
 rt_launch() { # rt_launch <save-dir>
   mkdir -p "$1"; RT_DIR="$1"
   defaults write $RT_ID saveDirectory -string "$1"; defaults write $RT_ID showPreview -bool false
-  nohup "$RT_APP/Contents/MacOS/QuickRecorder" > "$1/app.out" 2>&1 &
+  nohup "$RT_APP/Contents/MacOS/Holdfast" > "$1/app.out" 2>&1 &
   RT_PID=$!; sleep 4
 }
 rt_start() { osascript -e 'with timeout of 20 seconds' -e "tell application id \"$RT_ID\" to record screen numbered ${1:-1}" -e 'end timeout' }

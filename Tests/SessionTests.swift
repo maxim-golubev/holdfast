@@ -107,7 +107,7 @@ final class Rig {
     }
 
     let journal = Journal()
-    let queue = DispatchQueue(label: "QuickRecorderTests.samples")
+    let queue = DispatchQueue(label: "HoldfastTests.samples")
     let folder: URL
     let controller: RecorderController
     private let saves = Saves()
@@ -454,7 +454,7 @@ func sessionTests() async {
 
     await test("monitor: a muted microphone raises no warning, and takes down one that was up without calling it back") {
         let journal = Journal()
-        let queue = DispatchQueue(label: "QuickRecorderTests.monitor")
+        let queue = DispatchQueue(label: "HoldfastTests.monitor")
         let writer = FakeWriter(journal, queue: queue, folder: try Suite.folder("monitor-mute"), microphone: true)
         let monitor = RecordingMonitor(queue: queue)
         let shown = Journal()

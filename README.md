@@ -1,8 +1,15 @@
-# QuickRecorder (meeting-recording fork)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/icon-dark.png">
+    <img src="docs/images/icon-light.png" width="128" height="128" alt="Holdfast app icon">
+  </picture>
+</p>
 
-A personal, modified fork of [lihaoyun6/QuickRecorder](https://github.com/lihaoyun6/QuickRecorder), the macOS screen recorder built on ScreenCaptureKit. It is not an official release; for those, use the upstream project.
+# Holdfast
 
-The fork is narrowed to one job: recording 60 to 90 minute video meetings (screen, system audio and a Bluetooth microphone, mixed to one audio track) without losing any of it. It runs on macOS 15 or later on Apple Silicon, has no updater and makes no network requests.
+A meeting recorder for macOS. Holdfast is a modified version of [QuickRecorder](https://github.com/lihaoyun6/QuickRecorder) by lihaoyun6, the screen recorder built on ScreenCaptureKit; it is not an official QuickRecorder release.
+
+It is narrowed to one job: recording 60 to 90 minute video meetings (screen, system audio and a Bluetooth microphone, mixed to one audio track) without losing any of it. It runs on macOS 15 or later on Apple Silicon, has no updater and makes no network requests.
 
 ## What it records
 
@@ -39,8 +46,9 @@ Removed from upstream: the updater, iPhone/iPad recording, the camera and Presen
 Requires Xcode. There are no binary releases.
 
 ```
-Tools/build.sh    # Release build into build/Build/Products/Release/QuickRecorder.app
+Tools/build.sh    # Release build into build/Build/Products/Release/Holdfast.app
 Tools/test.sh     # logic tests, a few seconds, no app, screen or microphone needed
+Tools/app_icon.sh # renders the README icons from Holdfast/Holdfast.icon
 ```
 
 The project signs with the owner's development team; set your own team and bundle identifier in Xcode to build it yourself. A different bundle identifier means its own settings and its own Screen Recording and Microphone permissions.
@@ -48,7 +56,7 @@ The project signs with the owner's development team; set your own team and bundl
 ## AppleScript
 
 ```applescript
-tell application "QuickRecorder"
+tell application "Holdfast"
     record screen numbered 1
     record screen area
     record application named "Safari"
@@ -68,12 +76,12 @@ end tell
 
 ## Log
 
-`~/Library/Logs/QuickRecorder/recordings.log` (Settings, Output, "Recordings Log") has one line per event: microphone device switches and format changes, mute and unmute, track warnings, and a summary of the microphone track for every recording (buffers written and dropped, seconds of silence filled, loudest peak).
+`~/Library/Logs/Holdfast/recordings.log` (Settings, Output, "Recordings Log") has one line per event: microphone device switches and format changes, mute and unmute, track warnings, and a summary of the microphone track for every recording (buffers written and dropped, seconds of silence filled, loudest peak).
 
 ## Credits and license
 
-- [QuickRecorder](https://github.com/lihaoyun6/QuickRecorder) by lihaoyun6: the original app, of which this is a modified version. Its recording engine began from [Azayaka](https://github.com/Mnpn/Azayaka) by Mnpn.
+- [QuickRecorder](https://github.com/lihaoyun6/QuickRecorder) by lihaoyun6: the original app, of which Holdfast is a modified version. Its recording engine began from [Azayaka](https://github.com/Mnpn/Azayaka) by Mnpn.
 - [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) by Sindre Sorhus: global shortcuts.
 - [SwiftLAME](https://github.com/hidden-spectrum/SwiftLAME) by Hidden Spectrum: MP3 output.
 
-Licensed under the [GNU AGPL-3.0](./LICENSE), like the original. Copyright © 2024 lihaoyun6; modifications by the fork's author.
+Licensed under the [GNU AGPL-3.0](./LICENSE), like the original. Copyright © 2024 lihaoyun6; modifications by Maxim Golubev.

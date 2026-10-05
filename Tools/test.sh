@@ -5,19 +5,19 @@
 # Usage: Tools/test.sh [-v] [word in the test names to run]
 cd "$(dirname "$0")/.."
 sources=(
-  QuickRecorder/AppSettings.swift
-  QuickRecorder/MicConverter.swift
-  QuickRecorder/MovieWriter.swift
-  QuickRecorder/RecorderController.swift
-  QuickRecorder/RecordingContext.swift
-  QuickRecorder/RecordingFileStore.swift
-  QuickRecorder/RecordingLogic.swift
-  QuickRecorder/RecordingMixer.swift
-  QuickRecorder/RecordingMonitor.swift
-  QuickRecorder/RecordingRecovery.swift
-  QuickRecorder/RecordingSession.swift
-  QuickRecorder/StatusDisplay.swift
-  QuickRecorder/Supports/DiskSpace.swift
+  Holdfast/AppSettings.swift
+  Holdfast/MicConverter.swift
+  Holdfast/MovieWriter.swift
+  Holdfast/RecorderController.swift
+  Holdfast/RecordingContext.swift
+  Holdfast/RecordingFileStore.swift
+  Holdfast/RecordingLogic.swift
+  Holdfast/RecordingMixer.swift
+  Holdfast/RecordingMonitor.swift
+  Holdfast/RecordingRecovery.swift
+  Holdfast/RecordingSession.swift
+  Holdfast/StatusDisplay.swift
+  Holdfast/Supports/DiskSpace.swift
   Tests/*.swift
 )
 mkdir -p build/tests

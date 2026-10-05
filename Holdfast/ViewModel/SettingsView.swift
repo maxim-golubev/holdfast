@@ -1,0 +1,401 @@
+//
+//  SettingsView.swift
+//  Holdfast
+//
+//  Created by apple on 2024/4/19.
+//
+
+import SwiftUI
+import ServiceManagement
+import KeyboardShortcuts
+
+/// The content of the Settings scene: standard tabs of grouped forms. Every control binds to `AppSettings`;
+/// what the main panel and the selectors show as well comes from `RecordingControls.swift`.
+struct SettingsView: View {
+    var body: some View {
+        TabView {
+            tab("Recording", "record.circle") { RecordingSettings() }
+            tab("Audio", "waveform") { AudioSettings() }
+            tab("Output", "folder") { OutputSettings() }
+            tab("Shortcuts", "keyboard") { ShortcutSettings() }
+            tab("General", "gearshape") { GeneralSettings() }
+        }
+        .frame(width: 560, height: 540)
+    }
+
+    /// The rows show their titles only; the symbols of the shared controls are for the compact places
+    private func tab(_ title: String, _ symbol: String, @ViewBuilder content: () -> some View) -> some View {
+        content()
+            .formStyle(.grouped)
+            .labelStyle(.titleOnly)
+            .tabItem { Label(title, systemImage: symbol) }
+    }
+}
+
+/// A row's title with a line of explanation under it, for rows whose meaning is not obvious
+private struct RowLabel: View {
+    let title: String
+    let detail: String
+
+    init(_ title: String, _ detail: String) {
+        self.title = title
+        self.detail = detail
+    }
+
+    var body: some View {
+        Text(title)
+        Text(detail)
+    }
+}
+
+/// A sentence under a section, set like the rows above it
+private struct SectionNote: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct RecordingSettings: View {
+    @AppStorage(AppSettings.$encoder)          private var encoder: Encoder
+    @AppStorage(AppSettings.$videoFormat)      private var videoFormat: VideoFormat
+    @AppStorage(AppSettings.$withAlpha)        private var withAlpha: Bool
+    @AppStorage(AppSettings.$highlightMouse)   private var highlightMouse: Bool
+    @AppStorage(AppSettings.$includeMenuBar)   private var includeMenuBar: Bool
+    @AppStorage(AppSettings.$hideDesktopFiles) private var hideDesktopFiles: Bool
+    @AppStorage(AppSettings.$hideSelf)         private var hideSelf: Bool
+    @AppStorage(AppSettings.$hideCCenter)      private var hideCCenter: Bool
+    @AppStorage(AppSettings.$preventSleep)     private var preventSleep: Bool
+
+    var body: some View {
+        Form {
+            Section("Video") {
+                Picker("Format", selection: $videoFormat) {
+                    Text("MP4").tag(VideoFormat.mp4)
+                    Text("MOV").tag(VideoFormat.mov)
+                }
+                .disabled(withAlpha)
+                Picker(selection: $encoder) {
+                    Text("H.264").tag(Encoder.h264)
+                    Text("H.265 (HEVC)").tag(Encoder.h265)
+                } label: {
+                    RowLabel("Encoder", "H.265 makes files about half the size. H.264 plays on older devices.")
+                }
+                .disabled(withAlpha)
+                VideoQualityPicker()
+                FrameRatePicker()
+                ResolutionPicker()
+                CursorToggle()
+                HDRToggle()
+                Toggle(isOn: $withAlpha) {
+                    RowLabel("Record with Alpha Channel", "Keeps transparency. Uses H.265 in a MOV file.")
+                }
+            }
+            Section("On Screen") {
+                Toggle("Leave Holdfast's Own Windows Out", isOn: $hideSelf)
+                Toggle("Include the Menu Bar", isOn: $includeMenuBar)
+                Toggle(isOn: $hideCCenter) {
+                    RowLabel("Hide Control Center Icons", "The clock, Wi-Fi, Bluetooth, volume and the other system icons in the menu bar.")
+                }
+                Toggle("Hide Files on the Desktop", isOn: $hideDesktopFiles)
+                Toggle(isOn: $highlightMouse) {
+                    RowLabel("Highlight the Cursor", "A ring around the cursor. Not available when a single window is recorded.")
+                }
+            }
+            ExcludedApps()
+            Section {
+                Toggle("Keep the Mac Awake While Recording", isOn: $preventSleep)
+            }
+        }
+        .onChange(of: withAlpha) { _, alpha in
+            if alpha { encoder = Encoder.h265; videoFormat = VideoFormat.mov }
+        }
+        // A running recording starts or stops listening to the mouse, once the setting is stored
+        .onChange(of: highlightMouse) { DispatchQueue.main.async { AppDelegate.shared.updateRecordingMouseMonitor() } }
+    }
+}
+
+/// The apps that are left out of screen and screen area recordings
+struct ExcludedApps: View {
+    @State private var apps = AppSettings.hiddenApps
+    @State private var isShowingFilePicker = false
+
+    var body: some View {
+        Section {
+            ForEach(apps, id: \.self) { app in
+                LabeledContent(app.displayName) {
+                    Button("Remove") { store(apps.filter { $0 != app }) }
+                        .accessibilityLabel("Remove \(app.displayName)")
+                }
+            }
+            Button("Add App…") { isShowingFilePicker = true }
+                .fileImporter(isPresented: $isShowingFilePicker, allowedContentTypes: [.application]) { result in
+                    guard let url = try? result.get(), let bundle = Bundle(url: url), let appID = bundle.bundleIdentifier else {
+                        print("No application was chosen for the excluded apps")
+                        return
+                    }
+                    let app = AppInfo(bundleID: appID, displayName: bundle.fileName)
+                    if !apps.contains(app) { store(apps + [app]) }
+                }
+        } header: {
+            Text("Excluded Apps")
+        } footer: {
+            SectionNote("These apps are left out of screen and screen area recordings. An app that is launched after the recording has started cannot be left out.")
+        }
+    }
+
+    private func store(_ list: [AppInfo]) {
+        apps = list
+        AppSettings.hiddenApps = list
+    }
+}
+
+extension Bundle {
+    var fileName: String { return self.bundleURL.lastPathComponent }
+}
+
+struct AudioSettings: View {
+    @AppStorage(AppSettings.$audioFormat)  private var audioFormat: AudioFormat
+    @AppStorage(AppSettings.$audioQuality) private var audioQuality: AudioQuality
+    @AppStorage(AppSettings.$remuxAudio)   private var remuxAudio: Bool
+    @AppStorage(AppSettings.$keepUnmixed)  private var keepUnmixed: Bool
+    @AppStorage(AppSettings.$micDeviceID)  private var micDeviceID: String
+    @AppStorage(AppSettings.$recordMic)    private var recordMic: Bool
+    @State private var micIsUnavailable = false
+
+    private var isLossless: Bool { audioFormat == .alac || audioFormat == .flac }
+
+    var body: some View {
+        Form {
+            Section("Sources") {
+                SystemAudioToggle()
+                MicToggle()
+                MicPicker()
+                if micIsUnavailable {
+                    Label("The chosen microphone is not connected. Until it is back, a recording uses the system default microphone.", systemImage: "exclamationmark.triangle")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("Tracks") {
+                Toggle(isOn: $remuxAudio) {
+                    RowLabel("Mix Microphone into the Main Track", "After a video recording, system audio and microphone are mixed into one audio track, which every player plays. Off: two separate tracks.")
+                }
+                Toggle(isOn: $keepUnmixed) {
+                    RowLabel("Keep the Unmixed Recording", "The recording as it was written, with two audio tracks, stays next to the mixed file as \"<name> (unmixed, 2 audio tracks)\".")
+                }
+                .disabled(!remuxAudio)
+            }
+            Section("Encoding") {
+                Picker(selection: $audioFormat) {
+                    Text("AAC").tag(AudioFormat.aac)
+                    Text("MP3").tag(AudioFormat.mp3)
+                    Text("ALAC (Lossless)").tag(AudioFormat.alac)
+                    Text("FLAC (Lossless)").tag(AudioFormat.flac)
+                    Text("Opus").tag(AudioFormat.opus)
+                } label: {
+                    RowLabel("Format", "MP3 is for audio-only recordings and Opus needs a MOV file; otherwise the audio of a video is AAC.")
+                }
+                Picker("Quality", selection: $audioQuality) {
+                    if isLossless { Text("Lossless").tag(audioQuality) }
+                    Text("Normal (128 kbit/s)").tag(AudioQuality.normal)
+                    Text("Good (192 kbit/s)").tag(AudioQuality.good)
+                    Text("High (256 kbit/s)").tag(AudioQuality.high)
+                    Text("Extreme (320 kbit/s)").tag(AudioQuality.extreme)
+                }
+                .disabled(isLossless)
+            }
+        }
+        .onAppear { checkMicrophone() }
+        .onChange(of: micDeviceID) { checkMicrophone() }
+        .onChange(of: recordMic) { checkMicrophone() }
+        .onReceive(MicSelection.devicesChanged) { checkMicrophone() }
+    }
+
+    private func checkMicrophone() {
+        micIsUnavailable = recordMic && MicPicker.isUnavailable(MicSelection.selectedMicID(), among: MicSelection.getMicrophone())
+    }
+}
+
+struct OutputSettings: View {
+    @AppStorage(AppSettings.$saveDirectory)   private var saveDirectory: String
+    @AppStorage(AppSettings.$showPreview)     private var showPreview: Bool
+    @AppStorage(AppSettings.$trimAfterRecord) private var trimAfterRecord: Bool
+    @AppStorage(AppSettings.$videoFormat)     private var videoFormat: VideoFormat
+
+    var body: some View {
+        Form {
+            Section("Recordings") {
+                LabeledContent("Save Folder") {
+                    Text((saveDirectory as NSString).abbreviatingWithTildeInPath)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(saveDirectory)
+                    Button("Choose…") { chooseSaveFolder() }
+                        .accessibilityLabel("Choose Save Folder")
+                }
+                LabeledContent {
+                    Text(exampleName)
+                } label: {
+                    RowLabel("File Name", "The date and time the recording started. Not adjustable: recordings left by a crash are found by this name.")
+                }
+                LabeledContent("Recordings Folder") {
+                    Button("Show in Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: saveDirectory, isDirectory: true)) }
+                        .accessibilityLabel("Show Recordings Folder")
+                }
+            }
+            Section("After a Recording") {
+                Toggle(isOn: $showPreview) {
+                    RowLabel("Show a Preview", "A small floating picture of the recording for a few seconds. Click it to open the file.")
+                }
+                Toggle("Open the Video Trimmer", isOn: $trimAfterRecord)
+            }
+            Section("Log") {
+                LabeledContent {
+                    Button("Open") { openLog() }
+                        .accessibilityLabel("Open Recordings Log")
+                } label: {
+                    RowLabel("Recordings Log", "What happened to each recording and its tracks: starts, stops, microphone changes, silence that was filled in, failures. Kept in ~/Library/Logs/Holdfast/recordings.log.")
+                }
+            }
+        }
+    }
+
+    private var exampleName: String {
+        let base = RecordingFileStore(directory: saveDirectory).newBase()
+        return (base as NSString).lastPathComponent + "." + videoFormat.rawValue
+    }
+
+    private func chooseSaveFolder() {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseFiles = false
+        openPanel.canChooseDirectories = true
+        openPanel.canCreateDirectories = true
+        openPanel.directoryURL = URL(fileURLWithPath: saveDirectory, isDirectory: true)
+        if openPanel.runModal() == .OK, let path = openPanel.urls.first?.path { saveDirectory = path }
+    }
+
+    /// The log, or its folder while nothing has been written yet
+    private func openLog() {
+        guard let log = RecLog.url else { return }
+        let target = FileManager.default.fileExists(atPath: log.path) ? log : log.deletingLastPathComponent()
+        NSWorkspace.shared.open(target)
+    }
+}
+
+struct ShortcutSettings: View {
+    var body: some View {
+        Form {
+            Section("While Recording") {
+                shortcut("Stop Recording", .stop)
+                shortcut("Pause / Resume", .pauseResume)
+                shortcut("Mute / Unmute Microphone", .muteMicrophone)
+                shortcut("Save Current Frame", .saveFrame)
+                shortcut("Toggle Screen Magnifier", .screenMagnifier)
+            }
+            Section {
+                shortcut("Record System Audio", .startWithAudio)
+                shortcut("Record Current Screen", .startWithScreen)
+                shortcut("Record Topmost Window", .startWithWindow)
+                shortcut("Select Area to Record", .startWithArea)
+            } header: {
+                Text("Start")
+            } footer: {
+                SectionNote("The first three start at once, without a countdown, and always with system audio.")
+            }
+            Section("App") {
+                shortcut("Open Main Panel", .showPanel)
+            }
+        }
+    }
+
+    private func shortcut(_ title: String, _ name: KeyboardShortcuts.Name) -> some View {
+        LabeledContent(title) {
+            KeyboardShortcuts.Recorder(for: name).accessibilityLabel(title)
+        }
+    }
+}
+
+struct GeneralSettings: View {
+    @AppStorage(AppSettings.$showOnDock)  private var showOnDock: Bool
+    @AppStorage(AppSettings.$showMenubar) private var showMenubar: Bool
+    @AppStorage(AppSettings.$countdown)   private var countdown: Int
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+
+    var body: some View {
+        Form {
+            Section("Presence") {
+                Toggle("Show in the Dock", isOn: $showOnDock)
+                Toggle(isOn: $showMenubar) {
+                    RowLabel("Show in the Menu Bar", "During a recording the menu bar item is always there, with the time and Stop Recording.")
+                }
+                Toggle("Launch at Login", isOn: Binding(get: { launchAtLogin }, set: { setLaunchAtLogin($0) }))
+            }
+            Section("Start") {
+                LabeledContent {
+                    Text(countdown == 0 ? "None" : String(format: "%d s", countdown))
+                        .monospacedDigit()
+                    Stepper("Countdown Before a Recording", value: $countdown, in: 0...99)
+                        .labelsHidden()
+                } label: {
+                    RowLabel("Countdown Before a Recording", "Seconds counted down on screen after Start. A recording started directly by a shortcut begins at once.")
+                }
+            }
+            Section("About") {
+                if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+                    LabeledContent("Version", value: version)
+                }
+                LabeledContent {
+                    if let upstream = URL(string: "https://github.com/lihaoyun6/QuickRecorder") {
+                        Link("Original Project", destination: upstream)
+                    }
+                } label: {
+                    RowLabel("Based on QuickRecorder", "Holdfast is a modified version of QuickRecorder by lihaoyun6, under the same GNU AGPL-3.0 license. It is not an official QuickRecorder release.")
+                }
+            }
+        }
+        .onAppear { launchAtLogin = SMAppService.mainApp.status == .enabled }
+        // Once the setting is stored
+        .onChange(of: showMenubar) { DispatchQueue.main.async { StatusItemController.shared.refresh() } }
+        .onChange(of: showOnDock) { _, shown in
+            if shown {
+                NSApp.setActivationPolicy(.regular)
+            } else {
+                NSApp.setActivationPolicy(.accessory)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            print("Failed to \(enabled ? "enable" : "disable") launch at login: \(error.localizedDescription)")
+        }
+        // What the system says now, so that the switch never shows what was not done
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+}
+
+extension KeyboardShortcuts.Name {
+    static let startWithAudio = Self("startWithAudio")
+    static let startWithScreen = Self("startWithScreen")
+    static let startWithWindow = Self("startWithWindow")
+    static let startWithArea = Self("startWithArea")
+    static let screenMagnifier = Self("screenMagnifier")
+    static let saveFrame = Self("saveFrame")
+    static let pauseResume = Self("pauseResume")
+    static let muteMicrophone = Self("muteMicrophone")
+    static let stop = Self("stop")
+    static let showPanel = Self("showPanel")
+}

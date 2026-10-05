@@ -31,7 +31,7 @@ enum Suite {
     static var problems = [String]()
     /// The terminal: standard output itself is sent to a file while the tests run, because the app code prints
     static var terminal = FileHandle.standardOutput
-    static let workFolder = URL(fileURLWithPath: realpath(NSTemporaryDirectory(), nil).map { String(cString: $0) } ?? NSTemporaryDirectory()).appendingPathComponent("QuickRecorderTests-\(UUID().uuidString)", isDirectory: true)
+    static let workFolder = URL(fileURLWithPath: realpath(NSTemporaryDirectory(), nil).map { String(cString: $0) } ?? NSTemporaryDirectory()).appendingPathComponent("HoldfastTests-\(UUID().uuidString)", isDirectory: true)
 
     static func say(_ line: String) {
         if let data = (line + "\n").data(using: .utf8) { terminal.write(data) }
