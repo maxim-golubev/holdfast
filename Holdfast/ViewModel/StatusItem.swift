@@ -6,8 +6,9 @@
 import AppKit
 
 /// The app's item in the menu bar: a plain `NSStatusItem` whose button shows a symbol and a title
-/// (`StatusDisplay`), and whose click opens a menu. The system lays the button out and opens the menu; nothing
-/// here measures a width or looks at where a click landed.
+/// (`StatusDisplay`), and whose click opens a menu. AppKit lays the button out and opens the menu; nothing here
+/// looks at where a click landed. The one thing set here is the item's length: variable while idle, otherwise
+/// measured from the symbol and the title (`refresh`) and held, so that during a recording it only grows.
 ///
 /// It shows what `RecorderController` is doing and is told of every change through `RecorderEnvironment.app`
 /// (`statusChanged` calls `refresh`). While a recording starts or runs a timer refreshes the elapsed time twice a second, and carries
@@ -45,6 +46,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// The widest the item has been since it last was idle or starting. During a recording only the time makes it
     /// wider (the first hour adds digits): its symbols have one width.
     private var heldLength: CGFloat = 0
+    /// What the button needs besides its symbol and its title: the space between the two, and its padding at both
+    /// ends together
+    private static let symbolTitleGap: CGFloat = 5
+    private static let buttonPadding: CGFloat = 14
 
     private var recorder: RecorderController { RecorderController.shared }
 
@@ -83,7 +88,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 // "Starting" is there for a moment and is wider than the time: the recording is not held to it
                 if shown?.kind == .starting { heldLength = 0 }
                 let symbolWidth = button.image?.size.width ?? 0
-                let needed = (symbolWidth + (title.isEmpty ? 0 : 5 + text.size().width) + 14).rounded(.up)
+                let needed = (symbolWidth + (title.isEmpty ? 0 : StatusItemController.symbolTitleGap + text.size().width) + StatusItemController.buttonPadding).rounded(.up)
                 heldLength = max(heldLength, needed)
                 if item.length != heldLength { item.length = heldLength }
             }

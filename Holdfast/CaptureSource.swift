@@ -44,7 +44,13 @@ struct MicrophoneChoice {
 /// The ScreenCaptureKit side of one recording: what is captured (`filter(for:content:)`), how
 /// (`configuration(for:target:filter:microphoneDeviceID:)`), and the stream with its delegate and outputs. Screen,
 /// system audio and microphone all arrive here and are handed on as `CaptureSample`s on the queue it was given.
-/// One is created for every recording. Except for the stream's callbacks it is used on the main thread.
+///
+/// One is created for every recording, and its threads are these. `RecorderController.record` creates it, adds its
+/// outputs and starts it off the main thread while the session is `starting`. The main thread stops it, releases its
+/// stream and reconfigures it (`applyConfiguration`, from `MicDevices`, which may happen while it starts). Buffers
+/// arrive on the sample queue, `didStopWithError` on a queue of the stream's. The main thread leaves the stream to
+/// `record` while the session is `starting`: `captureEnded` does not release it then, a stop is only remembered,
+/// and `abandonStart` releases it once the start has failed.
 final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, RecordingCapture {
     /// The configuration the stream was started with, kept to update it when the microphone changes
     let configuration: SCStreamConfiguration
