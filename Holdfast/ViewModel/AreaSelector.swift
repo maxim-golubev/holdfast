@@ -421,6 +421,12 @@ class ScreenshotOverlayView: NSView {
     }
 }
 
+/// The area selector's panel with its buttons and size fields. It takes the keyboard without activating the app,
+/// so Esc (the selector's key monitor) and typing reach it while another app is in front.
+final class AreaPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
 class ScreenshotWindow: NSPanel {
     
     init(contentRect: NSRect, backing bufferingType: NSWindow.BackingStoreType, defer flag: Bool, size: NSSize, force: Bool = false) {

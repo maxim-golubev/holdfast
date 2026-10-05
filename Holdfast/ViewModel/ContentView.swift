@@ -229,7 +229,7 @@ extension AppDelegate {
             let gapAboveDock: CGFloat = 80
             let frame = NSRect(x: screen.frame.midX - size.width / 2, y: screen.visibleFrame.minY + gapAboveDock, width: size.width, height: size.height)
             contentView.focusRingType = .none
-            let areaPanel = NSPanel(contentRect: frame, styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
+            let areaPanel = AreaPanel(contentRect: frame, styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
             areaPanel.collectionBehavior = [.canJoinAllSpaces]
             areaPanel.level = .screenSaver
             areaPanel.title = "Start Recording"
@@ -242,6 +242,9 @@ extension AppDelegate {
             areaPanel.titlebarAppearsTransparent = true
             areaPanel.isMovableByWindowBackground = true
             areaPanel.orderFront(self)
+            // The hotkey, the script command and the main panel do not activate the app, and Esc must not go to
+            // the app in front
+            areaPanel.makeKey()
         }
     }
     
