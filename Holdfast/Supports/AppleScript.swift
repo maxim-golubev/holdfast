@@ -69,13 +69,8 @@ class selectApps: NSScriptCommand {
                         return
                     }
                     guard let screens = ScreenContent.availableContent?.displays else { return }
-                    guard let windows = ScreenContent.availableContent?.windows.filter({
-                        guard let title = $0.title else { return false }
-                        return !title.contains("Item-0")
-                        && title != "Window"
-                        && $0.frame.width > 40
-                        && $0.frame.height > 40
-                    }) else { return }
+                    // The screens are those the named application has windows on
+                    let windows = ScreenContent.getWindows().filter { $0.owningApplication?.processID == app.processID }
                     var s = [SCDisplay]()
                     for screen in screens {
                         for w in windows {
