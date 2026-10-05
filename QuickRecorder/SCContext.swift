@@ -41,7 +41,8 @@ class SCContext {
     static var writer: MovieWriter?
     /// The recording in progress. On `sampleQueue`.
     static var recording: RecordingContext? { writer?.recording }
-    /// The capture of the recording in progress, from the moment its stream exists until it is stopped. Main thread.
+    /// The capture of the recording in progress, from the moment its stream exists until it is stopped. Assigned once
+    /// by the task of `record()` (not on the main thread) while the state is `.starting`; read and cleared on the main thread.
     static var capture: CaptureSource?
     /// Where the recording side is. Main thread only, and only changed by `beginStart`, `endFailedStart`,
     /// `enterRecording`, `stopRecording` and `finish`.
@@ -383,6 +384,9 @@ class SCContext {
         }
         pendingStop = nil
         SCContext.autoStop = max(0, autoStop)
+        // The pause flag of the UI starts every recording in step with its new `MovieWriter`, also after a
+        // start that was paused and then discarded.
+        PopoverState.shared.isPaused = false
         state = .starting
         return true
     }
