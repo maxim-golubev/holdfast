@@ -187,17 +187,30 @@ ScreenCaptureKit's system audio leaves out what the system process
 screenshot sound at full level and none of the call. So `record()` first tries
 a Core Audio process tap (`SystemAudioSelection.choose`); the stream captures
 audio (`capturesAudio`) only when the tap cannot be used, never both, so
-nothing is recorded twice. A sound-only recording uses the same source.
+nothing is recorded twice. A sound-only recording uses the same source. The
+tap is global whatever is recorded: a window or application recording gets
+every app's sound, not only its own app's as ScreenCaptureKit's filtered audio
+did, because call audio comes from `avconferenced`, not from the call's app,
+and a tap of chosen processes made at the start would miss one that begins to
+play later.
 
 - **The tap.** `SystemAudioTap` creates a private global stereo tap of every
   process but Holdfast's own (its process object from
   `kAudioHardwarePropertyTranslatePIDToProcessObject`), left audible
   (`muteBehavior = .unmuted`), and a private aggregate device whose main
-  sub-device is the default output device, with the tap as its sub-tap, drift
-  compensation on and the tap starting with the device: a tap alone in an
-  aggregate device delivers only zeros. The IOProc copies the tap's buffers
+  sub-device is the default output device, with the tap as its sub-tap and
+  drift compensation on: a tap alone in an aggregate device delivers only
+  zeros. The device runs from `AudioDeviceStart` on and delivers zeros while
+  nothing plays, so the track is continuous from the start;
+  `kAudioAggregateDeviceTapAutoStartKey` is left out, since it makes the start
+  wait for the first sound. The IOProc uses only the tap's stream
+  (`kAudioDevicePropertyIOProcStreamUsage`: the last input stream on, the
+  output device's own input and output streams off; a failure to set it is
+  logged), so the output device gives only the clock and the microphone of a
+  headset or AirPods is not opened, which would put them in their narrowband
+  call mode. The IOProc copies the tap's buffers
   (the last ones of the input: the main device's own input streams, if any,
-  come first) into a `CMSampleBuffer` in the tap's format
+  come first, turned off) into a `CMSampleBuffer` in the tap's format
   (`kAudioTapPropertyFormat`, interleaved or not) at the aggregate device's
   rate, stamped with the IO time stamp's host time on the host-time clock, the
   clock ScreenCaptureKit stamps its buffers with. It does nothing else on the
@@ -212,13 +225,20 @@ nothing is recorded twice. A sound-only recording uses the same source.
 - **Device changes.** Listeners on the default output device, the device list
   and the tap's own device (its sample rate, and whether it is alive: AirPods
   switching to their call mode change rate) rebuild the tap 0.5 s after the
-  last change, on the source's own serial queue, logged. A device list change
+  last change, on the source's own serial queue, logged. A change of the tap's
+  own device also stops its IOProc handing buffers on at once, since they
+  would carry the old rate until the rebuild. A device list change
   leaves a tap that is still on the default output alone (its own aggregate
   device coming and going changes the list too). A rebuild stops handing on
   the old tap's buffers before it tears it down, and on the sample queue a
   buffer of an earlier tap than one already handed on is dropped, so nothing of
   the old device follows the new one; the monitor's silence fill covers the
-  moment between. A failed rebuild is retried three times, 2 s apart.
+  moment between. A failed rebuild is retried three times, 2 s apart; after
+  that only a change of the default output device, or of its format, tries
+  again. A device list change while the default output is still the one the
+  last build failed on does not: a build that fails after creating its
+  aggregate device destroys it, which changes the list, and taking that for a
+  new device would rebuild about twice a second for the rest of the recording.
 - **Teardown.** The device is stopped, then the IOProc, the aggregate device
   and the tap are destroyed, in that order, once: at the stop (the tap before
   the stream, both before the writer's inputs are finished), when a start
@@ -234,7 +254,11 @@ nothing is recorded twice. A sound-only recording uses the same source.
   determined, like the microphone. Denied or unanswered, the recording uses
   ScreenCaptureKit's audio, logs why and posts "Call Audio Not Included" once
   while the app runs; when the state cannot be read the tap is tried and its
-  failure decides.
+  failure decides. A tap that fails although allowed posts the notice for
+  every recording it happens to, and the recording shows "Call audio is not
+  being recorded" as its warning for as long as it runs (`Health.notice`,
+  under any track warning: status line and warning panel), since banners are
+  held back while the screen is shared.
 - **Not yet verified on a real call.** Whether the tap hears a FaceTime call is
   checked with `Tools/tapprobe` (modes `global` and `calls`, the latter only
   `avconferenced`); that has not been done yet.

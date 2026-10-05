@@ -182,19 +182,22 @@ extension RecorderController {
         let deliver: (CaptureSample) -> Void = { session.received($0) }
 
         // System audio from a process tap when it can be started, which hears FaceTime and phone calls; from the
-        // stream otherwise, never from both
+        // stream otherwise, never from both. The tap is global whatever is recorded: a window or application
+        // recording has every app's sound, since call audio comes from avconferenced, not from the call's app.
         var systemAudio: SystemAudioSource?
         let route = SystemAudioSelection.choose(wanted: recording.systemAudio, permission: SystemAudioPermission.status()) {
             let source = SystemAudioSource(factory: .coreAudio, sampleQueue: session.queue, onSample: deliver)
             try source.start()
             systemAudio = source
         }
-        if case .screenCaptureKit(let reason) = route {
+        if case .screenCaptureKit(let reason, _) = route {
             RecLog.write("System audio: screen capture, without call audio (\(reason))")
-            if let notice = SystemAudioSelection.notice(for: route), SystemAudioSelection.callAudioNotice.take() {
+            if let notice = SystemAudioSelection.notice(for: route), SystemAudioSelection.notifies(route, once: SystemAudioSelection.callAudioNotice) {
                 UserNotice.showNotification(title: SystemAudioSelection.noticeTitle, body: notice, id: "holdfast.callaudio.\(UUID().uuidString)")
             }
         }
+        // A tap that failed is also shown where the track warnings are, for the whole recording
+        if let warning = SystemAudioSelection.warning(for: route) { await session.showNotice(warning) }
         let conf = CaptureSource.configuration(for: recording, target: target, filter: filter, microphoneDeviceID: microphone?.captureDeviceID,
                                                capturesAudio: route.streamCapturesAudio)
 

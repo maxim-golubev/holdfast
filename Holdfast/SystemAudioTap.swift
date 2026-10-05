@@ -8,6 +8,7 @@ import AudioToolbox
 import CoreAudio
 import CoreMedia
 import Foundation
+import Synchronization
 
 // System audio through a Core Audio process tap (macOS 14.2+). ScreenCaptureKit's system audio leaves out what the
 // system process avconferenced plays, which is the audio of FaceTime calls and of iPhone calls taken on the Mac; a
@@ -39,6 +40,11 @@ protocol TapHardware {
     /// The device's nominal sample rate, nil when it cannot be read
     func nominalSampleRate(_ device: AudioObjectID) -> Double?
     func createIOProc(_ device: AudioObjectID, _ block: @escaping AudioDeviceIOBlock) throws -> AudioDeviceIOProcID
+    /// How many streams the device has in its input (`input`) or output scope
+    func streamCount(_ device: AudioObjectID, input: Bool) throws -> Int
+    /// Which of the device's streams in the input or output scope the IOProc uses
+    /// (`kAudioDevicePropertyIOProcStreamUsage`), one entry for each of them
+    func setStreamUsage(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID, input: Bool, _ isOn: [Bool]) throws
     func startDevice(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) throws
     func stopDevice(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus
     func destroyIOProc(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus
@@ -90,6 +96,11 @@ struct SystemAudioTapError: LocalizedError {
 /// buffer into a `CMSampleBuffer` stamped on the host-time clock, the clock ScreenCaptureKit stamps its buffers with.
 /// Built and started by `init`, torn down by `stop` (and by `deinit`), each once.
 ///
+/// The IOProc uses only the tap's stream (`useTapStreamOnly`): the output device is in the aggregate device for its
+/// clock alone. The aggregate device runs from `AudioDeviceStart` on, delivering zeros while nothing plays, so the
+/// track is continuous from the first moment (it is not made to wait for the first sound, which
+/// `kAudioAggregateDeviceTapAutoStartKey` would do).
+///
 /// Threads: `init` and `stop` run on the thread of the owner (`SystemAudioSource`'s queue). The IOProc runs on Core
 /// Audio's real-time IO thread and only copies the audio out of the IO buffer, stamps it and calls `deliver`.
 final class SystemAudioTap: SystemAudioTapping {
@@ -107,12 +118,21 @@ final class SystemAudioTap: SystemAudioTapping {
     private var listener: TapListener?
     private var stopped = false
 
+    /// Closed once the output device has changed its rate or gone away: from then on the IOProc hands nothing on
+    /// until the tap is rebuilt, since its buffers come at the new rate and `format` still says the old one
+    final class Gate: Sendable {
+        private let closed = Atomic<Bool>(false)
+        var isOpen: Bool { !closed.load(ordering: .acquiring) }
+        func close() { closed.store(true, ordering: .releasing) }
+    }
+
     /// Builds the tap on the current default output device and starts it. `deliver` gets every buffer, on the IO
     /// thread; `outputChanged` is called when the output device's sample rate changes or it goes away (AirPods
     /// switching to their call mode change their rate), which the tap must be rebuilt for. Throws, with everything
     /// it created destroyed again, when any step fails.
     init(hardware: TapHardware, queue: DispatchQueue, deliver: @escaping (CMSampleBuffer) -> Void, outputChanged: @escaping () -> Void) throws {
         self.hardware = hardware
+        let gate = Gate()
         let own = hardware.ownProcessObject()
         let output = try hardware.defaultOutputDevice()
         let tap = try hardware.createTap(excluding: own.map { [$0] } ?? [])
@@ -136,15 +156,17 @@ final class SystemAudioTap: SystemAudioTapping {
             }
             let description = try SystemAudioBuffers.formatDescription(format)
             proc = try hardware.createIOProc(aggregate) { _, input, inputTime, output, _ in
-                // The aggregate device has its main device's output streams too: nothing is played through them
+                // The aggregate device has its main device's output streams too, turned off for this IOProc (their
+                // buffers are then NULL); should that have failed, nothing is played through them
                 for buffer in UnsafeMutableAudioBufferListPointer(output) {
                     if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
                 }
-                guard let sample = SystemAudioBuffers.sampleBuffer(from: input, format: format, description: description,
+                guard gate.isOpen, let sample = SystemAudioBuffers.sampleBuffer(from: input, format: format, description: description,
                                                                     at: SystemAudioBuffers.presentationTime(of: inputTime.pointee, list: input, format: format)) else { return }
                 deliver(sample)
             }
             undo.append { _ = hardware.destroyIOProc(aggregate, proc) }
+            SystemAudioTap.useTapStreamOnly(hardware, aggregate, proc)
             try hardware.startDevice(aggregate, proc)
         } catch {
             throw fail(error)
@@ -155,10 +177,36 @@ final class SystemAudioTap: SystemAudioTapping {
         self.aggregate = aggregate
         self.proc = proc
         // Only a real change is passed on: a notification that changed nothing must not rebuild the tap, which would
-        // notify again
+        // notify again. A real one stops the buffers at once, not only once the rebuild comes: AirPods switching to
+        // their call mode deliver at half the rate, which `format` would label as the old one (double speed).
         let outputRate = hardware.nominalSampleRate(output.id)
         listener = hardware.watch(output.id, [kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyDeviceIsAlive], queue: queue) {
-            if hardware.nominalSampleRate(output.id) != outputRate || !hardware.isAlive(deviceUID: output.uid) { outputChanged() }
+            if hardware.nominalSampleRate(output.id) != outputRate || !hardware.isAlive(deviceUID: output.uid) {
+                gate.close()
+                outputChanged()
+            }
+        }
+    }
+
+    /// Which of the aggregate device's streams its IOProc uses: of the input streams only the last, the tap's (the
+    /// main device's own input streams come first), and none of the output streams
+    static func streamUsage(streams: Int, input: Bool) -> [Bool] {
+        return (0..<max(0, streams)).map { input && $0 == streams - 1 }
+    }
+
+    /// Turns off, for the IOProc, every stream of the aggregate device but the tap's, so the output device in it gives
+    /// only the clock. Its input, the microphone of a headset or AirPods, is then not opened: an open microphone puts
+    /// Bluetooth headphones in their narrowband call mode, for what the user hears too, and shows Holdfast as using
+    /// the microphone. A failure is logged and the tap is used all the same.
+    private static func useTapStreamOnly(_ hardware: TapHardware, _ aggregate: AudioObjectID, _ proc: AudioDeviceIOProcID) {
+        for input in [true, false] {
+            do {
+                let streams = try hardware.streamCount(aggregate, input: input)
+                guard streams > 0 else { continue }
+                try hardware.setStreamUsage(aggregate, proc, input: input, streamUsage(streams: streams, input: input))
+            } catch {
+                RecLog.write("System audio tap: the output device's own \(input ? "input" : "output") streams stay on: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -242,8 +290,8 @@ enum SystemAudioBuffers {
     }
 
     /// Frames in an IO buffer list, counted from the tap's buffers (the last ones of the list: an aggregate device
-    /// lists its main device's input streams, if it has any, before its taps). Nil when the list does not hold the
-    /// tap's stream in `format`.
+    /// lists its main device's input streams, if it has any, before its taps; those are turned off, their buffers
+    /// NULL, and not looked at). Nil when the list does not hold the tap's stream in `format`.
     static func frames(in list: UnsafePointer<AudioBufferList>, format: AudioStreamBasicDescription) -> Int? {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: list))
         let count = bufferCount(format)
@@ -488,7 +536,8 @@ struct CoreAudioTapHardware: TapHardware {
             kAudioAggregateDeviceIsStackedKey: false,
             kAudioAggregateDeviceMainSubDeviceKey: mainUID,
             kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: mainUID]],
-            kAudioAggregateDeviceTapAutoStartKey: true,
+            // No kAudioAggregateDeviceTapAutoStartKey: with it the start waits for the first sound a tapped process
+            // plays, and a recording started in silence would get no system audio until then
             kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: tapUID, kAudioSubTapDriftCompensationKey: true]],
         ]
         var device = AudioObjectID(kAudioObjectUnknown)
@@ -509,6 +558,36 @@ struct CoreAudioTapHardware: TapHardware {
         let status = AudioDeviceCreateIOProcIDWithBlock(&proc, device, nil, block)
         guard status == noErr, let made = proc else { throw SystemAudioTapError("Creating the IOProc", status) }
         return made
+    }
+
+    func streamCount(_ device: AudioObjectID, input: Bool) throws -> Int {
+        var address = CoreAudioTapHardware.address(kAudioDevicePropertyStreams, input ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput)
+        var size: UInt32 = 0
+        let status = AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size)
+        guard status == noErr else { throw SystemAudioTapError("Reading the aggregate device's streams", status) }
+        return Int(size) / MemoryLayout<AudioStreamID>.size
+    }
+
+    func setStreamUsage(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID, input: Bool, _ isOn: [Bool]) throws {
+        // AudioHardwareIOProcStreamUsage: the IOProc, the number of streams, then a UInt32 for each stream
+        typealias Usage = AudioHardwareIOProcStreamUsage
+        guard let procOffset = MemoryLayout<Usage>.offset(of: \Usage.mIOProc),
+              let countOffset = MemoryLayout<Usage>.offset(of: \Usage.mNumberStreams),
+              let flagsOffset = MemoryLayout<Usage>.offset(of: \Usage.mStreamIsOn) else {
+            throw SystemAudioTapError("The stream usage cannot be described")
+        }
+        let size = max(MemoryLayout<Usage>.size, flagsOffset + isOn.count * MemoryLayout<UInt32>.size)
+        let usage = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: MemoryLayout<Usage>.alignment)
+        defer { usage.deallocate() }
+        usage.initializeMemory(as: UInt8.self, repeating: 0, count: size)
+        usage.storeBytes(of: unsafeBitCast(proc, to: UnsafeMutableRawPointer.self), toByteOffset: procOffset, as: UnsafeMutableRawPointer.self)
+        usage.storeBytes(of: UInt32(isOn.count), toByteOffset: countOffset, as: UInt32.self)
+        for (index, on) in isOn.enumerated() {
+            usage.storeBytes(of: on ? 1 : 0, toByteOffset: flagsOffset + index * MemoryLayout<UInt32>.size, as: UInt32.self)
+        }
+        var address = CoreAudioTapHardware.address(kAudioDevicePropertyIOProcStreamUsage, input ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput)
+        let status = AudioObjectSetPropertyData(device, &address, 0, nil, UInt32(size), usage)
+        guard status == noErr else { throw SystemAudioTapError("Setting the IOProc's stream usage", status) }
     }
 
     func startDevice(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) throws {

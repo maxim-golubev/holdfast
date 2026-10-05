@@ -29,6 +29,8 @@ struct StatusDisplay: Equatable {
         /// `RecordingSession.Health.micSilent`
         var micSilent: Bool?
         var warning: String?
+        /// `RecordingSession.Health.notice`: shown like a warning while no warning is up
+        var notice: String?
         var mixProgress: Double?
         var isRecovering = false
         var recoveryProgress: Double?
@@ -73,7 +75,7 @@ struct StatusDisplay: Equatable {
             if input.isPaused {
                 kind = .paused
                 line = "Paused" + " — " + microphone
-            } else if let warning = input.warning {
+            } else if let warning = input.warning ?? input.notice {
                 kind = .warning
                 line = input.isMicrophoneMuted ? warning + " — " + microphone : warning
                 banner = warning + "."
@@ -176,7 +178,7 @@ extension RecorderController {
     /// What the status item shows of the recorder now
     var statusInput: StatusDisplay.Input {
         return StatusDisplay.Input(state: state, isPaused: isPaused, hasMicrophone: session?.hasMicrophone ?? false,
-                                   isMicrophoneMuted: isMicrophoneMuted, micSilent: health.micSilent, warning: health.warning,
+                                   isMicrophoneMuted: isMicrophoneMuted, micSilent: health.micSilent, warning: health.warning, notice: health.notice,
                                    mixProgress: health.mixProgress, isRecovering: recovery.isRunning,
                                    recoveryProgress: recovery.progress, isExporting: exportsRunning > 0, isQuitting: quitRequested,
                                    length: recordingLength())

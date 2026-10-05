@@ -43,7 +43,10 @@ Then check three settings once:
   repeats the options that matter (resolution, frame rate, quality, HDR,
   cursor, system audio, microphone and its device), and the timer button next
   to Start stops the recording by itself after a number of minutes (0 is no
-  limit). **System Audio** records sound only, without a picture.
+  limit). **System Audio** records sound only, without a picture. The system
+  audio of an **Application** or **Window** recording is every app's sound, not
+  only that app's: call audio is played by macOS itself, not by the call's app
+  (see [System audio and calls](#system-audio-and-calls)).
 - **The menu bar.** With **Settings → General → Show in the Menu Bar** on, the
   menu bar item is there all the time, and its menu has **Open Main Panel** and
   the same five starts. The Dock icon's menu is the same menu.
@@ -269,11 +272,22 @@ switching to their call mode), the tap is rebuilt on the new device within
 about a second; the moment in between is recorded as silence, and the log
 says so. A rebuild that fails is tried three more times, two seconds apart;
 after that, **System Audio Is Not Being Recorded** warns you as for any silent
-track.
+track, and the tap is tried again when the output device changes.
 
 When the tap cannot be used (no permission, or macOS refuses it), the system
 audio comes from screen capture for that recording, as before, without call
-audio, and the log says why.
+audio, and the log says why. Without the permission, the **Call Audio Not
+Included** notification comes once while Holdfast runs. When the tap fails
+although it is allowed, every such recording posts that notification and
+shows **Call audio is not being recorded** as its warning for as long as it
+runs: in the menu bar and on screen, like a track warning, so you see it
+during the meeting even while sharing your screen.
+
+The tap records everything the Mac plays, whatever the recording shows: an
+**Application** or **Window** recording has the sound of every app, its
+notifications included. FaceTime and phone calls are played by a part of macOS,
+not by the app on screen, so a tap of only the recorded app would leave the
+call out.
 
 ## The log
 

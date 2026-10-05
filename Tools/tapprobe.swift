@@ -2,7 +2,10 @@
 // iPhone) reaches it. FaceTime and Continuity calls play through the system process avconferenced.
 // Built like Holdfast's own tap (SystemAudioTap): a private tap, left audible, in a private aggregate device whose
 // main sub-device is the default output device (a tap alone in an aggregate device delivers only zeros), with drift
-// compensation and the tap starting with the device.
+// compensation, and an IOProc that uses only the tap's stream (the output device's own input and output streams are
+// turned off, so a headset's microphone is not opened). The aggregate device runs from the start, also while nothing
+// plays (no kAudioAggregateDeviceTapAutoStartKey, which makes the start wait for the first sound): run it in silence
+// and every second must still have callbacks, at -180 dB.
 // Usage: tapprobe [global|calls] [seconds]
 //   global: everything the Mac plays, as Holdfast records it
 //   calls:  only avconferenced (start the call first: it has no audio object before)
@@ -21,8 +24,8 @@ guard mode == "global" || mode == "calls" else {
 }
 let system = AudioObjectID(kAudioObjectSystemObject)
 
-func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
-    return AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+func address(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
+    return AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
 }
 
 func property<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ value: inout T) -> OSStatus {
@@ -99,7 +102,6 @@ let aggregate: [String: Any] = [
     kAudioAggregateDeviceIsStackedKey: false,
     kAudioAggregateDeviceMainSubDeviceKey: outputUID,
     kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: outputUID]],
-    kAudioAggregateDeviceTapAutoStartKey: true,
     kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: tapUID, kAudioSubTapDriftCompensationKey: true]],
 ]
 var device = AudioObjectID(kAudioObjectUnknown)
@@ -144,6 +146,26 @@ guard status == noErr, let procID else {
     AudioHardwareDestroyAggregateDevice(device)
     AudioHardwareDestroyProcessTap(tap)
     exit(1)
+}
+// Only the tap's stream, the last input stream; none of the output device's own streams
+for scope in [kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput] {
+    let input = scope == kAudioObjectPropertyScopeInput
+    var streamsAddress = address(kAudioDevicePropertyStreams, scope)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(device, &streamsAddress, 0, nil, &size) == noErr else { print("cannot read the \(input ? "input" : "output") streams"); continue }
+    let streams = Int(size) / MemoryLayout<AudioStreamID>.size
+    guard streams > 0 else { continue }
+    let flagsOffset = MemoryLayout<AudioHardwareIOProcStreamUsage>.offset(of: \AudioHardwareIOProcStreamUsage.mStreamIsOn) ?? 12
+    let bytes = max(MemoryLayout<AudioHardwareIOProcStreamUsage>.size, flagsOffset + 4 * streams)
+    let usage = UnsafeMutableRawPointer.allocate(byteCount: bytes, alignment: 8)
+    usage.initializeMemory(as: UInt8.self, repeating: 0, count: bytes)
+    usage.storeBytes(of: unsafeBitCast(procID, to: UnsafeMutableRawPointer.self), toByteOffset: 0, as: UnsafeMutableRawPointer.self)
+    usage.storeBytes(of: UInt32(streams), toByteOffset: MemoryLayout<UnsafeMutableRawPointer>.size, as: UInt32.self)
+    for index in 0..<streams { usage.storeBytes(of: input && index == streams - 1 ? 1 : 0, toByteOffset: flagsOffset + 4 * index, as: UInt32.self) }
+    var usageAddress = address(kAudioDevicePropertyIOProcStreamUsage, scope)
+    let result = AudioObjectSetPropertyData(device, &usageAddress, 0, nil, UInt32(bytes), usage)
+    usage.deallocate()
+    print("\(input ? "input" : "output") streams: \(streams), \(input ? "only the last (the tap's) on" : "all off")\(result == noErr ? "" : " FAILED (\(result))")")
 }
 status = AudioDeviceStart(device, procID)
 guard status == noErr else {

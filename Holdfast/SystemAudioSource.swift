@@ -24,8 +24,9 @@ enum SystemAudioRoute: Equatable {
     case none
     /// A Core Audio process tap, which hears call audio too
     case tap
-    /// ScreenCaptureKit's system audio, which leaves out FaceTime and phone calls; why the tap is not used
-    case screenCaptureKit(reason: String)
+    /// ScreenCaptureKit's system audio, which leaves out FaceTime and phone calls; why the tap is not used, and
+    /// whether it was tried and failed (rather than not allowed)
+    case screenCaptureKit(reason: String, tapFailed: Bool)
 
     /// Whether the stream captures audio. Never with the tap: the recording would have the system audio twice.
     var streamCapturesAudio: Bool {
@@ -53,8 +54,11 @@ enum TapPermission: Equatable {
 enum SystemAudioSelection {
     /// The title of the notice when the tap is not used
     static let noticeTitle = "Call Audio Not Included"
-    /// The notice is shown once while the app runs; every recording without the tap says why in the log
+    /// A recording without the tap because it is not allowed is notified once while the app runs; every recording
+    /// without the tap says why in the log
     static let callAudioNotice = NoticeOnce()
+    /// The status line and on-screen warning of a recording whose tap failed
+    static let tapFailedWarning = "Call audio is not being recorded"
 
     /// Decides where the system audio of a recording that `wants` it comes from. The tap is tried first (`startTap`
     /// builds and starts it, and throws when it cannot); without the permission, or when it fails, ScreenCaptureKit
@@ -63,24 +67,40 @@ enum SystemAudioSelection {
         guard wanted else { return .none }
         switch permission {
         case .denied:
-            return .screenCaptureKit(reason: "Holdfast is not allowed to record system audio (System Settings, Privacy & Security, Screen & System Audio Recording, System Audio Recording Only).")
+            return .screenCaptureKit(reason: "Holdfast is not allowed to record system audio (System Settings, Privacy & Security, Screen & System Audio Recording, System Audio Recording Only).", tapFailed: false)
         case .notDetermined:
             // Asked for before the start (`SystemAudioPermission.request`); still not answered means not allowed
-            return .screenCaptureKit(reason: "Holdfast has not been allowed to record system audio yet.")
+            return .screenCaptureKit(reason: "Holdfast has not been allowed to record system audio yet.", tapFailed: false)
         case .granted, .unknown:
             do {
                 try startTap()
                 return .tap
             } catch {
-                return .screenCaptureKit(reason: "The system audio tap could not be started: \(error.localizedDescription)")
+                return .screenCaptureKit(reason: "The system audio tap could not be started: \(error.localizedDescription)", tapFailed: true)
             }
         }
     }
 
     /// What the user is told when the system audio comes from ScreenCaptureKit
     static func notice(for route: SystemAudioRoute) -> String? {
-        guard case .screenCaptureKit(let reason) = route else { return nil }
+        guard case .screenCaptureKit(let reason, _) = route else { return nil }
         return "System audio is recorded through screen capture, which leaves out the audio of FaceTime calls and of phone calls taken on this Mac: the other side of such a call will not be in the recording. " + reason
+    }
+
+    /// Whether the notice is posted for this recording: for every one whose tap failed, since call audio is then
+    /// missing although it was allowed; once while the app runs (`once`) when the tap is not allowed, the user's own
+    /// answer
+    static func notifies(_ route: SystemAudioRoute, once: NoticeOnce) -> Bool {
+        guard case .screenCaptureKit(_, let tapFailed) = route else { return false }
+        return tapFailed || once.take()
+    }
+
+    /// What the recording shows for as long as it runs, in its status line and on screen like a track warning, when
+    /// its tap failed; nil otherwise. A notification alone is easily missed: macOS holds banners back while the
+    /// screen is shared, and a full-screen meeting hides the menu bar.
+    static func warning(for route: SystemAudioRoute) -> String? {
+        guard case .screenCaptureKit(_, true) = route else { return nil }
+        return tapFailedWarning
     }
 }
 
@@ -114,6 +134,8 @@ final class SystemAudioSource {
         /// Calls `changed` on `queue`, with what changed, when the default output device or the device list
         /// changes; returns what stops watching
         var watchDevices: (_ queue: DispatchQueue, _ changed: @escaping (String) -> Void) -> () -> Void
+        /// The UID of the current default output device, nil when there is none
+        var defaultOutput: () -> String?
 
         static var coreAudio: Factory {
             let hardware = CoreAudioTapHardware()
@@ -127,13 +149,14 @@ final class SystemAudioSource {
                     if let output = output { hardware.unwatch(output) }
                     if let devices = devices { hardware.unwatch(devices) }
                 }
-            })
+            }, defaultOutput: { (try? hardware.defaultOutputDevice())?.uid })
         }
     }
 
     /// How long after a device change the tap is rebuilt: changes come in bursts
     static let settleDelay: Double = 0.5
-    /// A rebuild that failed is tried again this often, this far apart, before the next device change
+    /// A rebuild that failed is tried again this often, this far apart, before the next change of the default output
+    /// device (or of its format)
     static let retries = 3
     static let retryDelay: Double = 2
 
@@ -158,6 +181,12 @@ final class SystemAudioSource {
     private var retriesLeft = 0
     /// Whether the rebuild that is waiting replaces a tap that is still on the default output device
     private var forcePending = false
+    /// The default output device the last rebuild failed on; nil once one worked
+    private var failedOn: Failure?
+    private struct Failure {
+        /// Its UID, nil when there was no output device
+        let output: String?
+    }
     private var stopped = false
     /// How often the tap was rebuilt, for the log
     private(set) var rebuilds = 0
@@ -256,7 +285,7 @@ final class SystemAudioSource {
     /// A device change: the tap is rebuilt once the burst of changes is over. `force` rebuilds a tap that is
     /// still on the default output device, whose format changed under it.
     private func devicesChanged(_ reason: String, force: Bool) {
-        guard !stopped else { return }
+        guard !stopped, force || !failedOnSameOutput else { return }
         retriesLeft = SystemAudioSource.retries
         // A forced rebuild that is waiting stays forced
         schedule(after: settleDelay, reason: reason, force: force || (pending != nil && forcePending))
@@ -280,6 +309,7 @@ final class SystemAudioSource {
     private func rebuild(reason: String, force: Bool) {
         guard !stopped else { return }
         if !force, let tap = tap, tap.isCurrent { return }
+        if !force, failedOnSameOutput { return }
         RecLog.write("System audio: rebuilding the process tap (\(reason))")
         // From here on nothing of the old tap is handed on
         delivering.store(0, ordering: .releasing)
@@ -287,14 +317,26 @@ final class SystemAudioSource {
         tap = nil
         do {
             try build()
+            failedOn = nil
             rebuilds += 1
             RecLog.write("System audio: process tap rebuilt on \"\(tap?.deviceName ?? "?")\" (\(tap?.formatText ?? "?"))")
         } catch {
             RecLog.write("System audio: rebuilding the process tap failed: \(error.localizedDescription)")
+            failedOn = Failure(output: factory.defaultOutput())
             guard retriesLeft > 0 else { return }
             retriesLeft -= 1
             schedule(after: retryDelay, reason: "retry", force: true)
         }
+    }
+
+    /// Whether there is no tap because the last rebuild failed, and the default output device is still the one it
+    /// failed on: a change of the device list is then no reason to build again, only its retries are. A build that
+    /// fails after creating its aggregate device destroys it, and that changes the device list in this process; taken
+    /// for a new device, it would build and tear down a tap that cannot start on this output about twice a second
+    /// for the rest of the recording.
+    private var failedOnSameOutput: Bool {
+        guard tap == nil, let failed = failedOn else { return false }
+        return failed.output == factory.defaultOutput()
     }
 
     // MARK: - IO thread

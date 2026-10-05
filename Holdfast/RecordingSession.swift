@@ -71,6 +71,9 @@ final class RecordingSession: @unchecked Sendable {
     struct Health: Equatable {
         /// Set while a track is not being recorded
         var warning: String?
+        /// A warning that stays for the whole recording (its system audio comes without call audio), shown when
+        /// `warning` is not
+        var notice: String?
         /// Nil without a microphone track; true while it delivers nothing or digital silence
         var micSilent: Bool?
         /// From 0 to 1 while the audio tracks are being mixed
@@ -189,6 +192,14 @@ final class RecordingSession: @unchecked Sendable {
     @MainActor
     func attach(_ capture: RecordingCapture) {
         self.capture = capture
+    }
+
+    /// Shows `notice` as this recording's warning for as long as it runs, whenever no track warning is up
+    @MainActor
+    func showNotice(_ notice: String) {
+        guard health.notice != notice else { return }
+        health.notice = notice
+        statusChanged(self)
     }
 
     /// From here on the writer takes buffers. Just before the capture is started; not on the sample queue.

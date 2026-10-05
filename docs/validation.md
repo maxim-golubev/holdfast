@@ -95,7 +95,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 120 tests in under half a minute, without the app, a screen
+`Tools/test.sh` runs 124 tests in under half a minute, without the app, a screen
 or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
@@ -110,9 +110,9 @@ synthetic buffers and read them back.
 | Files, names, disk | 18 | Temporary and final names, leftovers, staging, free-space thresholds, a moved or deleted folder |
 | Mixer and recovery | 11 | Mix and its checks, MP3 and package mixes, every recovery outcome |
 | Settings | 7 | Keys, defaults and stored types of earlier installations |
-| Status item | 6 | Every state's symbol, title and sentence, the timer text, the item's width |
+| Status item | 7 | Every state's symbol, title and sentence, the timer text, the item's width, the call-audio warning |
 | Package | 1 | `.qma` info files of earlier versions |
-| System audio tap | 14 | Build and teardown order against fake Core Audio calls, cleanup after each failed step, the IOProc's copy (interleaved, non-interleaved, behind other input streams, malformed lists), host-time stamps, conversion and resampling to 48 kHz stereo, the choice between tap and screen capture with its notice, rebuilds on device changes with nothing of the old device after the new, retries, a sound-only file written from the tap's buffers |
+| System audio tap | 17 | Build and teardown order against fake Core Audio calls, cleanup after each failed step, the IOProc's stream usage (only the tap's stream), the IOProc's copy (interleaved, non-interleaved, behind other input streams, turned-off streams, malformed lists), nothing handed on once the output device changes its rate, host-time stamps, conversion and resampling to 48 kHz stereo, the choice between tap and screen capture with its notice and warning, rebuilds on device changes with nothing of the old device after the new, retries, no endless rebuild from the tap's own aggregate device, a sound-only file written from the tap's buffers |
 
 ## Not yet checked on the real machine
 
@@ -128,7 +128,10 @@ recording:
   prompt and what the permission reads as before and after, its format and
   rate on the built-in speakers and on AirPods in their call mode, the rebuild
   when the output device changes, and the sync of tap audio with the picture
-  over a long recording.
+  over a long recording. Also that the tap runs from its start while nothing
+  plays (`tapprobe global 5` in silence: callbacks every second at -180 dB),
+  and that with AirPods as the output the tap leaves their microphone closed,
+  so they stay out of their call mode (the IOProc uses only the tap's stream).
 
 ## 90-minute simulation
 
