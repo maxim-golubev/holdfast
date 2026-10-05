@@ -68,15 +68,19 @@ enum RecordingSaver {
             try? fd.removeItem(at: recording.rawURL)
             let body = (earlyReason.map { $0 + " " } ?? "") + "No audio arrived, nothing was recorded.".local
             UserNotice.reportFailure(title: failureTitle, message: body)
-        } else if recording.recordMic, let writer = writer, !closed {
-            // The microphone file did not close: the package is kept as it is and is not mixed
-            var body = earlyReason ?? ""
-            if let error = writer.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
-            body += (body.isEmpty ? "" : " ") + keptNote(recording.rawURL, "The microphone file could not be closed. The recording was kept with separate audio files: %@".local)
-            UserNotice.reportFailure(title: failureTitle, message: body)
         } else {
-            // The package is only read now that the microphone file is complete
-            await completion { done in finishAudioRecording(recording, earlyReason: earlyReason, completion: done) }
+            // The files are as complete as they will get: they leave their temporary name
+            let kept = recording.closedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
+            if recording.recordMic, let writer = writer, !closed {
+                // The microphone file did not close: the package is kept as it is and is not mixed
+                var body = earlyReason ?? ""
+                if let error = writer.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
+                body += (body.isEmpty ? "" : " ") + keptNote(kept, "The microphone file could not be closed. The recording was kept with separate audio files: %@".local)
+                UserNotice.reportFailure(title: failureTitle, message: body)
+            } else {
+                // The package is only read now that the microphone file is complete
+                await completion { done in finishAudioRecording(recording, at: kept, earlyReason: earlyReason, completion: done) }
+            }
         }
         SleepPreventer.shared.allowSleep()
     }
@@ -144,15 +148,16 @@ enum RecordingSaver {
         present(final, image: frame, recording: recording, earlyReason: earlyReason)
     }
 
-    /// What follows an audio-only recording once its files are closed: MP3 conversion, the mix of a .qma package, or
-    /// just the report. `completion` is called once, when the files are in their final state. A conversion or mix that
-    /// fails leaves no partial file and is reported with where the recording is. Main thread: it shows the preview
-    /// and creates the audio player that does the mix.
-    private static func finishAudioRecording(_ recording: RecordingContext, earlyReason: String?, completion: @escaping () -> Void) {
+    /// What follows an audio-only recording once its files are closed and `file` (the audio file or the package) has
+    /// left its temporary name: MP3 conversion, the mix of a .qma package, or just the report. `completion` is called
+    /// once, when the files are in their final state. A conversion or mix that fails leaves no partial file and is
+    /// reported with where the recording is. Main thread: it shows the preview and creates the audio player that
+    /// does the mix.
+    private static func finishAudioRecording(_ recording: RecordingContext, at file: URL, earlyReason: String?, completion: @escaping () -> Void) {
         let early = earlyReason.map { $0 + " " } ?? ""
         let audioIcon = NSImage(named: "audioIcon")
         if recording.audioFormat == .mp3 && !recording.recordMic {
-            guard let source = recording.systemAudioURL else { completion(); return }
+            let source = file
             let output = recording.finalURL
             Task {
                 defer { completion() }
@@ -167,7 +172,7 @@ enum RecordingSaver {
                 }
             }
         } else if recording.remuxAudio && recording.recordMic {
-            let package = recording.rawURL
+            let package = file
             func failed(_ reason: String) {
                 let body = early + String(format: "Mixing the audio failed: %@".local, reason) + " " + keptNote(package, "Nothing is lost: the recording is kept with separate audio files in: %@".local)
                 UserNotice.reportFailure(title: "Audio Mix Failed".local, message: body)
@@ -191,7 +196,7 @@ enum RecordingSaver {
         } else {
             // A package when there is a microphone, a single audio file otherwise
             let icon = recording.recordMic ? NSImage(named: "qmaIcon") : audioIcon
-            present(recording.rawURL, image: icon, recording: recording, earlyReason: earlyReason)
+            present(file, image: icon, recording: recording, earlyReason: earlyReason)
             completion()
         }
     }

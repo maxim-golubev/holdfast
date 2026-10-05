@@ -38,31 +38,18 @@ final class RecordingRecovery {
         let found = RecordingFileStore(directory: directory).leftovers()
         guard !found.isEmpty else { return }
         // The settings such a recording was started with are not known any more, so the mix uses the current ones
-        let settings = Dictionary(found.map { ($0.ending, MovieWriter.audioSettings(videoFormat: $0.ending.lowercased())) }, uniquingKeysWith: { first, _ in first })
+        let settings = Dictionary(found.filter { !$0.isAudio }.map { ($0.ending, MovieWriter.audioSettings(videoFormat: $0.ending.lowercased())) }, uniquingKeysWith: { first, _ in first })
         isRunning = true
         runningChanged()
         // A token of its own: the sleep assertion of SleepPreventer belongs to the recording that may run meanwhile
         let activity = ProcessInfo.processInfo.beginActivity(options: .idleSystemSleepDisabled, reason: "Finishing a recording from an earlier run")
         Task.detached {
-            var lines = [String]()
-            // What an interrupted mix wrote goes out of the way first. It says nothing about the recording it was
-            // made from: the mix of a recording that was never closed is written under the same marker.
-            for leftover in found where leftover.isMix {
-                let target = RecordingFileStore.freeURL(base: leftover.base, label: RecoveryNames.incompleteMix, ending: leftover.ending)
-                let now = RecordingFileStore.keep(written: leftover.url, as: target)
-                print("Leftover \(leftover.url.lastPathComponent) -> \(now.lastPathComponent)")
-                var line = String(format: "\"%@\" is what an interrupted audio mix had written. The recording it was made from is kept separately; this file can be deleted.".local, now.lastPathComponent)
-                if now != target { line += " " + "It could not be renamed.".local }
-                lines.append(line)
-            }
-            for leftover in found where !leftover.isMix {
-                lines.append(await RecordingRecovery.recover(leftover, audioSettings: settings[leftover.ending] ?? [:]) { fraction in
-                    DispatchQueue.main.async {
-                        guard self.isRunning else { return }
-                        self.progress = fraction
-                        self.progressChanged()
-                    }
-                })
+            let lines = await RecordingRecovery.recover(found, audioSettings: settings) { fraction in
+                DispatchQueue.main.async {
+                    guard self.isRunning else { return }
+                    self.progress = fraction
+                    self.progressChanged()
+                }
             }
             let message = String(format: "Found in %@ from an earlier run of Holdfast that did not end normally:".local, directory) + "\n\n" + lines.joined(separator: "\n\n")
             await MainActor.run {
@@ -78,6 +65,76 @@ final class RecordingRecovery {
             }
         }
     }
+
+    /// Deals with every leftover and returns one paragraph about each for the report. What an interrupted mix or
+    /// conversion wrote goes out of the way first: it says nothing about the recording it was made from (the mix of a
+    /// recording that was never closed is written under the same marker), and it would be in the way of a new mix.
+    /// `audioSettings` are those to mix a video of each ending with.
+    nonisolated static func recover(_ found: [RecordingFileStore.Leftover], audioSettings: [String: [String: Any]], progress: @escaping (Double) -> Void) async -> [String] {
+        var lines = [String]()
+        for leftover in found where leftover.isMix {
+            let target = RecordingFileStore.freeURL(base: leftover.base, label: RecoveryNames.incompleteMix, ending: leftover.ending)
+            let now = RecordingFileStore.keep(written: leftover.url, as: target)
+            print("Leftover \(leftover.url.lastPathComponent) -> \(now.lastPathComponent)")
+            var line = String(format: "\"%@\" is what an interrupted audio mix or MP3 conversion had written. The recording it was made from is kept separately; this file can be deleted.".local, now.lastPathComponent)
+            if now != target { line += " " + "It could not be renamed.".local }
+            lines.append(line)
+        }
+        for leftover in found where !leftover.isMix {
+            if leftover.isAudio {
+                lines.append(await recoverAudio(leftover))
+            } else {
+                lines.append(await recover(leftover, audioSettings: audioSettings[leftover.ending] ?? [:], progress: progress))
+            }
+        }
+        return lines
+    }
+
+    /// Renames a leftover to `<base> (<label>).<ending>` (numbered when taken) and returns `line` with its new name
+    /// in place of `%@`, saying so when it could not be renamed
+    private nonisolated static func rename(_ leftover: RecordingFileStore.Leftover, _ label: String, _ line: String) -> String {
+        let target = RecordingFileStore.freeURL(base: leftover.base, label: label, ending: leftover.ending)
+        let now = RecordingFileStore.keep(written: leftover.url, as: target)
+        print("Leftover \(leftover.url.lastPathComponent) -> \(now.lastPathComponent)")
+        let text = String(format: line, now.lastPathComponent)
+        return now == target ? text : text + " " + "It could not be renamed.".local
+    }
+
+    /// An audio-only recording that was never closed: an audio file, or a .qma package of two. Nothing is mixed: a
+    /// file that opens becomes `X (recovered)`, one that does not `X (damaged)`; a package is recovered when one of
+    /// its files opens, and the report says which does not.
+    nonisolated static func recoverAudio(_ leftover: RecordingFileStore.Leftover) async -> String {
+        let unfinished = "\"%@\" is a recording that was not finished and cannot be opened.".local
+        guard leftover.ending.lowercased() == RecordingFileStore.packageEnding else {
+            guard let seconds = await RecordingMixer.inspect(leftover.url).seconds else {
+                return rename(leftover, RecoveryNames.damaged, unfinished)
+            }
+            let line = String(format: "is a recording that was not finished (%@); its last seconds may be missing.".local, RecordingRecovery.length(seconds))
+            return rename(leftover, RecoveryNames.recovered, "\"%@\" " + line.replacingOccurrences(of: "%", with: "%%"))
+        }
+        guard let info = try? QmaInfo.read(package: leftover.url) else {
+            return rename(leftover, RecoveryNames.damaged, unfinished)
+        }
+        let system = await RecordingMixer.inspect(info.systemAudio(in: leftover.url)).seconds != nil
+        let microphone = await RecordingMixer.inspect(info.microphone(in: leftover.url)).seconds != nil
+        guard system || microphone else { return rename(leftover, RecoveryNames.damaged, unfinished) }
+        var line = "\"%@\" " + "is a recording that was not finished, with system audio and microphone as separate files.".local
+        if system && microphone {
+            line += " " + "Open it in Holdfast to listen to it or to export a mix.".local
+        } else {
+            let (bad, good) = system ? ("mic", "sys") : ("sys", "mic")
+            line += " " + String(format: "Its file %@ cannot be opened; %@ opens on its own (Show Package Contents in Finder).".local, "\(bad).\(info.format)", "\(good).\(info.format)").replacingOccurrences(of: "%", with: "%%")
+        }
+        return rename(leftover, RecoveryNames.recovered, line)
+    }
+
+    /// A length as the report gives it: "1h 2m 3s"
+    private nonisolated static func length(_ seconds: Double) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute, .second]
+        formatter.unitsStyle = .abbreviated
+        return formatter.string(from: seconds) ?? ""
+    }
     
     /// Deals with one recording left under its temporary name and returns what to tell the user about it.
     /// A file that does not open becomes `X (damaged)`. One that opens is mixed under the rules of `RecordingSaver.mix`:
@@ -87,26 +144,15 @@ final class RecordingRecovery {
     ///   the recovery mix of an unclosed recording leaves one too when it is interrupted.
     /// - Never closed: it plays up to its last seconds. Mix `X (recovered)`, recording `X (recovered, unmixed, 2 audio tracks)`.
     /// - The mix fails: recording `X (unmixed, 2 audio tracks)` when complete, `X (recovered)` when not.
-    private nonisolated static func recover(_ leftover: RecordingFileStore.Leftover, audioSettings: [String: Any], progress: @escaping (Double) -> Void) async -> String {
+    nonisolated static func recover(_ leftover: RecordingFileStore.Leftover, audioSettings: [String: Any], progress: @escaping (Double) -> Void) async -> String {
         let raw = leftover.url
         let base = leftover.base
         let ending = leftover.ending
         let info = await RecordingMixer.inspect(raw)
-        /// Renames the recording and says so when that fails
-        func rename(_ label: String, _ line: String) -> String {
-            let target = RecordingFileStore.freeURL(base: base, label: label, ending: ending)
-            let now = RecordingFileStore.keep(written: raw, as: target)
-            print("Leftover \(raw.lastPathComponent) -> \(now.lastPathComponent)")
-            let text = String(format: line, now.lastPathComponent)
-            return now == target ? text : text + " " + "It could not be renamed.".local
-        }
         guard let seconds = info.seconds else {
-            return rename(RecoveryNames.damaged, "\"%@\" is a recording that was not finished and cannot be opened.".local)
+            return rename(leftover, RecoveryNames.damaged, "\"%@\" is a recording that was not finished and cannot be opened.".local)
         }
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.hour, .minute, .second]
-        formatter.unitsStyle = .abbreviated
-        let length = formatter.string(from: seconds) ?? ""
+        let length = RecordingRecovery.length(seconds)
         let complete = !info.fragmented
         let what = complete
             ? String(format: "is a complete recording (%@) whose audio had not been mixed yet when the app went away.".local, length)
@@ -136,10 +182,10 @@ final class RecordingRecovery {
         }
         if let failure = failure {
             let line = "\"%@\" " + what + " " + String(format: "Mixing its audio now failed: %@".local, failure).replacingOccurrences(of: "%", with: "%%") + " " + separate
-            return rename(RecoveryNames.recording(complete: complete, mixed: false), line)
+            return rename(leftover, RecoveryNames.recording(complete: complete, mixed: false), line)
         }
         let mixed = String(format: "\"%@\" ".local, final.lastPathComponent) + what + " " + "Its audio was mixed now.".local
         let kept = "The recording as it was written, with system audio and microphone as separate audio tracks, is kept as \"%@\".".local
-        return rename(RecoveryNames.recording(complete: complete, mixed: true), mixed.replacingOccurrences(of: "%", with: "%%") + " " + kept)
+        return rename(leftover, RecoveryNames.recording(complete: complete, mixed: true), mixed.replacingOccurrences(of: "%", with: "%%") + " " + kept)
     }
 }

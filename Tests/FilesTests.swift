@@ -41,30 +41,40 @@ func filesTests() async {
         }
     }
 
-    await test("Names: audio-only recordings") {
+    await test("Names: audio-only recordings are written under temporary names and renamed once closed") {
         let base = "/save/Recording at X"
         let plain = RecordingFiles(base: base, audioOnly: true, recordMic: false, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: false)
-        expectEqual(plain.rawURL.path, base + ".m4a", "system audio alone: one file")
+        expectEqual(plain.rawURL.path, base + ".recording.m4a", "system audio alone: one file, written under the marker")
         expectEqual(plain.systemAudioURL, plain.rawURL, "which is the system audio file")
-        expectEqual(plain.finalURL, plain.rawURL, "and the final one")
+        expectEqual(plain.closedURL?.path, base + ".m4a", "renamed once closed")
+        expectEqual(plain.finalURL, plain.closedURL, "and that is the final name")
         expect(plain.micAudioURL == nil && plain.mixURL == nil && plain.unmixedURL == nil, "nothing else")
         let mp3 = RecordingFiles(base: base, audioOnly: true, recordMic: false, systemAudio: true, remuxAudio: false, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: true)
-        expectEqual(mp3.rawURL.path, base + ".m4a", "MP3 is recorded as AAC")
+        expectEqual(mp3.rawURL.path, base + ".recording.m4a", "MP3 is recorded as AAC")
+        expectEqual(mp3.closedURL?.path, base + ".m4a", "closed")
         expectEqual(mp3.finalURL.path, base + ".mp3", "and converted")
         let package = RecordingFiles(base: base, audioOnly: true, recordMic: true, systemAudio: true, remuxAudio: false, videoEnding: "mp4", audioEnding: "flac", exportsMP3: false)
-        expectEqual(package.rawURL.path, base + ".qma", "with a microphone: a package")
-        expectEqual(package.systemAudioURL?.path, base + ".qma/sys.flac", "system audio in the package")
-        expectEqual(package.micAudioURL?.path, base + ".qma/mic.flac", "microphone in the package")
-        expectEqual(package.finalURL, package.rawURL, "the package is what is kept")
+        expectEqual(package.rawURL.path, base + ".recording.qma", "with a microphone: a package")
+        expectEqual(package.systemAudioURL?.path, base + ".recording.qma/sys.flac", "system audio in the package")
+        expectEqual(package.micAudioURL?.path, base + ".recording.qma/mic.flac", "microphone in the package")
+        expectEqual(package.closedURL?.path, base + ".qma", "renamed once closed")
+        expectEqual(package.finalURL, package.closedURL, "the package is what is kept")
         let mixed = RecordingFiles(base: base, audioOnly: true, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: true)
         expectEqual(mixed.finalURL.path, base + ".mp3", "mixed down to one file")
-        expectEqual(mixed.rawURL.path, base + ".qma", "from the package")
+        expectEqual(mixed.closedURL?.path, base + ".qma", "from the package")
+        let video = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: false)
+        expect(video.closedURL == nil, "a video recording is not renamed when it is closed")
+        for files in [plain, mp3, package, mixed] {
+            expectEqual(files.rawURL.deletingPathExtension().pathExtension, RecordingFileStore.rawMarker, "\(files.rawURL.lastPathComponent) is a temporary name")
+        }
     }
 
     await test("Leftovers: only the app's own files under a temporary name are taken") {
         let folder = try Suite.folder("leftovers")
         func make(_ name: String) throws { try Data("x".utf8).write(to: folder.appendingPathComponent(name)) }
-        let mine = ["Recording at 2026-01-02 10.00.00.recording.mp4", "Recording at 2026-01-02 10.00.00.mixing.mp4", "Recording at 2026-01-03 09.00.00.recording.MOV", "Recording at b.mixing.mov"]
+        let mine = ["Recording at 2026-01-02 10.00.00.recording.mp4", "Recording at 2026-01-02 10.00.00.mixing.mp4", "Recording at 2026-01-03 09.00.00.recording.MOV", "Recording at b.mixing.mov",
+                    "Recording at 2026-01-02 10.00.00.recording.m4a", "Recording at c.recording.caf", "Recording at c.recording.flac", "Recording at d.mixing.mp3", "Recording at d.mixing.m4a"]
+        let packages = ["Recording at e.recording.qma"]
         let others = [
             "Lecture.recording.mp4",                                          // someone else's file
             "My Recording at 2026.recording.mp4",                             // the prefix is not at the start
@@ -74,7 +84,9 @@ func filesTests() async {
             "Recording at 2026-01-02 10.00.00 (recovered).mp4",
             "Recording at 2026-01-02 10.00.00 (incomplete mix).mp4",
             "Recording at 2026-01-02 10.00.00 (damaged).mp4",
-            "Recording at 2026-01-02 10.00.00.recording.m4a",                 // not a video
+            "Recording at 2026-01-02 10.00.00.recording.wav",                 // not a format the app writes
+            "Recording at f.recording.qma",                                   // a file, where a package is a folder
+            "Recording at 2026-01-02 10.00.00.qma.recording",
             "Recording at 2026-01-02 10.00.00.recording",
             "Recording at 2026-01-02 10.00.00.recording.mp4.part",
             "Recording at c.Recording.mp4",                                   // not the marker
@@ -82,8 +94,10 @@ func filesTests() async {
         ]
         for name in mine + others { try make(name) }
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("Recording at folder.recording.mp4"), withIntermediateDirectories: false)
+        for name in packages { try FileManager.default.createDirectory(at: folder.appendingPathComponent(name), withIntermediateDirectories: false) }
         let found = RecordingFileStore(directory: folder.path, prefix: prefix).leftovers()
-        expectEqual(found.map { $0.url.lastPathComponent }, mine.sorted { folder.appendingPathComponent($0).path < folder.appendingPathComponent($1).path }, "leftovers, in the order of their paths")
+        expectEqual(found.map { $0.url.lastPathComponent }, (mine + packages).sorted { folder.appendingPathComponent($0).path < folder.appendingPathComponent($1).path }, "leftovers, in the order of their paths")
+        expectEqual(found.filter { $0.isAudio }.map { $0.url.pathExtension }.sorted(), ["caf", "flac", "m4a", "m4a", "mp3", "qma"], "audio-only leftovers")
         let first = try require(found.first { $0.url.lastPathComponent == mine[0] }, "the recording")
         expect(!first.isMix, "a .recording file is a recording")
         expectEqual(first.ending, "mp4", "ending")
@@ -93,7 +107,7 @@ func filesTests() async {
         expectEqual(RecordingFileStore(directory: folder.path, prefix: "").leftovers().count, 0, "without a prefix nothing is taken")
         expectEqual(RecordingFileStore(directory: folder.path, prefix: "Lecture").leftovers().count, 0, "a name that is only the prefix is not taken")
         expectEqual(RecordingFileStore(directory: folder.appendingPathComponent("missing").path, prefix: prefix).leftovers().count, 0, "a folder that does not exist has none")
-        expectEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, mine.count + others.count + 1, "looking deletes nothing")
+        expectEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, mine.count + packages.count + others.count + 1, "looking deletes nothing")
     }
 
     await test("Leftovers: the names a recording is written under are found again, its final names are not") {

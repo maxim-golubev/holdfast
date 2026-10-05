@@ -314,7 +314,9 @@ enum RecordingMixer {
     struct Inspection {
         /// Nil when the file does not open
         let seconds: Double?
-        /// Whether the file is still in the fragments it was recorded in. A recording that was closed is not.
+        /// Whether the file is still laid out for fragments, as it is recorded: its header announces them
+        /// (`canContainFragments`), also before the first fragment after the header was written. Closing it rewrites
+        /// it as an ordinary movie. (`containsFragments` is false for a file cut off within its first fragment.)
         let fragmented: Bool
         /// One video track and two audio tracks
         let mixable: Bool
@@ -328,7 +330,7 @@ enum RecordingMixer {
         let length = CMTimeGetSeconds(duration)
         guard length.isFinite, length > 0 else { return Inspection(seconds: nil, fragmented: true, mixable: false) }
         // When in doubt the file counts as not closed
-        let fragmented = (try? await asset.load(.containsFragments)) ?? true
+        let fragmented = (try? await asset.load(.canContainFragments)) ?? true
         let video = (try? await asset.loadTracks(withMediaType: .video).count) ?? 0
         let audio = (try? await asset.loadTracks(withMediaType: .audio).count) ?? 0
         return Inspection(seconds: length, fragmented: fragmented, mixable: video == 1 && audio == 2)

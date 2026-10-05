@@ -8,11 +8,12 @@ import Foundation
 /// The folder recordings are saved to: what their files are called, what an earlier run left there, and whether
 /// the folder has room.
 ///
-/// File names. A recording whose audio tracks are mixed afterwards is written as `<name>.recording.<ext>` and the
-/// mix as `<name>.mixing.<ext>`. Neither name is ever a final one: a file under one of them is a recording that is
-/// still running or being finished, or one that was left behind by a crash or a kill. The final names are
-/// `<name>.<ext>` for the mixed recording and `<name> (unmixed, 2 audio tracks).<ext>` for the recording as it
-/// was written. `<name>` is the prefix and the date of the start.
+/// File names. A recording whose audio tracks are mixed afterwards, and every audio-only recording, is written as
+/// `<name>.recording.<ext>`; a mix or an MP3 made from it as `<name>.mixing.<ext>`. Neither name is ever a final
+/// one: a file under one of them is a recording that is still running or being finished, or one that was left
+/// behind by a crash or a kill. The final names are `<name>.<ext>` for the mixed recording (or the audio file, the
+/// package, the MP3) and `<name> (unmixed, 2 audio tracks).<ext>` for a video recording as it was written. `<name>`
+/// is the prefix and the date of the start.
 struct RecordingFileStore {
     /// What the app's recordings are named with, in front of the date. Launch recovery only takes files with it for its own.
     static let namePrefix = "Recording at "
@@ -121,32 +122,43 @@ struct RecordingFileStore {
 
     // MARK: - Leftovers of an earlier run
 
+    /// The extensions of the files the app writes under a temporary name: video, audio files, the audio package
+    static let videoEndings: Set<String> = ["mp4", "mov"]
+    static let audioEndings: Set<String> = ["m4a", "caf", "flac", "mp3"]
+    static let packageEnding = "qma"
+
     /// What a temporary name is made of: `<base>.<marker>.<ending>`
     struct Leftover {
         let url: URL
         /// Path of the final file without its extension
         let base: String
-        /// What an interrupted mix had written, as opposed to a recording
+        /// What an interrupted mix or conversion had written, as opposed to a recording
         let isMix: Bool
         let ending: String
+        /// An audio-only recording (an audio file or a .qma package), which has no tracks to mix
+        var isAudio: Bool { !RecordingFileStore.videoEndings.contains(ending.lowercased()) }
     }
 
     /// The files in the folder that this app left under a temporary name: `<prefix>….recording.<ext>` and
-    /// `<prefix>….mixing.<ext>`. A file that merely has such an ending is someone else's and is left alone. Only
-    /// call this when no recording is running or being finished, in this or in another instance of the app: until
-    /// then such a file is not a leftover.
+    /// `<prefix>….mixing.<ext>`, `<ext>` a video or audio file's or the package's. A file that merely has such an
+    /// ending is someone else's and is left alone. Only call this when no recording is running or being finished, in
+    /// this or in another instance of the app: until then such a file is not a leftover.
     func leftovers() -> [Leftover] {
         let folder = URL(fileURLWithPath: directory, isDirectory: true)
-        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isDirectoryKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys)) else { return [] }
         return files.sorted { $0.path < $1.path }.compactMap { url in
             let ending = url.pathExtension
-            guard ["mp4", "mov"].contains(ending.lowercased()) else { return nil }
+            let isPackage = ending.lowercased() == RecordingFileStore.packageEnding
+            guard isPackage || RecordingFileStore.videoEndings.union(RecordingFileStore.audioEndings).contains(ending.lowercased()) else { return nil }
             let stem = url.deletingPathExtension()
             let marker = stem.pathExtension
             guard marker == RecordingFileStore.rawMarker || marker == RecordingFileStore.mixMarker else { return nil }
             let name = stem.deletingPathExtension().lastPathComponent
             guard !prefix.isEmpty, name.hasPrefix(prefix), name.count > prefix.count else { return nil }
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return nil }
+            // A package is a folder, everything else a file
+            let values = try? url.resourceValues(forKeys: keys)
+            guard (isPackage ? values?.isDirectory : values?.isRegularFile) == true else { return nil }
             return Leftover(url: url, base: stem.deletingPathExtension().path, isMix: marker == RecordingFileStore.mixMarker, ending: ending)
         }
     }
@@ -196,7 +208,10 @@ struct RecordingFiles {
     let unmixedURL: URL?
     /// What the user ends up with
     let finalURL: URL
-    /// Audio-only recordings: the system audio file, and the microphone file when there is one
+    /// Audio-only recordings: the name the file or package written under `rawURL` gets once it is closed, before
+    /// any mix or MP3 conversion. Nil for video recordings.
+    let closedURL: URL?
+    /// Audio-only recordings: the system audio file, and the microphone file when there is one, as they are written
     let systemAudioURL: URL?
     let micAudioURL: URL?
 
@@ -204,24 +219,31 @@ struct RecordingFiles {
     /// audio is recorded as AAC and converted to MP3 afterwards.
     init(base: String, audioOnly: Bool, recordMic: Bool, systemAudio: Bool, remuxAudio: Bool, videoEnding: String, audioEnding: String, exportsMP3: Bool) {
         if audioOnly {
+            // Written under a temporary name and renamed once closed: an audio file that was not closed does not
+            // open, so a crash must leave a name launch recovery finds
             let exported = exportsMP3 ? "mp3" : audioEnding
             mixURL = nil
             unmixedURL = nil
             if recordMic {
-                let package = URL(fileURLWithPath: "\(base).qma")
+                let package = RecordingFileStore.temporaryURL(base: base, marker: RecordingFileStore.rawMarker, ending: RecordingFileStore.packageEnding)
+                let closed = URL(fileURLWithPath: "\(base).\(RecordingFileStore.packageEnding)")
                 rawURL = package
+                closedURL = closed
                 systemAudioURL = package.appendingPathComponent("sys.\(audioEnding)")
                 micAudioURL = package.appendingPathComponent("mic.\(audioEnding)")
-                finalURL = remuxAudio ? URL(fileURLWithPath: "\(base).\(exported)") : package
+                finalURL = remuxAudio ? URL(fileURLWithPath: "\(base).\(exported)") : closed
             } else {
-                let file = URL(fileURLWithPath: "\(base).\(audioEnding)")
+                let file = RecordingFileStore.temporaryURL(base: base, marker: RecordingFileStore.rawMarker, ending: audioEnding)
+                let closed = URL(fileURLWithPath: "\(base).\(audioEnding)")
                 rawURL = file
+                closedURL = closed
                 systemAudioURL = file
                 micAudioURL = nil
-                finalURL = exportsMP3 ? URL(fileURLWithPath: "\(base).mp3") : file
+                finalURL = exportsMP3 ? URL(fileURLWithPath: "\(base).mp3") : closed
             }
         } else {
             finalURL = URL(fileURLWithPath: "\(base).\(videoEnding)")
+            closedURL = nil
             systemAudioURL = nil
             micAudioURL = nil
             if remuxAudio && recordMic && systemAudio {
