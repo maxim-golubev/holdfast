@@ -27,7 +27,7 @@ struct RecordingContext {
     let videoFormat: VideoFormat
     let audioFormat: AudioFormat
     let saveDirectory: String
-    /// MP3 bitrate in kbit/s
+    /// Bitrate of the lossy audio (AAC, Opus, MP3) in kbit/s; lossless formats ignore it
     let audioQuality: Int
     /// Whether the recording as it was written stays next to the mixed one
     let keepUnmixed: Bool
