@@ -86,8 +86,11 @@ original next to it.
 
 ## The menu bar item
 
-The record symbol and the timer digits are centred on the same pixel row on a
-2x display, measured from screenshots of the menu bar.
+Measured from a capture of the menu bar on a 2x display (a 4K display at
+1920 × 1080 points, 24-point menu bar): the record symbol's ink and the timer
+digits' ink were centred on the same pixel row. Centred that way, the ring
+still looked low beside the digits, as a circle centred on text does, so every
+symbol beside the time is now drawn half a point (one pixel at 2x) higher.
 
 ## Tests
 
@@ -118,6 +121,7 @@ recording:
 - The app's floating windows on a full-screen Space.
 - "Leave Holdfast's Own Windows Out" with windows that open during the
   recording.
+- The menu bar symbols at that higher position.
 
 ## 90-minute recording
 

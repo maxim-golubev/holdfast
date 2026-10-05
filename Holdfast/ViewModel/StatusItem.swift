@@ -135,10 +135,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     /// Lowers the digits by a whole pixel step on a 2x display from where AppKit sets them. The button is 22 pt
     /// high (44 rows at 2x) in its 24 pt status window. Measured in it: the ink of the digits of "1:23:45" runs from
-    /// row 11.7 to 31.3, so their middle is 0.25 pt above the button's centre line (`digitsAboveCentre`), which is
-    /// where the symbol beside them is put.
+    /// row 11.7 to 31.3, so their middle is 0.25 pt above the button's centre line (`digitsAboveCentre`).
     private static let titleBaselineOffset: CGFloat = -0.5
     private static let digitsAboveCentre: CGFloat = 0.25
+    /// Where the middle of a symbol's ink goes beside a title: one pixel at 2x above the digits' middle. A circle
+    /// centred on the digits' ink (measured: the same row in a capture of the menu bar) still looks low beside
+    /// them, since the eye puts the middle of a shape above its geometric middle. The idle symbol has no title and
+    /// goes on the button's centre, where the menu bar's other symbols are (the same capture).
+    private static let symbolsAboveCentre: CGFloat = digitsAboveCentre + 0.5
 
     /// The symbol of a state. Those of a running recording share one width (the widest of them) with the symbol in
     /// the middle, so pausing, muting or a warning neither changes the item's width nor moves the time, and no space
@@ -170,7 +174,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             // it turns parts of the symbol pale
             var configuration = NSImage.SymbolConfiguration(pointSize: titleFont.pointSize, weight: .medium, scale: .medium)
             if let colour { configuration = configuration.applying(NSImage.SymbolConfiguration(paletteColors: [colour])) }
-            image = onDigitsLine(plain.withSymbolConfiguration(configuration) ?? plain)
+            image = moved(plain.withSymbolConfiguration(configuration) ?? plain, middleAboveCentre: kind == .idle ? 0 : symbolsAboveCentre)
         }
         image.isTemplate = colour == nil
         return image
@@ -190,16 +194,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return boxed
     }
 
-    /// The symbol in a box of its own size, moved up or down so that the middle of what it draws is on the middle of
-    /// the digits. AppKit centres the box, and the ink of SF Symbols at this size sits below the box's centre
-    /// (measured at 2x in the button: the middle of pause.circle.fill's ink is 0.7 pt below the digits'), so a
-    /// paused, muted or warning symbol would otherwise sit low next to the time. Measured the same way after the
-    /// move: every symbol's middle is within 0.2 px of the digits'.
-    private static func onDigitsLine(_ symbol: NSImage) -> NSImage {
+    /// The symbol in a box of its own size, moved up or down so that the middle of what it draws is
+    /// `middleAboveCentre` above the button's centre. AppKit centres the box, and the ink of SF Symbols at this size
+    /// sits below the box's centre (measured at 2x in the button: the middle of pause.circle.fill's ink is 0.7 pt
+    /// below the digits'), so a paused, muted or warning symbol would otherwise sit low next to the time. Measured
+    /// the same way after the move, put on the digits' middle then: every symbol's middle was within 0.2 px of it.
+    private static func moved(_ symbol: NSImage, middleAboveCentre: CGFloat) -> NSImage {
         guard let ink = inkRows(of: symbol) else { return symbol }
         // In points, upwards. The symbol's edges are smooth curves, so it may move by a fraction of a pixel.
         let inkMiddle = symbol.size.height - (ink.top + ink.bottom) / 2
-        let raise = symbol.size.height / 2 + digitsAboveCentre - inkMiddle
+        let raise = symbol.size.height / 2 + middleAboveCentre - inkMiddle
         let moved = NSImage(size: symbol.size, flipped: false) { rect in
             symbol.draw(in: rect.offsetBy(dx: 0, dy: raise))
             return true
@@ -237,13 +241,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     /// The record symbol (`Symbol.recordDot`), drawn to the pixel on a 2x display: a ring 12.5 pt across with a
-    /// dot. Its centre is `digitsAboveCentre` above the centre of its box, so it covers rows 9–34 of the 44-row
-    /// button, middle 21.5, the middle of the digits; every edge falls on a pixel boundary. Measured in the button:
-    /// 0.03 px from the digits' middle; in a capture of the menu bar both are at row 23.5 of the 48-row window.
+    /// dot. Its centre is `symbolsAboveCentre` above the centre of its box, so it covers rows 8–33 of the 44-row
+    /// button, middle 20.5, one row above the digits' middle (21.5); every edge falls on a pixel boundary.
     private static func recordDot(_ colour: NSColor) -> NSImage {
         // The box has the height of the SF Symbols beside it, so the menu bar places it the same way
         let image = NSImage(size: NSSize(width: 13, height: 16), flipped: false) { _ in
-            let centre = NSPoint(x: 6.25, y: 8 + digitsAboveCentre)
+            let centre = NSPoint(x: 6.25, y: 8 + symbolsAboveCentre)
             colour.set()
             let ring = NSBezierPath(ovalIn: NSRect(x: centre.x - 5.5, y: centre.y - 5.5, width: 11, height: 11))
             ring.lineWidth = 1.5

@@ -373,7 +373,8 @@ AppKit lays out the button, and the controller sets only its length, which is
 held while a recording runs (the time only grows) so the item does not jump.
 The open menu is never rebuilt: titles change in place, so a click cannot land
 on an item that just replaced another. The record symbol is drawn by the item
-itself, centred on the timer digits.
+itself, on the pixel grid; every symbol beside a title sits half a point above
+the middle of the timer digits, where a circle looks centred beside them.
 
 While a warning is up, `WarningPanel` shows it at the top right of the screen
 with the pointer: on every Space, at status bar level, never key, and excluded
