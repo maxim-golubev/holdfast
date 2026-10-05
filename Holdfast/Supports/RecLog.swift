@@ -35,4 +35,10 @@ enum RecLog {
             }
         }
     }
+
+    /// Returns when every line written so far is in the file. For quitting, which would otherwise drop the last
+    /// lines, those that say where the recording was saved among them.
+    static func flush() {
+        queue.sync {}
+    }
 }

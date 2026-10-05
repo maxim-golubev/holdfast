@@ -192,6 +192,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // app ever be terminated past it, the recording is stopped the same way and given a moment to be saved:
         // the run loop is run, not blocked, because saving continues on the main thread. That works only outside a
         // main-queue block, which is why every terminate of the app's own runs as a run loop block.
+        // The log is written in the background: its last lines (where the recording was saved) must reach the file
+        defer { RecLog.flush() }
         guard withRecorder({ $0.state != .idle }) else { return }
         withRecorder { $0.stop() }
         let deadline = Date.now.addingTimeInterval(30)
