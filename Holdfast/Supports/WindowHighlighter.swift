@@ -64,7 +64,12 @@ struct HighlightMask: View {
         switch WindowHighlighter.shared.mode {
         case .area:
             guard let screen = display, let nsScreen = display?.nsScreen, let frame = window?.frame else { return }
-            let onDesktop = CGRectTransform(cgRect: frame)
+            // Only what is on the display: a window can reach past its edge, and an area cannot be recorded there
+            let onDesktop = CGRectTransform(cgRect: frame).intersection(nsScreen.frame)
+            guard onDesktop.width >= 1, onDesktop.height >= 1 else {
+                UserNotice.showAlertLater(title: "Failed to Record".local, message: "The window is not on the display it was clicked on.".local)
+                return
+            }
             // Relative to its screen, as the area selector gives it
             let area = onDesktop.offsetBy(dx: -nsScreen.frame.minX, dy: -nsScreen.frame.minY)
             appDelegate.showAreaOverlay(around: onDesktop, border: 3)

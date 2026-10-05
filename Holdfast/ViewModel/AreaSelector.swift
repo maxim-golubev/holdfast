@@ -41,7 +41,7 @@ struct resizeView: View {
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 10) {
             GridRow {
-                Text("Area Size:")
+                Text("Area Size")
                 HStack(spacing: 4) {
                     TextField("Width", value: $areaWidth, format: .number.grouping(.never))
                         .frame(width: 60)
@@ -67,9 +67,9 @@ struct resizeView: View {
                 .labelsHidden()
             }
             GridRow {
-                Text("Output Size:")
+                Text("Output Size")
                 let scale = AppSettings.recordsPixels(highRes) ? Int(screen.nsScreen?.backingScaleFactor ?? 1) : 1
-                Text("\(areaWidth * scale) x \(areaHeight * scale)")
+                Text("\(areaWidth * scale) × \(areaHeight * scale)")
             }
         }.onAppear{ focusedField = .width }
     }
@@ -183,7 +183,6 @@ class ScreenshotOverlayView: NSView {
     var lastMouseLocation: NSPoint?
     /// The area when the button went down, which a press that draws no area of its own keeps
     private var selectionAtPress: NSRect?
-    var maxFrame: NSRect?
     var size: NSSize
     var force: Bool
 
@@ -209,24 +208,19 @@ class ScreenshotOverlayView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        var selection = NSRect(x: (self.frame.width - size.width) / 2, y: (self.frame.height - size.height) / 2, width: size.width, height: size.height)
-        if !force, let name = self.window?.screen?.localizedName, let saved = ScreenContent.savedArea(forScreen: name) {
+        var selection = NSRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height).intersection(bounds)
+        // The area last used on this display, as far as it is on it now: its resolution may have changed since
+        if !force, let name = self.window?.screen?.localizedName, let saved = ScreenContent.savedArea(forScreen: name)?.intersection(bounds),
+           saved.width >= minimumSide, saved.height >= minimumSide {
             selection = saved
         }
+        // Draws the mask, the area and its handles
         selectionRect = selection
         if self.window != nil {
             AppSettings.areaWidth = Int(selection.width)
             AppSettings.areaHeight = Int(selection.height)
             ScreenContent.screenArea = selection
         }
-        updateMaskLayer()
-        updateSelectionLayer()
-        setupControlPoints()
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        maxFrame = dirtyRect
     }
 
      private func updateMaskLayer() {
@@ -334,7 +328,7 @@ class ScreenshotOverlayView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard var initialLocation = initialLocation else { return }
+        guard let initialLocation = initialLocation else { return }
         let currentLocation = convert(event.locationInWindow, from: nil)
         if activeHandle != .none {
 
@@ -377,9 +371,8 @@ class ScreenshotOverlayView: NSView {
             default:
                 break
             }
-            self.selectionRect = newRect
-            initialLocation = currentLocation // Update initial location for continuous dragging
-            lastMouseLocation = currentLocation // Update last mouse location
+            // Within the display: an area cannot be recorded past its edge
+            self.selectionRect = newRect.intersection(bounds)
             if let selection = selectionRect {
                 AppSettings.areaWidth = Int(selection.width)
                 AppSettings.areaHeight = Int(selection.height)
@@ -392,27 +385,21 @@ class ScreenshotOverlayView: NSView {
 
                 // Move the rectangle, keeping it inside the view
                 if var moved = self.selectionRect {
-                    moved.origin.x = min(max(0.0, moved.origin.x + deltaX), self.frame.width - moved.width)
-                    moved.origin.y = min(max(0.0, moved.origin.y + deltaY), self.frame.height - moved.height)
+                    moved.origin.x = min(max(0.0, moved.origin.x + deltaX), bounds.width - moved.width)
+                    moved.origin.y = min(max(0.0, moved.origin.y + deltaY), bounds.height - moved.height)
                     self.selectionRect = moved
                 }
-                initialLocation = currentLocation
+                self.initialLocation = currentLocation
             } else {
-                // Draw a new rectangle
-                guard let maxFrame = maxFrame else { return }
-                let origin = NSPoint(x: max(maxFrame.origin.x, min(initialLocation.x, currentLocation.x)), y: max(maxFrame.origin.y, min(initialLocation.y, currentLocation.y)))
-                var maxH = abs(currentLocation.y - initialLocation.y)
-                var maxW = abs(currentLocation.x - initialLocation.x)
-                if currentLocation.y < maxFrame.origin.y { maxH = initialLocation.y }
-                if currentLocation.x < maxFrame.origin.x { maxW = initialLocation.x }
-                let size = NSSize(width: maxW, height: maxH)
-                self.selectionRect = NSIntersectionRect(maxFrame, NSRect(origin: origin, size: size))
+                // Draw a new rectangle from where the button went down to the pointer, within the display
+                let drawn = NSRect(x: min(initialLocation.x, currentLocation.x), y: min(initialLocation.y, currentLocation.y),
+                                   width: abs(currentLocation.x - initialLocation.x), height: abs(currentLocation.y - initialLocation.y))
+                self.selectionRect = drawn.intersection(bounds)
                 if let selection = selectionRect {
                     AppSettings.areaWidth = Int(selection.width)
                     AppSettings.areaHeight = Int(selection.height)
                 }
             }
-            self.initialLocation = initialLocation
         }
         lastMouseLocation = currentLocation
     }
