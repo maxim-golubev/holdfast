@@ -215,13 +215,13 @@ struct RecordingFiles {
     let systemAudioURL: URL?
     let micAudioURL: URL?
 
-    /// `videoEnding` and `audioEnding` are the file extensions of the chosen formats; `exportsMP3` says that the
-    /// audio is recorded as AAC and converted to MP3 afterwards.
-    init(base: String, audioOnly: Bool, recordMic: Bool, systemAudio: Bool, remuxAudio: Bool, videoEnding: String, audioEnding: String, exportsMP3: Bool) {
+    /// `videoEnding` is the file extension of the chosen video format, `audioFormat` the chosen audio format (MP3 is
+    /// recorded as AAC and converted afterwards).
+    init(base: String, audioOnly: Bool, recordMic: Bool, systemAudio: Bool, remuxAudio: Bool, videoEnding: String, audioFormat: AudioFormat) {
         if audioOnly {
             // Written under a temporary name and renamed once closed: an audio file that was not closed does not
             // open, so a crash must leave a name launch recovery finds
-            let exported = exportsMP3 ? "mp3" : audioEnding
+            let exported = audioFormat == .mp3 ? "mp3" : audioFormat.fileEnding
             mixURL = nil
             unmixedURL = nil
             if recordMic {
@@ -229,17 +229,17 @@ struct RecordingFiles {
                 let closed = URL(fileURLWithPath: "\(base).\(RecordingFileStore.packageEnding)")
                 rawURL = package
                 closedURL = closed
-                systemAudioURL = package.appendingPathComponent("sys.\(audioEnding)")
-                micAudioURL = package.appendingPathComponent("mic.\(audioEnding)")
+                systemAudioURL = package.appendingPathComponent("sys.\(audioFormat.packageFileEnding)")
+                micAudioURL = package.appendingPathComponent("mic.\(audioFormat.packageFileEnding)")
                 finalURL = remuxAudio ? URL(fileURLWithPath: "\(base).\(exported)") : closed
             } else {
-                let file = RecordingFileStore.temporaryURL(base: base, marker: RecordingFileStore.rawMarker, ending: audioEnding)
-                let closed = URL(fileURLWithPath: "\(base).\(audioEnding)")
+                let file = RecordingFileStore.temporaryURL(base: base, marker: RecordingFileStore.rawMarker, ending: audioFormat.fileEnding)
+                let closed = URL(fileURLWithPath: "\(base).\(audioFormat.fileEnding)")
                 rawURL = file
                 closedURL = closed
                 systemAudioURL = file
                 micAudioURL = nil
-                finalURL = exportsMP3 ? URL(fileURLWithPath: "\(base).mp3") : closed
+                finalURL = URL(fileURLWithPath: "\(base).\(exported)")
             }
         } else {
             finalURL = URL(fileURLWithPath: "\(base).\(videoEnding)")
@@ -263,7 +263,8 @@ struct RecordingFiles {
 
 /// What a .qma package (an audio-only recording with a microphone) says about itself in its `info.json`: the
 /// extension and encoder of its two files `sys.<format>` and `mic.<format>`, whether its mix is converted to MP3, and
-/// the volumes of the two in the mix. Read and written by itself, without the audio files.
+/// the volumes of the two in the mix. Read and written by itself, without the audio files. The extension is the
+/// container's: FLAC in a package is in .caf files (`AudioFormat.packageFileEnding`).
 struct QmaInfo: Codable, Equatable {
     var format: String
     var encoder: String
@@ -290,6 +291,10 @@ struct QmaInfo: Codable, Equatable {
     func write(package: URL) throws {
         try encoded().write(to: package.appendingPathComponent(QmaInfo.fileName), options: .atomic)
     }
+
+    /// The extension of the mix of the two files, a single file of the package's encoder: a FLAC package's mix is a
+    /// .flac file. Packages of other apps' encoders keep their extension.
+    var mixEnding: String { AudioFormat(rawValue: encoder)?.fileEnding ?? format }
 
     func systemAudio(in package: URL) -> URL { package.appendingPathComponent("sys.\(format)") }
     func microphone(in package: URL) -> URL { package.appendingPathComponent("mic.\(format)") }

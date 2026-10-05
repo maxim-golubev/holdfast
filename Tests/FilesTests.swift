@@ -18,7 +18,7 @@ func filesTests() async {
 
     await test("Names: a video recording that is mixed is written under temporary names") {
         let base = "/save/Recording at 2026-03-04 05.06.07"
-        let files = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: false)
+        let files = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .aac)
         expectEqual(files.rawURL.path, base + ".recording.mp4", "written as")
         expectEqual(files.mixURL?.path, base + ".mixing.mp4", "mixed as")
         expectEqual(files.finalURL.path, base + ".mp4", "final name")
@@ -27,14 +27,14 @@ func filesTests() async {
         for url in [files.rawURL, files.mixURL, files.finalURL, files.unmixedURL].compactMap({ $0 }) {
             expectEqual(url.pathExtension, "mp4", "the real extension comes last, so the file opens: \(url.lastPathComponent)")
         }
-        let mov = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mov", audioEnding: "m4a", exportsMP3: false)
+        let mov = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mov", audioFormat: .aac)
         expectEqual(mov.rawURL.lastPathComponent, "Recording at 2026-03-04 05.06.07.recording.mov", "mov")
     }
 
     await test("Names: a video recording that is not mixed is written under its final name") {
         let base = "/save/Recording at X"
         for (mic, system, remux) in [(false, true, true), (true, false, true), (true, true, false), (false, false, false)] {
-            let files = RecordingFiles(base: base, audioOnly: false, recordMic: mic, systemAudio: system, remuxAudio: remux, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: false)
+            let files = RecordingFiles(base: base, audioOnly: false, recordMic: mic, systemAudio: system, remuxAudio: remux, videoEnding: "mp4", audioFormat: .aac)
             expectEqual(files.rawURL.path, base + ".mp4", "written as (mic \(mic), system audio \(system), mix \(remux))")
             expectEqual(files.finalURL, files.rawURL, "final name")
             expect(files.mixURL == nil && files.unmixedURL == nil, "no temporary names")
@@ -43,26 +43,33 @@ func filesTests() async {
 
     await test("Names: audio-only recordings are written under temporary names and renamed once closed") {
         let base = "/save/Recording at X"
-        let plain = RecordingFiles(base: base, audioOnly: true, recordMic: false, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: false)
+        let plain = RecordingFiles(base: base, audioOnly: true, recordMic: false, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .aac)
         expectEqual(plain.rawURL.path, base + ".recording.m4a", "system audio alone: one file, written under the marker")
         expectEqual(plain.systemAudioURL, plain.rawURL, "which is the system audio file")
         expectEqual(plain.closedURL?.path, base + ".m4a", "renamed once closed")
         expectEqual(plain.finalURL, plain.closedURL, "and that is the final name")
         expect(plain.micAudioURL == nil && plain.mixURL == nil && plain.unmixedURL == nil, "nothing else")
-        let mp3 = RecordingFiles(base: base, audioOnly: true, recordMic: false, systemAudio: true, remuxAudio: false, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: true)
+        let mp3 = RecordingFiles(base: base, audioOnly: true, recordMic: false, systemAudio: true, remuxAudio: false, videoEnding: "mp4", audioFormat: .mp3)
         expectEqual(mp3.rawURL.path, base + ".recording.m4a", "MP3 is recorded as AAC")
         expectEqual(mp3.closedURL?.path, base + ".m4a", "closed")
         expectEqual(mp3.finalURL.path, base + ".mp3", "and converted")
-        let package = RecordingFiles(base: base, audioOnly: true, recordMic: true, systemAudio: true, remuxAudio: false, videoEnding: "mp4", audioEnding: "flac", exportsMP3: false)
+        let package = RecordingFiles(base: base, audioOnly: true, recordMic: true, systemAudio: true, remuxAudio: false, videoEnding: "mp4", audioFormat: .flac)
         expectEqual(package.rawURL.path, base + ".recording.qma", "with a microphone: a package")
-        expectEqual(package.systemAudioURL?.path, base + ".recording.qma/sys.flac", "system audio in the package")
-        expectEqual(package.micAudioURL?.path, base + ".recording.qma/mic.flac", "microphone in the package")
+        expectEqual(package.systemAudioURL?.path, base + ".recording.qma/sys.caf", "system audio in the package, FLAC in CAF")
+        expectEqual(package.micAudioURL?.path, base + ".recording.qma/mic.caf", "microphone in the package, FLAC in CAF as AVAssetWriter writes it")
         expectEqual(package.closedURL?.path, base + ".qma", "renamed once closed")
         expectEqual(package.finalURL, package.closedURL, "the package is what is kept")
-        let mixed = RecordingFiles(base: base, audioOnly: true, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: true)
+        let flacMix = RecordingFiles(base: base, audioOnly: true, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .flac)
+        expectEqual(flacMix.finalURL.path, base + ".flac", "its mix is a FLAC file")
+        let flac = RecordingFiles(base: base, audioOnly: true, recordMic: false, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .flac)
+        expectEqual(flac.finalURL.path, base + ".flac", "and so is FLAC without a microphone")
+        let opus = RecordingFiles(base: base, audioOnly: true, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .opus)
+        expectEqual(opus.micAudioURL?.lastPathComponent, "mic.caf", "Opus is in CAF files")
+        expectEqual(opus.finalURL.path, base + ".caf", "its mix too")
+        let mixed = RecordingFiles(base: base, audioOnly: true, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .mp3)
         expectEqual(mixed.finalURL.path, base + ".mp3", "mixed down to one file")
         expectEqual(mixed.closedURL?.path, base + ".qma", "from the package")
-        let video = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: false)
+        let video = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .aac)
         expect(video.closedURL == nil, "a video recording is not renamed when it is closed")
         for files in [plain, mp3, package, mixed] {
             expectEqual(files.rawURL.deletingPathExtension().pathExtension, RecordingFileStore.rawMarker, "\(files.rawURL.lastPathComponent) is a temporary name")
@@ -113,7 +120,7 @@ func filesTests() async {
     await test("Leftovers: the names a recording is written under are found again, its final names are not") {
         let folder = try Suite.folder("roundtrip")
         let base = RecordingFileStore.basePath(directory: folder.path, prefix: prefix, date: Date())
-        let files = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioEnding: "m4a", exportsMP3: false)
+        let files = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .aac)
         let mixURL = try require(files.mixURL, "mix name")
         let unmixedURL = try require(files.unmixedURL, "unmixed name")
         for url in [files.rawURL, mixURL, files.finalURL, unmixedURL] { try Data("x".utf8).write(to: url) }
@@ -194,6 +201,11 @@ func filesTests() async {
         expectEqual(try QmaInfo.read(package: package), changed, "read back")
         expectEqual(changed.systemAudio(in: package).lastPathComponent, "sys.flac", "system audio file")
         expectEqual(changed.microphone(in: package).lastPathComponent, "mic.flac", "microphone file")
+        expectEqual(changed.mixEnding, "flac", "a FLAC package's mix is a FLAC file")
+        expectEqual(QmaInfo(format: "caf", encoder: "flac", exportMP3: false).mixEnding, "flac", "also when its files are in CAF")
+        expectEqual(QmaInfo(format: "caf", encoder: "opus", exportMP3: false).mixEnding, "caf", "Opus only goes into CAF")
+        expectEqual(QmaInfo(format: "m4a", encoder: "aac", exportMP3: true).mixEnding, "m4a", "AAC, also when it is converted to MP3 afterwards")
+        expectEqual(QmaInfo(format: "wav", encoder: "lpcm", exportMP3: false).mixEnding, "wav", "an encoder this app does not write keeps the files' extension")
         await expectThrows("a package without info.json") { _ = try QmaInfo.read(package: package.deletingLastPathComponent()) }
     }
 

@@ -116,6 +116,17 @@ final class TestRecording {
     }
 }
 
+/// The container of an audio file by its first bytes, as the extension that names it: "caf", "flac" or "m4a"
+func container(of file: URL) throws -> String {
+    let handle = try FileHandle(forReadingFrom: file)
+    defer { try? handle.close() }
+    let head = try handle.read(upToCount: 12) ?? Data()
+    if head.starts(with: Data("caff".utf8)) { return "caf" }
+    if head.starts(with: Data("fLaC".utf8)) { return "flac" }
+    if head.count >= 8, head.subdata(in: 4..<8) == Data("ftyp".utf8) { return "m4a" }
+    return "unknown"
+}
+
 func writerTests() async {
     await test("Writer: video, system audio and microphone go into one file, all of the same length") {
         let run = try TestRecording(folder: "writer-all", settings: ["remuxAudio": true, "recordWinSound": true])
@@ -402,6 +413,8 @@ func writerTests() async {
                         } catch {
                             expect(false, "\(what): \(file.lastPathComponent) does not open: \(error)")
                         }
+                        // Tools that go by the extension must find the container it names
+                        expectEqual(try container(of: file), file.pathExtension, "\(what): container of \(file.lastPathComponent)")
                     }
                 }
             }

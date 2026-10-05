@@ -109,11 +109,11 @@ enum TestMovie {
         guard writer.status == .completed else { throw writer.error ?? TestError("the movie was not written") }
     }
 
-    /// Writes an AAC audio file, as an audio-only recording is written: `seconds` of a 440 Hz tone as loud as
-    /// `loudness` says
+    /// Writes an audio file (AAC unless `settings` say otherwise), as an audio-only recording is written: `seconds`
+    /// of a 440 Hz tone as loud as `loudness` says
     @discardableResult
-    static func writeAudio(to url: URL, seconds: Double, loudness: Loudness) throws -> URL {
-        let file = try AVAudioFile(forWriting: url, settings: aac)
+    static func writeAudio(to url: URL, seconds: Double, settings: [String: Any] = aac, loudness: Loudness) throws -> URL {
+        let file = try AVAudioFile(forWriting: url, settings: settings)
         let total = Int(seconds * 48000)
         let pcm = try require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4800), "buffer")
         let data = try require(pcm.floatChannelData, "float data")
@@ -283,23 +283,29 @@ func mixerTests() async {
     let packageMicrophone: Loudness = { ($0 >= 1 && $0 < 1.5) || ($0 >= 5.5 && $0 < 6.3) ? 0.3 : 0 }
 
     await test("Package mix: both files are mixed in step, at their volumes, to the end of the longer one") {
-        let folder = try Suite.folder("package mix")
-        let system = try TestMovie.writeAudio(to: folder.appendingPathComponent("sys.m4a"), seconds: 6, loudness: packageSystem)
-        let microphone = try TestMovie.writeAudio(to: folder.appendingPathComponent("mic.m4a"), seconds: 6.5, loudness: packageMicrophone)
-        let output = folder.appendingPathComponent("mix.m4a")
-        try RecordingMixer.mixPackage(system: system, microphone: microphone, volumes: (1, 0.5), to: output, settings: TestMovie.aac)
-        let file = try AVAudioFile(forReading: output)
-        expectClose(Double(file.length) / file.processingFormat.sampleRate, 6.5, within: 0.05, "as long as the longer file")
-        // A tone of amplitude 0.3 has an RMS level of 0.21, at half the volume 0.11
-        func level(_ start: Double, _ end: Double) throws -> Double { try TestMovie.level(of: output, from: start, to: end) }
-        expectClose(try level(0, 0.95), 0, within: 0.005, "silence before the first tone")
-        expectClose(try level(1.05, 1.45), 0.106, within: 0.02, "the microphone's first tone, at its volume, where it is in its file")
-        expectClose(try level(1.55, 1.95), 0, within: 0.005, "silence after it")
-        expectClose(try level(2.05, 3.95), 0.212, within: 0.02, "system audio's tone, where it is in its file")
-        expectClose(try level(4.05, 5.45), 0, within: 0.005, "silence after it")
-        expectClose(try level(5.55, 6.25), 0.106, within: 0.02, "the microphone past the end of the system audio")
-        expectClose(try level(6.35, 6.5), 0, within: 0.005, "and nothing after the end of the microphone's tone")
-        expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("mix.mixing.m4a").path), "nothing else is written")
+        // AAC, and FLAC, whose package files are CAF and whose mix is a FLAC file
+        for format in [AudioFormat.aac, .flac] {
+            let folder = try Suite.folder("package mix \(format)")
+            let settings = MovieWriter.audioSettings(format: format.rawValue, quality: 128, videoFormat: nil)
+            let ending = format.packageFileEnding
+            let system = try TestMovie.writeAudio(to: folder.appendingPathComponent("sys.\(ending)"), seconds: 6, settings: settings, loudness: packageSystem)
+            let microphone = try TestMovie.writeAudio(to: folder.appendingPathComponent("mic.\(ending)"), seconds: 6.5, settings: settings, loudness: packageMicrophone)
+            let output = folder.appendingPathComponent("mix.\(format.fileEnding)")
+            try RecordingMixer.mixPackage(system: system, microphone: microphone, volumes: (1, 0.5), to: output, settings: settings)
+            expectEqual(try container(of: output), output.pathExtension, "\(format): the container of the mix")
+            let file = try AVAudioFile(forReading: output)
+            expectClose(Double(file.length) / file.processingFormat.sampleRate, 6.5, within: 0.05, "as long as the longer file")
+            // A tone of amplitude 0.3 has an RMS level of 0.21, at half the volume 0.11
+            func level(_ start: Double, _ end: Double) throws -> Double { try TestMovie.level(of: output, from: start, to: end) }
+            expectClose(try level(0, 0.95), 0, within: 0.005, "silence before the first tone")
+            expectClose(try level(1.05, 1.45), 0.106, within: 0.02, "the microphone's first tone, at its volume, where it is in its file")
+            expectClose(try level(1.55, 1.95), 0, within: 0.005, "silence after it")
+            expectClose(try level(2.05, 3.95), 0.212, within: 0.02, "system audio's tone, where it is in its file")
+            expectClose(try level(4.05, 5.45), 0, within: 0.005, "silence after it")
+            expectClose(try level(5.55, 6.25), 0.106, within: 0.02, "the microphone past the end of the system audio")
+            expectClose(try level(6.35, 6.5), 0, within: 0.005, "and nothing after the end of the microphone's tone")
+            expectEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 3, "\(format): nothing else is written")
+        }
     }
 
     await test("Package mix: a mix out of step with its files is rejected, one in step is not") {

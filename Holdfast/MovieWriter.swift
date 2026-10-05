@@ -199,13 +199,14 @@ final class MovieWriter {
         created = recording.rawURL
         if let micAudioURL = recording.micAudioURL {
             try FileManager.default.createDirectory(at: recording.rawURL, withIntermediateDirectories: true, attributes: nil)
-            try QmaInfo(format: recording.audioFileEnding, encoder: recording.audioEncoder, exportMP3: recording.audioFormat == .mp3).write(package: recording.rawURL)
+            try QmaInfo(format: recording.audioFormat.packageFileEnding, encoder: recording.audioEncoder, exportMP3: recording.audioFormat == .mp3).write(package: recording.rawURL)
 
             // MicConverter delivers 48 kHz stereo whatever the device's own format is
-            let writer = try AVAssetWriter(outputURL: micAudioURL, fileType: recording.audioFileType)
+            let fileType = recording.audioFormat.packageFileType
+            let writer = try AVAssetWriter(outputURL: micAudioURL, fileType: fileType)
             self.writer = writer
             // .caf, used for FLAC and Opus, has no movie fragments
-            if recording.audioFileType == .m4a { writer.movieFragmentInterval = MovieWriter.fragmentInterval }
+            if fileType == .m4a { writer.movieFragmentInterval = MovieWriter.fragmentInterval }
             let micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: settings)
             micInput.expectsMediaDataInRealTime = true
             guard writer.canAdd(micInput) else { throw RecordingError("The microphone track cannot be written in this audio format.") }

@@ -511,7 +511,7 @@ class AudioPlayerManager: ObservableObject {
         stop()
         info.sysVol = sysVol
         info.micVol = micVol
-        exportEnding = info.format
+        exportEnding = info.mixEnding
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
         panel.title = "Export Recording"

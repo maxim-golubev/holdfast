@@ -37,22 +37,11 @@ struct RecordingContext {
 
     var mixesAudio: Bool { files.mixURL != nil }
     var fileType: AVFileType { videoFormat == .mov ? .mov : .mp4 }
-    var audioFileType: AVFileType { audioFormat == .flac || audioFormat == .opus ? .caf : .m4a }
-    var audioFileEnding: String { RecordingContext.fileEnding(for: audioFormat) }
     /// MP3 is recorded as AAC and converted afterwards
     var audioEncoder: String { audioFormat == .mp3 ? AudioFormat.aac.rawValue : audioFormat.rawValue }
     /// The encoder settings of this recording's audio tracks: of the video file, or of the audio files
     var audioSettings: [String: Any] {
         return MovieWriter.audioSettings(format: audioFormat.rawValue, quality: audioQuality, videoFormat: audioOnly ? nil : videoFormat.rawValue)
-    }
-
-    /// Core Audio writes Opus into a CAF file only: an .ogg file it cannot write, and one named so it cannot read
-    private static func fileEnding(for format: AudioFormat) -> String {
-        switch format {
-        case .mp3, .aac, .alac: return "m4a"
-        case .flac: return "flac"
-        case .opus: return "caf"
-        }
     }
 
     /// Reads the settings kept for the recording from `AppSettings`. What depends on how this recording
@@ -78,9 +67,30 @@ struct RecordingContext {
 
         files = RecordingFiles(base: RecordingFileStore(directory: saveDirectory).newBase(), audioOnly: audioOnly,
                                recordMic: recordMic, systemAudio: systemAudio, remuxAudio: remuxAudio,
-                               videoEnding: videoFormat.rawValue, audioEnding: RecordingContext.fileEnding(for: audioFormat),
-                               exportsMP3: audioFormat == .mp3)
+                               videoEnding: videoFormat.rawValue, audioFormat: audioFormat)
     }
+}
+
+/// The one place an audio file's extension is decided, and with it its container: AVAudioFile writes the container
+/// its file name ends in, and AVAssetWriter is given the one the extension names (`packageFileType`).
+extension AudioFormat {
+    /// An audio file of its own: an audio-only recording without a microphone, or the mix of a package. Core Audio
+    /// writes Opus into a CAF file only (an .ogg file it cannot write, and one named so it cannot read); MP3 is
+    /// recorded as AAC and converted afterwards.
+    var fileEnding: String {
+        switch self {
+        case .mp3, .aac, .alac: return "m4a"
+        case .flac: return "flac"
+        case .opus: return "caf"
+        }
+    }
+
+    /// The two files of a .qma package. Its microphone file is written by AVAssetWriter, for the fragments of an
+    /// .m4a, and AVAssetWriter writes FLAC only into CAF: both files of a FLAC package are .caf.
+    var packageFileEnding: String { self == .flac ? "caf" : fileEnding }
+
+    /// The container of a package's microphone file, the one its extension names
+    var packageFileType: AVFileType { packageFileEnding == "caf" ? .caf : .m4a }
 }
 
 /// Why a recording could not be started, written, mixed or checked, in words shown to the user as they are

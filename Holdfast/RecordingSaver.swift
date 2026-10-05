@@ -235,13 +235,13 @@ enum RecordingSaver {
         window.orderFront(nil)
     }
 
-    /// Mixes the two files of the .qma `package`, at the volumes its `info` gives, into `output`: an audio file in the
-    /// package's format, or an MP3 when `saveAsMP3`; `output` has that extension. Everything is written under staging
+    /// Mixes the two files of the .qma `package`, at the volumes its `info` gives, into `output`: an audio file of the
+    /// package's encoder (`QmaInfo.mixEnding`), or an MP3 when `saveAsMP3`; `output` has that extension. Everything is written under staging
     /// names first (`RecordingFileStore.stagingURL`), and `output` appears only with the complete, checked file;
     /// otherwise this throws and leaves nothing. A file at `output` is replaced only when `replacing` (a name confirmed
     /// in the save panel). `audioQuality` is the bitrate of lossy formats in kbit/s. The package is only read.
     nonisolated static func mixPackage(_ package: URL, info: QmaInfo, to output: URL, saveAsMP3: Bool, replacing: Bool = false, audioQuality: Int) async throws {
-        let ending = saveAsMP3 ? "mp3" : info.format
+        let ending = saveAsMP3 ? "mp3" : info.mixEnding
         guard output.pathExtension.lowercased() == ending else {
             throw RecordingError(String(format: "The name of the mixed file must end in .%@.", ending))
         }
@@ -249,7 +249,7 @@ enum RecordingSaver {
         guard RecordingFileStore.hasRoomForCopy(of: package, in: output.deletingLastPathComponent()) else {
             throw RecordingError("Not enough free disk space to mix the audio tracks.")
         }
-        let mixed = RecordingFileStore.stagingURL(for: output, ending: info.format)
+        let mixed = RecordingFileStore.stagingURL(for: output, ending: info.mixEnding)
         try RecordingFileStore.checkFree(staging: mixed)
         let settings = MovieWriter.audioSettings(format: info.encoder, quality: audioQuality, videoFormat: nil)
         do {
