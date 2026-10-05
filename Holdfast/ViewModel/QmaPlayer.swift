@@ -170,7 +170,7 @@ struct qmaPlayerView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { w?.titlebarAppearsTransparent = true }
         }, onWindowDeactivate: { w in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { w?.titlebarAppearsTransparent = true }
-        }, onWindowClose: { audioPlayerManager.reset() }))
+        }, onWindowClose: { audioPlayerManager.windowClosed() }))
     }
     
     func saveQMA() {
@@ -394,6 +394,8 @@ class AudioPlayerManager: ObservableObject {
     private var fileEncoder = "aac"
     private var packageURL: URL?
     private var panel = NSSavePanel()
+    /// The window closed while an export was rendering through the players: they are reset when it is done
+    private var resetAfterExport = false
     
     init() {
         setupAudioEngine()
@@ -513,6 +515,12 @@ class AudioPlayerManager: ObservableObject {
         audioFile1 = nil
         audioFile2 = nil
     }
+
+    /// The player's window closed. An export renders through the same players, which would play silence from
+    /// here on if they were stopped now, so they are reset when it ends instead.
+    func windowClosed() {
+        if exporting { resetAfterExport = true } else { reset() }
+    }
     
     func export() {
         guard let packageURL = packageURL else { return }
@@ -548,6 +556,10 @@ class AudioPlayerManager: ObservableObject {
         let finish: (Result<URL, Error>) -> Void = { result in
             DispatchQueue.main.async {
                 self.exporting = false
+                if self.resetAfterExport {
+                    self.resetAfterExport = false
+                    self.reset()
+                }
                 completion(result)
             }
         }
