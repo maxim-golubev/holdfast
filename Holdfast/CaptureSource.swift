@@ -89,9 +89,10 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
             guard let title = $0.title else { return false }
             return $0.owningApplication?.bundleIdentifier == "com.apple.dock" && title != "LPSpringboard" && title != "Dock"
         })
+        // The Dock's own window, untitled or titled "Dock". The owner first: an untitled window of any other app is
+        // not the Dock's, and leaving it out of an application recording drops that app's menus and popovers.
         let dockWindow = content.windows.filter({
-            guard let title = $0.title else { return true }
-            return $0.owningApplication?.bundleIdentifier == "com.apple.dock" && title == "Dock"
+            $0.owningApplication?.bundleIdentifier == "com.apple.dock" && ($0.title == nil || $0.title == "Dock")
         })
         let desktopFiles = content.windows.filter({
             $0.owningApplication?.bundleIdentifier == "com.apple.finder"
