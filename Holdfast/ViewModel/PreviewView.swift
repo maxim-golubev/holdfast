@@ -108,7 +108,8 @@ struct PreviewView: View {
             }
             Button("Share…") { showSharingServicePicker(for: filePath.url) }
             Divider()
-            if !trimAfterRecord {
+            // Audio-only recordings have nothing the trimmer can export
+            if !trimAfterRecord && RecorderPlayerModel.canTrim(filePath.url) {
                 Button("Trim") {
                     if fd.fileExists(atPath: filePath) {
                         AppDelegate.shared.openTrimmer(filePath.url)

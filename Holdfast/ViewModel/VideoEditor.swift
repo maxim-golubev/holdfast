@@ -49,6 +49,14 @@ class RecorderPlayerModel: NSObject, ObservableObject {
             return
         }
         
+        if playerItem.status == .failed {
+            // Nothing to trim: the window would stay black without a word
+            removeObservers()
+            let name = fileUrl?.lastPathComponent ?? "The file"
+            UserNotice.showAlertLater(title: "Recording Not Opened", message: String(format: "%@ cannot be opened in the trimmer: %@", name, playerItem.error?.localizedDescription ?? "Unknown error"))
+            nsWindow?.close()
+            return
+        }
         if playerItem.status == .readyToPlay {
             let checkCanBeginTrimming: () -> Void = {
                 if self.playerView.canBeginTrimming {
@@ -73,19 +81,21 @@ class RecorderPlayerModel: NSObject, ObservableObject {
         }
     }
     
+    /// Whether a clip of `url` can be exported: the trimmer writes MOV and MP4 only
+    static func canTrim(_ url: URL) -> Bool {
+        return [VideoFormat.mov.rawValue, VideoFormat.mp4.rawValue].contains(url.pathExtension.lowercased())
+    }
+
     /// Writes the trimmed part next to the recording as "<name> (trimmed <date>).<ext>", untouched (passthrough),
     /// and says whether it worked. The recording itself is never changed.
     private static func exportClip(of asset: AVAsset, from fileUrl: URL, timeRange: CMTimeRange) {
         let fileEnding = fileUrl.pathExtension.lowercased()
-        let fileType: AVFileType
-        switch fileEnding {
-        case VideoFormat.mov.rawValue: fileType = .mov
-        case VideoFormat.mp4.rawValue: fileType = .mp4
-        default:
+        guard canTrim(fileUrl) else {
             // An export needs a file type, and only these two are written
             UserNotice.showAlertLater(title: "Clip Not Saved", message: String(format: "Only MOV and MP4 files can be trimmed: %@", fileUrl.lastPathComponent))
             return
         }
+        let fileType: AVFileType = fileEnding == VideoFormat.mov.rawValue ? .mov : .mp4
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
             UserNotice.showAlertLater(title: "Clip Not Saved", message: String(format: "%@ cannot be trimmed without re-encoding it.", fileUrl.lastPathComponent))
             return
