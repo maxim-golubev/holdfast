@@ -165,9 +165,10 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         conf.microphoneCaptureDeviceID = microphoneDeviceID
 
         // Always an explicit interval: a timescale of 0 is not a valid time, and leaving the stream unthrottled
-        // delivers frames at the display's rate whatever the setting says. An audio-only stream gets next to no frames.
+        // (an interval of 0, or one as short as 1/Int32.max s) delivers frames at the display's rate whatever the
+        // setting says. An audio-only stream writes no frames, so it gets one a second at most.
         let fps = AppSettings.captureFrameRate
-        conf.minimumFrameInterval = CMTime(value: 1, timescale: audioOnly ? CMTimeScale.max : CMTimeScale(fps))
+        conf.minimumFrameInterval = audioOnly ? CMTime(value: 1, timescale: 1) : CMTime(value: 1, timescale: CMTimeScale(fps))
         print("Frame interval passed to ScreenCaptureKit: \(conf.minimumFrameInterval)")
 
         if target.type == .screenarea {
