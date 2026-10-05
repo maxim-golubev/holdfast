@@ -1,88 +1,132 @@
-<p align="center">
+<h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/icon-dark.png">
-    <img src="docs/images/icon-light.png" width="128" height="128" alt="Holdfast app icon">
+    <img alt="The Holdfast icon: a white record symbol, a ring around a dot, on a red tile" src="docs/images/icon-light.png" width="112">
   </picture>
+  <br>
+  Holdfast
+</h1>
+
+<p align="center">A meeting recorder for Macs that doesn't lose a track.</p>
+
+<p align="center">
+  <a href="https://github.com/maxim-golubev/holdfast/releases/latest"><b>Download for Apple Silicon</b></a> ·
+  <a href="docs/guide.md">User guide</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
+  <a href="docs/validation.md">What was measured</a>
 </p>
 
-# Holdfast
+Start a recording from the panel, the menu bar, or a shortcut. Holdfast records
+the screen, the sound the Mac plays, and your microphone. When you stop, it
+mixes the two sound sources into one audio track, so the whole meeting plays in
+any player, and keeps the recording as written, with the two tracks separate,
+next to it.
 
-A meeting recorder for macOS. Holdfast is a modified version of [QuickRecorder](https://github.com/lihaoyun6/QuickRecorder) by lihaoyun6, the screen recorder built on ScreenCaptureKit; it is not an official QuickRecorder release.
+- **Nothing goes silent:** the microphone keeps recording when the meeting app
+  takes it, and follows AirPods as they come and go. In a six-minute test with
+  two simulated calls, 18,063 of 18,063 microphone buffers were written.
+- **A crash costs seconds, not the meeting:** the file is written in
+  10-second fragments. After a `kill -9` 35 s into a recording, the next launch
+  found the file, recovered 30 s of it, and mixed it. Quitting during a
+  recording waits for the file.
+- **Built with:** Swift and SwiftUI, ScreenCaptureKit for picture, system audio
+  and microphone on one clock, AVFoundation for writing and mixing. No network
+  requests, no updater, no account.
 
-It is narrowed to one job: recording 60 to 90 minute video meetings (screen, system audio and a Bluetooth microphone, mixed to one audio track) without losing any of it. It runs on macOS 15 or later on Apple Silicon, has no updater and makes no network requests.
+## Engineering
 
-## What it records
+I started this after losing a meeting. In a 69-minute call recorded with
+QuickRecorder 1.6.7, the microphone track was exact digital silence from 24 s
+on, the moment the meeting app took the AirPods microphone. The other side of
+the call was intact.
 
-- A screen, a screen area, an application, a window, or system audio alone.
-- System audio and the microphone as two tracks, mixed into one after the recording (Settings, Audio, "Mix Microphone into the Main Track").
-- The menu bar item shows the elapsed time while recording; its menu has Stop Recording, Pause and Mute Microphone. The same menu is on the Dock icon.
+Most of the work went into five problems:
 
-Removed from upstream: the updater, iPhone/iPad recording, the camera and Presenter Overlay, GIF export, the background colour option and localizations (English only).
+- **A call app silences the microphone.** QuickRecorder taps the microphone
+  with AVAudioEngine. When another process opens the input with voice
+  processing, as call apps do, the tap stops delivering and restarting the
+  engine does not bring it back. A probe compared three ways of capturing while
+  a second process held the microphone: the engine tap delivered 0 buffers;
+  AVCaptureSession and ScreenCaptureKit's microphone output both kept
+  delivering 50 buffers a second. Holdfast uses ScreenCaptureKit, which puts
+  the microphone on the same clock as the picture and system audio.
+- **The microphone changes format mid-recording.** AirPods deliver 24 kHz, the
+  built-in microphone 48 kHz, and the format changes whenever the device does.
+  AVAssetWriter plays audio buffers back to back and ignores gaps in their
+  timestamps, so one missing buffer would shift everything after it. Every
+  microphone buffer is converted to 48 kHz stereo and placed on one continuous
+  timeline, and a hole is written as silence of the same length.
+- **An MP4 that was never closed does not open.** The movie is written in
+  10-second fragments, and the writer flushes a fragment only when every track
+  has data for it. So a timer twice a second continues any track whose source
+  has gone quiet: silence for audio, the last frame again for video (a static
+  slide delivers no frames). A file left by a crash opens with up to about the
+  last 12 seconds missing, and the next launch finds it, mixes it and names it.
+- **The mix must never cost the recording.** The mix is written under a
+  temporary name and checked before anything is renamed: one video and one
+  audio track, the same length to within a second, and the microphone audible
+  in the mix wherever it was alone in the recording. On any failure the
+  two-track recording is what you get, with a report saying where it is.
+- **A dead track must be seen during the meeting.** No microphone audio for 5
+  seconds, only digital zeros for 20, or no system audio for 5 turns the menu
+  bar item into a warning, shows it in a small panel over every app (a
+  full-screen meeting hides the menu bar, and macOS holds back notifications
+  while the screen is shared), and posts a notification; another when the
+  audio is back.
 
-## Reliability
+One state machine owns each recording, with one way in and one way out, so a
+stop pressed three times saves one recording once, and quitting waits for the
+final file. 106 tests run in a few seconds without the app, a screen, or a
+microphone: they drive the real writer, converter, monitor, mixer and recovery
+with synthetic buffers and check the files they write.
 
-| Guarantee | How |
-| --- | --- |
-| The microphone keeps recording when a call app (Zoom, Meet, Teams) takes it | The microphone is captured through ScreenCaptureKit only, never through an audio engine tap, which goes silent for good when another app opens the microphone with voice processing. The device's changing format is converted to one continuous 48 kHz track. |
-| The microphone follows the device | When AirPods disconnect, reconnect or the default input changes, the running recording switches device and says so in the log. |
-| A crash, kill or power loss leaves a playable file | The movie is written in 10 second fragments, and a timer keeps every track fed (silence, or the last frame again) so fragments keep reaching the disk even when a source delivers nothing. |
-| An interrupted recording is finished at the next launch | Files left under a temporary name are found, mixed, checked and renamed; one report lists what was recovered. Nothing is deleted. |
-| The mix cannot cost you the recording | The mix is written under a temporary name and checked (tracks, length, and that the microphone is audible in it) before anything is renamed. The recording as written is kept next to it as "(unmixed, 2 audio tracks)". If the mix fails, that file is what you get, with a report. |
-| A silent track is noticed while it happens | No microphone or system audio for 5 seconds, or only digital silence from the microphone for 20 seconds, turns the menu bar item into an orange warning, shows the warning in a small panel over every app (a full-screen meeting hides the menu bar, and macOS holds back notifications while the screen is shared) and posts a notification; another one when the audio is back. |
-| No silent failures | A start that cannot record what was asked for (no microphone, no permission, under 2 GB free) is refused with an alert. A write error, a full disk (under 500 MB) or a stream that dies stops the recording, closes the file and reports it. |
-| Quitting never truncates | Quit while recording, saving or mixing waits for the final file. |
+## Limits
 
-## Known limits
-
-- **FaceTime call audio cannot be recorded.** macOS keeps it out of system audio capture, so no ScreenCaptureKit recorder gets the other side of a FaceTime call. Your own microphone is still recorded. Zoom, Meet, Teams and browser calls are captured.
-- **A file that was never closed misses its end.** After a crash or kill, about the last 12 seconds are lost (one fragment plus the lag of the slowest track). While paused nothing reaches the disk, so the seconds just before a pause are only safe after resuming.
-- In an audio-only recording, the system audio file and a FLAC or Opus microphone file (`.caf`) are not written in fragments and do not survive a crash.
+- FaceTime call audio is not available to any screen recorder through
+  ScreenCaptureKit. Your own microphone is still recorded.
+- A file that was never closed (a crash, a kill, a power loss) misses up to
+  about its last 12 seconds.
 - Only the current save folder is searched for interrupted recordings.
-- A second recording cannot start until the first one's file is final.
-- A muted microphone is recorded as silence; the system's microphone indicator stays on.
-- With QuickRecorder installed as well, Finder may go on opening `.qma` packages in it. Holdfast opens them too (it reads QuickRecorder's type for them): choose Holdfast under Get Info, "Open with", and click "Change All". The preview's Open button always uses Holdfast.
 
-## Build
+More in the [user guide](docs/guide.md#known-limits).
 
-Requires Xcode 26 or later: the app icon is an Icon Composer document, which earlier versions cannot compile. The app runs on macOS 15 and later. There are no binary releases.
+## Install
 
-```
-Tools/build.sh    # Release build into build/Build/Products/Release/Holdfast.app
-Tools/test.sh     # logic tests, a few seconds, no app, screen or microphone needed
-Tools/app_icon.sh # renders the README icons from Holdfast/Holdfast.icon
-```
+Requires an Apple Silicon Mac on macOS 15 or later.
 
-The project signs with the owner's development team; set your own team and bundle identifier in Xcode to build it yourself. A different bundle identifier means its own settings and its own Screen Recording and Microphone permissions.
+1. Download `Holdfast-<version>.zip` from
+   [Releases](https://github.com/maxim-golubev/holdfast/releases/latest), unzip
+   it, and move `Holdfast.app` to Applications.
+2. Open it. The app is signed with the developer's certificate but not
+   notarized by Apple, so macOS blocks the first launch: open **System Settings
+   → Privacy & Security** and choose **Open Anyway**.
+3. Allow Screen Recording when macOS asks, then open Holdfast again. Turn on
+   **Record Microphone** in the recording options (it starts off), and allow
+   the microphone when macOS asks. A meeting recording needs both permissions.
 
-## AppleScript
+## Build from source
 
-```applescript
-tell application "Holdfast"
-    record screen numbered 1
-    record screen area
-    record application named "Safari"
-    record window titled "Notes" in application "Notes"
-    record system audio microphone true
-    mute microphone
-    unmute microphone
-    stop recording
-    configure fps 30 quality 2 hires true cursor true sound true microphone true mic device "default" hdr false
-end tell
+Requires Xcode 26 (the app icon is an Icon Composer document) and runs on macOS
+15 or later. The project signs with its owner's development team; set your own
+team and bundle identifier in Xcode to build it yourself.
+
+```sh
+Tools/build.sh      # Release build into build/, prints BUILD SUCCEEDED
+Tools/test.sh       # the tests, a few seconds, no app, screen or microphone
+Tools/release.sh    # build/release/Holdfast-<version>.zip, signed and verified
 ```
 
-- `record screen`, `record application` and `record window` without a parameter open the matching selector; `record screen area` always does. `record system audio` starts at once. Every record command returns an error when a recording is already running or still being saved, and one that names a screen, application or window it cannot record shows "Failed to Record".
-- `stop recording` returns at once and the file is saved in the background: wait until the menu bar item no longer says "Saving" (or, right after launch, "Recovering"). It also cancels a countdown and does nothing when idle.
-- `mute microphone` and `unmute microphone` return an error when no recording with a microphone is running.
-- `configure` takes any subset of its parameters; `mic device` must name a connected input.
+## Credits
 
-## Log
+Holdfast is a modified version of
+[QuickRecorder](https://github.com/lihaoyun6/QuickRecorder) by lihaoyun6, whose
+recording engine began from [Azayaka](https://github.com/Mnpn/Azayaka) by Mnpn.
+It is not an official QuickRecorder release. Global shortcuts use
+[KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) by Sindre
+Sorhus, and MP3 output [SwiftLAME](https://github.com/hidden-spectrum/SwiftLAME)
+by Hidden Spectrum.
 
-`~/Library/Logs/Holdfast/recordings.log` (Settings, Output, "Recordings Log") has one line per event: each recording's start (file name, what it records) and stop (with the reason when it stopped by itself), where it was saved, microphone device switches and format changes, mute and unmute, track warnings, a summary of the microphone track (buffers written and dropped, seconds of silence filled, loudest peak), and every failure that was reported.
+## License
 
-## Credits and license
-
-- [QuickRecorder](https://github.com/lihaoyun6/QuickRecorder) by lihaoyun6: the original app, of which Holdfast is a modified version. Its recording engine began from [Azayaka](https://github.com/Mnpn/Azayaka) by Mnpn.
-- [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) by Sindre Sorhus: global shortcuts.
-- [SwiftLAME](https://github.com/hidden-spectrum/SwiftLAME) by Hidden Spectrum: MP3 output.
-
-Licensed under the [GNU AGPL-3.0](./LICENSE), like the original. Copyright © 2024 lihaoyun6; modifications © 2026 Maxim Golubev.
+[GNU AGPL-3.0](LICENSE), like QuickRecorder. Copyright © 2024 lihaoyun6;
+modifications © 2026 Maxim Golubev.
