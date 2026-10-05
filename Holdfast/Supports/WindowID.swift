@@ -21,6 +21,8 @@ extension NSUserInterfaceItemIdentifier {
     static let areaOverlay = NSUserInterfaceItemIdentifier("Holdfast.areaOverlay")
     /// The dimming window over each screen while a window is picked with the mouse
     static let screenCover = NSUserInterfaceItemIdentifier("Holdfast.screenCover")
+    /// The floating preview of a finished recording
+    static let preview = NSUserInterfaceItemIdentifier("Holdfast.preview")
 }
 
 extension NSApplication {

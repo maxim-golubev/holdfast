@@ -16,7 +16,6 @@ let fd = FileManager.default
 let mousePointer = NSWindow(contentRect: NSRect(x: -70, y: -70, width: 70, height: 70), styleMask: [.borderless], backing: .buffered, defer: false)
 let screenMagnifier = NSWindow(contentRect: NSRect(x: -402, y: -402, width: 402, height: 348), styleMask: [.borderless], backing: .buffered, defer: false)
 let countdownPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 120), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
-let previewWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 266, height: 156), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
 
 @main
 struct HoldfastApp: App {
@@ -249,12 +248,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         countdownPanel.isReleasedWhenClosed = false
         countdownPanel.isMovableByWindowBackground = false
         countdownPanel.backgroundColor = NSColor.clear
-        
-        previewWindow.level = .statusBar
-        previewWindow.titlebarAppearsTransparent = true
-        previewWindow.titleVisibility = .hidden
-        previewWindow.isReleasedWhenClosed = false
-        previewWindow.backgroundColor = .clear
         
         KeyboardShortcuts.onKeyDown(for: .showPanel) { [self] in openMainPanel() }
         KeyboardShortcuts.onKeyDown(for: .saveFrame) { withRecorder { if $0.hasStream { $0.session?.savePicture() } } }

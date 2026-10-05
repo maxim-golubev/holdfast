@@ -235,14 +235,22 @@ enum RecordingSaver {
         return fd.fileExists(atPath: url.path) ? String(format: sentence, url.path) : movedNote(for: url)
     }
 
-    /// Shows the floating preview for a finished recording. `image` is that recording's first frame or an icon.
+    /// Shows the floating preview for a finished recording, in place of the one before. `image` is that recording's
+    /// first frame or an icon. Each preview has a window of its own: what an earlier one has scheduled (closing
+    /// itself after a few seconds) must not reach a later one.
     static func showPreview(path: String, image: NSImage?) {
-        if let previewImage = image, let screen = ScreenContent.getScreenWithMouse() {
-            let contentView = NSHostingView(rootView: PreviewView(frame: previewImage, filePath: path))
-            previewWindow.contentView = contentView
-            previewWindow.setFrameOrigin(NSPoint(x: screen.frame.maxX - 280, y: screen.frame.minY + 20))
-            previewWindow.orderFront(nil)
-        }
+        guard let previewImage = image, let screen = ScreenContent.getScreenWithMouse() else { return }
+        for window in NSApp.windows(.preview) { window.close() }
+        let window = PreviewWindow(contentRect: NSRect(x: screen.frame.maxX - 280, y: screen.frame.minY + 20, width: 266, height: 156),
+                                   styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
+        window.identifier = .preview
+        window.level = .statusBar
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = .clear
+        window.contentView = NSHostingView(rootView: PreviewView(frame: previewImage, filePath: path))
+        window.orderFront(nil)
     }
 
     /// Converts the audio file `source` to MP3 at `bitrate` kbit/s into `output`. The MP3 is written under its

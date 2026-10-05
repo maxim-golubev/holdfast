@@ -169,6 +169,15 @@ struct PreviewView: View {
     }
 }
 
+/// The preview's window. Its view holds on to it, so the view goes when it closes: the window and its picture are
+/// freed then.
+final class PreviewWindow: NSWindow {
+    override func close() {
+        super.close()
+        contentView = nil
+    }
+}
+
 /// A borderless button whose label changes colour under the pointer
 struct HoverButton<Content: View>: View {
     var color: Color = .primary
