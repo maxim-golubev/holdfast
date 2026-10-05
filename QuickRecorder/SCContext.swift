@@ -83,42 +83,16 @@ struct RecordingContext {
         self.audioQuality = ud.integer(forKey: "audioQuality")
         self.keepUnmixed = ud.bool(forKey: "keepUnmixed")
         
-        let base = SCContext.getFilePath(directory: saveDirectory)
-        if audioOnly {
-            let ending = RecordingContext.fileEnding(for: audioFormat)
-            let exported = audioFormat == .mp3 ? "mp3" : ending
-            mixURL = nil
-            unmixedURL = nil
-            if recordMic {
-                let package = "\(base).qma".url
-                rawURL = package
-                systemAudioURL = package.appendingPathComponent("sys.\(ending)")
-                micAudioURL = package.appendingPathComponent("mic.\(ending)")
-                finalURL = remuxAudio ? "\(base).\(exported)".url : package
-            } else {
-                let file = "\(base).\(ending)".url
-                rawURL = file
-                systemAudioURL = file
-                micAudioURL = nil
-                finalURL = audioFormat == .mp3 ? "\(base).mp3".url : file
-            }
-        } else {
-            let ending = videoFormat.rawValue
-            finalURL = "\(base).\(ending)".url
-            systemAudioURL = nil
-            micAudioURL = nil
-            if remuxAudio && recordMic && systemAudio {
-                // Written under a temporary name, and so is the mix, which becomes the final file once it is
-                // complete and checked. See RecordingMixer for the names.
-                rawURL = RecordingMixer.temporaryURL(base: base, marker: RecordingMixer.rawMarker, ending: ending)
-                mixURL = RecordingMixer.temporaryURL(base: base, marker: RecordingMixer.mixMarker, ending: ending)
-                unmixedURL = RecordingMixer.unmixedURL(base: base, ending: ending)
-            } else {
-                mixURL = nil
-                unmixedURL = nil
-                rawURL = finalURL
-            }
-        }
+        let files = RecordingFiles(base: SCContext.getFilePath(directory: saveDirectory), audioOnly: audioOnly,
+                                   recordMic: recordMic, systemAudio: systemAudio, remuxAudio: remuxAudio,
+                                   videoEnding: videoFormat.rawValue, audioEnding: RecordingContext.fileEnding(for: audioFormat),
+                                   exportsMP3: audioFormat == .mp3)
+        rawURL = files.rawURL
+        mixURL = files.mixURL
+        unmixedURL = files.unmixedURL
+        finalURL = files.finalURL
+        systemAudioURL = files.systemAudioURL
+        micAudioURL = files.micAudioURL
     }
 }
 
@@ -355,10 +329,8 @@ class SCContext {
     /// Path without extension for a new file. `directory` is the save directory a running recording was started with;
     /// without it the current setting is used.
     static func getFilePath(capture: Bool = false, directory: String? = nil) -> String {
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "y-MM-dd HH.mm.ss"
         let directory = directory ?? ud.string(forKey: "saveDirectory") ?? (NSHomeDirectory() + "/Desktop")
-        return directory + "/" + (capture ? "Capturing at ".local : recordingNamePrefix.local) + dateFormatter.string(from: Date())
+        return RecordingFiles.basePath(directory: directory, prefix: capture ? "Capturing at ".local : recordingNamePrefix.local, date: Date())
     }
     
     /// The defaults are the current settings. Code that works on a recording passes that recording's values instead.
@@ -465,9 +437,7 @@ class SCContext {
     
     /// "07:05" up to an hour, "1:07:05" from then on. The status bar makes room for the longer form (`getStatusBarWidth`).
     static func lengthText(_ interval: TimeInterval) -> String {
-        let total = interval.isFinite ? max(0, Int(interval)) : 0
-        let hours = total / 3600, minutes = total % 3600 / 60, seconds = total % 60
-        return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, seconds) : String(format: "%02d:%02d", minutes, seconds)
+        return Timeline.lengthText(interval)
     }
     
     static func pauseRecording() {
@@ -493,8 +463,7 @@ class SCContext {
         if isResume {
             isResume = false
             if let last = lastPTS {
-                let offset = CMTimeSubtract(raw, last)
-                if offset > timeOffset { timeOffset = offset }
+                timeOffset = Timeline.pauseOffset(resumingAt: raw, last: last, current: timeOffset)
                 print("time removed for pauses: \(CMTimeGetSeconds(timeOffset))")
             }
         }
@@ -503,9 +472,7 @@ class SCContext {
     
     /// On `sampleQueue`. Keeps `lastPTS` at the latest end time of anything on the timeline.
     static func noteEnd(_ end: CMTime?) {
-        guard let end = end, end.isValid else { return }
-        if let last = lastPTS, end <= last { return }
-        lastPTS = end
+        lastPTS = Timeline.latestEnd(end, after: lastPTS)
     }
     
     /// On `sampleQueue`. Starts the writer's session at `pts`: at the first complete video frame, or at the first
@@ -1058,13 +1025,7 @@ class SCContext {
     /// Gives a recording that was written under its temporary name the name it is kept under. Nothing is deleted
     /// or replaced: when the name is taken or the rename fails, the recording stays where it is. Returns where it is afterwards.
     static func keepUnmixedRecording(written: URL, as kept: URL) -> URL {
-        do {
-            try fd.moveItem(at: written, to: kept)
-            return kept
-        } catch {
-            print("Failed to rename the unmixed recording: \(error.localizedDescription)")
-            return written
-        }
+        return RecordingFiles.keep(written: written, as: kept)
     }
     
     /// What the app's recordings are named with, in front of the date. Launch recovery only takes files with it for its own.
@@ -1106,7 +1067,7 @@ class SCContext {
             // What an interrupted mix wrote goes out of the way first. It says nothing about the recording it was
             // made from: the mix of a recording that was never closed is written under the same marker.
             for leftover in found where leftover.isMix {
-                let target = RecordingMixer.freeURL(base: leftover.base, label: "incomplete mix", ending: leftover.ending)
+                let target = RecordingMixer.freeURL(base: leftover.base, label: RecoveryNames.incompleteMix, ending: leftover.ending)
                 let now = keepUnmixedRecording(written: leftover.url, as: target)
                 print("Leftover \(leftover.url.lastPathComponent) -> \(now.lastPathComponent)")
                 var line = String(format: "\"%@\" is what an interrupted audio mix had written. The recording it was made from is kept separately; this file can be deleted.".local, now.lastPathComponent)
@@ -1142,7 +1103,6 @@ class SCContext {
         let raw = leftover.url
         let base = leftover.base
         let ending = leftover.ending
-        let unmixedLabel = String(RecordingMixer.unmixedSuffix.dropFirst(2).dropLast())
         let info = await RecordingMixer.inspect(raw)
         /// Renames the recording and says so when that fails
         func rename(_ label: String, _ line: String) -> String {
@@ -1153,7 +1113,7 @@ class SCContext {
             return now == target ? text : text + " " + "It could not be renamed.".local
         }
         guard let seconds = info.seconds else {
-            return rename("damaged", "\"%@\" is a recording that was not finished and cannot be opened.".local)
+            return rename(RecoveryNames.damaged, "\"%@\" is a recording that was not finished and cannot be opened.".local)
         }
         let formatter = DateComponentsFormatter()
         formatter.allowedUnits = [.hour, .minute, .second]
@@ -1165,7 +1125,7 @@ class SCContext {
             : String(format: "is a recording that was not finished (%@); its last seconds may be missing.".local, length)
         let separate = "It plays, with system audio and microphone as two separate audio tracks (many players only play the first, which is system audio).".local
         let mixURL = RecordingMixer.temporaryURL(base: base, marker: RecordingMixer.mixMarker, ending: ending)
-        let final = RecordingMixer.freeURL(base: base, label: complete ? nil : "recovered", ending: ending)
+        let final = RecordingMixer.freeURL(base: base, label: RecoveryNames.mix(complete: complete), ending: ending)
         var failure: String?
         if !info.mixable {
             failure = "It does not have one video and two audio tracks.".local
@@ -1192,11 +1152,11 @@ class SCContext {
         }
         if let failure = failure {
             let line = "\"%@\" " + what + " " + String(format: "Mixing its audio now failed: %@".local, failure).replacingOccurrences(of: "%", with: "%%") + " " + separate
-            return rename(complete ? unmixedLabel : "recovered", line)
+            return rename(RecoveryNames.recording(complete: complete, mixed: false), line)
         }
         let mixed = String(format: "\"%@\" ".local, final.lastPathComponent) + what + " " + "Its audio was mixed now.".local
         let kept = "The recording as it was written, with system audio and microphone as separate audio tracks, is kept as \"%@\".".local
-        return rename(complete ? unmixedLabel : "recovered, " + unmixedLabel, mixed.replacingOccurrences(of: "%", with: "%%") + " " + kept)
+        return rename(RecoveryNames.recording(complete: complete, mixed: true), mixed.replacingOccurrences(of: "%", with: "%%") + " " + kept)
     }
     
     /// A copy of a video frame with pixels of its own. A frame as ScreenCaptureKit delivers it holds one of the

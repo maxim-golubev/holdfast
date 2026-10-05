@@ -55,37 +55,6 @@ enum AudioSilence {
     }
 }
 
-/// Appends one line per event to ~/Library/Logs/QuickRecorder/recordings.log, so what happened to a recording's
-/// tracks can be read afterwards. Also printed.
-enum RecLog {
-    private static let queue = DispatchQueue(label: "reclog")
-    private static let url: URL? = {
-        guard let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Logs/QuickRecorder", isDirectory: true) else { return nil }
-        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
-        return logs.appendingPathComponent("recordings.log")
-    }()
-    private static let stamp: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        return formatter
-    }()
-
-    static func write(_ message: String) {
-        print(message)
-        queue.async {
-            guard let url = url, let data = "\(stamp.string(from: Date())) \(message)\n".data(using: .utf8) else { return }
-            if let handle = try? FileHandle(forWritingTo: url) {
-                defer { try? handle.close() }
-                _ = try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
-            } else {
-                try? data.write(to: url)
-            }
-        }
-    }
-}
-
 /// Turns the microphone buffers ScreenCaptureKit delivers into one fixed format on a continuous timeline.
 ///
 /// The buffers arrive in the device's own format (24 kHz mono for AirPods, for example), and that format changes when the
@@ -193,9 +162,9 @@ final class MicConverter {
                 missing = CMTimeSubtract(start, nextPTS).value
             }
             if missing > tolerance {
-                guard writeSilence(frames: min(missing, longestFill), append: append) else { return false }
+                guard writeSilence(frames: min(missing, longestFill), append: append) else { buffersFailed += 1; return false }
                 // Still behind after a long hole: keep filling on the next buffers before audio is written again
-                if missing > longestFill { return false }
+                if missing > longestFill { buffersDropped += 1; return false }
             } else if missing < -tolerance {
                 let length = CMTimeGetSeconds(sampleBuffer.duration)
                 droppedSeconds += length.isFinite && length > 0 ? length : 0.02
@@ -204,7 +173,7 @@ final class MicConverter {
                 shift = CMTimeAdd(shift, lag)
                 RecLog.write("Microphone buffers are \(CMTimeGetSeconds(lag)) s behind the recording; they are recorded that much late from here on")
             } else if aligning, missing > 0 {
-                guard writeSilence(frames: missing, append: append) else { return false }
+                guard writeSilence(frames: missing, append: append) else { buffersFailed += 1; return false }
             } else if aligning, missing < 0 {
                 skip = -missing
             }

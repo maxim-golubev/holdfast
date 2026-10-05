@@ -96,7 +96,8 @@ enum RecordingMixer {
         let copied = await copy([(videoOutput, videoInput), (audioOutput, audioInput)], reader: reader, writer: writer) { buffer, index in
             guard index == 0 else { return }
             let percent = Int(max(0, min(1, CMTimeGetSeconds(buffer.presentationTimeStamp) / seconds)) * 100)
-            if percent != lastPercent {
+            // Video samples come in decoding order, so their times do not only go up
+            if percent > lastPercent {
                 lastPercent = percent
                 progress(Double(percent) / 100)
             }

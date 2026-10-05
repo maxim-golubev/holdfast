@@ -49,7 +49,7 @@ extension AppDelegate {
                 return failToRecord("Unable to create output folder!".local)
             }
         }
-        if let free = DiskSpace.available(at: outputPath), free < DiskSpace.startMinimum {
+        if let free = DiskSpace.available(at: outputPath), !DiskSpace.canStart(free: free) {
             return failToRecord(String(format: "Not enough free disk space: only %@ is left on the output volume, and at least %@ is needed to start a recording.".local, DiskSpace.formatted(free), DiskSpace.formatted(DiskSpace.startMinimum)))
         }
         

@@ -219,12 +219,10 @@ enum RecordingMonitor {
     /// buffer to see. Holes add up and are filled with silence once they exceed `gapTolerance`; a buffer that
     /// overlaps the end is written whole, which puts the audio late by less than one buffer and no more.
     static func placeSystemAudio(from pts: CMTime, to endPTS: CMTime) -> CMTime? {
-        guard let end = SCContext.audioEndPTS else { return pts }
-        if pts < end { return endPTS > end ? end : nil }
-        guard seconds(from: end, to: pts) > gapTolerance else { return end }
-        fillSystemAudio(upTo: pts)
-        guard let filled = SCContext.audioEndPTS, seconds(from: filled, to: pts) <= gapTolerance else { return nil }
-        return filled
+        return SystemAudioPlacement.place(from: pts, to: endPTS, end: SCContext.audioEndPTS, tolerance: gapTolerance) { time in
+            fillSystemAudio(upTo: time)
+            return SCContext.audioEndPTS
+        }
     }
 
     /// Appends silence to the system audio from where it ends up to `time`: to the audio track of a video recording,
@@ -248,8 +246,7 @@ enum RecordingMonitor {
         }
         guard let format = format, format.sampleRate > 0 else { return }
         let scale = CMTimeScale(format.sampleRate)
-        var position = CMTimeConvertScale(from, timescale: scale, method: .roundTowardPositiveInfinity)
-        var left = CMTimeConvertScale(CMTimeSubtract(time, position), timescale: scale, method: .roundTowardNegativeInfinity).value
+        var (position, left) = SystemAudioPlacement.silence(from: from, upTo: time, scale: scale)
         while left > 0 {
             let count = min(left, Int64(scale / 2))
             guard let pcm = AudioSilence.pcm(format: format, frames: count) else { return }
