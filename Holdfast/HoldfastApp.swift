@@ -66,6 +66,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var areaSelectorMonitor: Any?
     private var tracksMouseForRecording = false
     private var mousePointerHost: NSHostingView<MousePointerView>?
+    /// SIGTERM (`kill`, `killall`, a forced shutdown) quits like Quit does, which closes a running recording first
+    private var terminateSignal: DispatchSourceSignal?
     
     func mousePointerReLocation(event: NSEvent) {
         if event.type == .scrollWheel { return }
@@ -204,6 +206,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // The default action would end the process at once, leaving a recording unclosed and unmixed
+        signal(SIGTERM, SIG_IGN)
+        let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        terminate.setEventHandler { NSApp.terminate(nil) }
+        terminate.resume()
+        terminateSignal = terminate
         ScreenContent.updateAvailableContentSync()
         
         let process = NSWorkspace.shared.runningApplications.filter({ $0.bundleIdentifier == Bundle.main.bundleIdentifier })
@@ -294,7 +302,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
         withRecorder { $0.recovery.start(in: AppSettings.saveDirectory) }
-        if AppSettings.showOnDock { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
+        // Opened by the user, the app shows its panel; started at login, it waits in the menu bar until it is wanted
+        let launch = NSAppleEventManager.shared().currentAppleEvent
+        let atLogin = launch?.eventID == kAEOpenApplication
+            && launch?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+        if AppSettings.showOnDock && !atLogin { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
     }
     
     /// A start that works from the list of screens and windows without a selector having fetched it: the list is
@@ -320,15 +332,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// A click on the Dock icon: the main panel, unless another window of the app is open
+    /// A click on the Dock icon: the main panel, unless another window of the app is open (audio players aside)
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if withRecorder({ !$0.hasStream }) {
-            let w1 = NSApp.windows.filter({ !$0.title.contains("Item-0") && !$0.title.isEmpty && $0.isVisible })
-            let w2 = w1.filter({ !$0.title.contains(".qma") })
-            if (!w1.isEmpty && w2.isEmpty) || w1.isEmpty {
-                showMainPanel()
-            }
-        }
+        guard withRecorder({ !$0.hasStream }) else { return false }
+        let open = NSApp.windows.filter { $0.isVisible && $0.title != "Item-0" && !$0.title.isEmpty && !$0.title.lowercased().contains(".qma") }
+        if open.isEmpty { showMainPanel() }
         return false
     }
     
