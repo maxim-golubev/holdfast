@@ -32,6 +32,8 @@ struct StatusDisplay: Equatable {
         var mixProgress: Double?
         var isRecovering = false
         var recoveryProgress: Double?
+        /// The app waits to quit until what it saves or recovers is done
+        var isQuitting = false
         /// The elapsed time as text (`Timeline.lengthText`)
         var length = Timeline.lengthText(0)
     }
@@ -84,14 +86,14 @@ struct StatusDisplay: Equatable {
             } else {
                 line = "Saving the recording".local
             }
-            detail = line + ". " + "A new one can be started when this is done.".local
+            detail = line + ". " + (input.isQuitting ? "Holdfast quits when this is done." : "A new one can be started when this is done.")
         case .idle:
             if input.isRecovering {
                 kind = .recovering
                 title = "Recovering".local
                 let recovering = "Recovering a recording that was not finished".local
                 line = input.recoveryProgress.map { StatusDisplay.percent(recovering, $0) } ?? recovering
-                detail = "A recording that an earlier run of Holdfast did not finish is being mixed. Quitting waits for it.".local
+                detail = "A recording that an earlier run of Holdfast did not finish is being mixed. " + (input.isQuitting ? "Holdfast quits when it is done." : "Quitting waits for it.")
             } else {
                 kind = .idle
                 title = ""
@@ -137,6 +139,6 @@ extension RecorderController {
         return StatusDisplay.Input(state: state, isPaused: isPaused, hasMicrophone: session?.hasMicrophone ?? false,
                                    isMicrophoneMuted: isMicrophoneMuted, micLevel: health.micLevel, warning: health.warning,
                                    mixProgress: health.mixProgress, isRecovering: recovery.isRunning,
-                                   recoveryProgress: recovery.progress, length: recordingLength())
+                                   recoveryProgress: recovery.progress, isQuitting: quitRequested, length: recordingLength())
     }
 }

@@ -12,8 +12,8 @@ struct RecorderEnvironment {
     /// Something the status item shows has changed: the state, the recovery, a request to quit, pause, mute,
     /// warning, microphone level, progress
     var statusChanged: @MainActor (RecorderController) -> Void = { _ in }
-    /// A start was asked for while the previous recording is still being saved
-    var startRefused: @MainActor () -> Void = {}
+    /// A start was asked for while the previous recording is still being saved, or while the app waits to quit
+    var startRefused: @MainActor (StartRefusal) -> Void = { _ in }
     /// A start was refused or did not lead to a recording: what a selector left on screen goes
     var startAbandoned: @MainActor () -> Void = {}
     /// The recording is being stopped: what it had on screen goes
@@ -29,6 +29,11 @@ struct RecorderEnvironment {
     var report: @MainActor (String, String) -> Void = { _, _ in }
     /// Runs the handler once every alert that reports a failure has been dismissed
     var whenAlertsDismissed: @MainActor (@escaping () -> Void) -> Void = { $0() }
+}
+
+/// Why a start was refused with an alert
+enum StartRefusal {
+    case saving, quitting
 }
 
 /// The one way into the recording side for the UI, the hotkeys, the script commands, the auto-stop timer, the
@@ -80,17 +85,19 @@ final class RecorderController {
 
     // MARK: - Start
 
-    /// Whether a recording can be started now. While the previous one is still being saved the user is told so.
+    /// Whether a recording can be started now. While the previous one is still being saved, or the app waits to
+    /// quit, the user is told so: a quit that is waiting would end the new recording when it goes ahead.
     func canStart() -> Bool {
-        switch state {
-        case .idle:
-            return true
-        case .starting, .recording:
-            return false
-        case .stopping, .finalizing:
-            environment.startRefused()
+        if state == .starting || state == .recording { return false }
+        if quitRequested {
+            environment.startRefused(.quitting)
             return false
         }
+        if state != .idle {
+            environment.startRefused(.saving)
+            return false
+        }
+        return true
     }
 
     /// idle → starting: the only way into a recording. Nil when one is starting, running or still being saved; a
@@ -146,21 +153,29 @@ final class RecorderController {
     }
 
     /// For `applicationShouldTerminate`. True when the app can quit now. Otherwise a recording that is starting or
-    /// running is stopped, and `reply` is called, once, when its files are final, a recording of an earlier run
-    /// that is being mixed is done too, and the report of any failure has been seen.
+    /// running is stopped, no new one can be started (`canStart`), and `reply` is called, once, when its files are
+    /// final, a recording of an earlier run that is being mixed is done too, and the report of any failure has been seen.
     func canQuit(orReply reply: @escaping () -> Void) -> Bool {
         if state == .idle && !recovery.isRunning { return true }
         stop()
         if !quitRequested {
             quitRequested = true
             environment.statusChanged(self)
-            whenIdle { [self] in
-                recovery.whenDone { [self] in
-                    environment.whenAlertsDismissed(reply)
+            replyWhenDone(reply)
+        }
+        return false
+    }
+
+    /// Calls `reply` once idle, the recovery done and the alerts dismissed, all at the same time: checked again
+    /// at the end, since the waits follow each other and the reply ends whatever runs then.
+    private func replyWhenDone(_ reply: @escaping () -> Void) {
+        whenIdle { [self] in
+            recovery.whenDone { [self] in
+                environment.whenAlertsDismissed { [self] in
+                    if state == .idle && !recovery.isRunning { reply() } else { replyWhenDone(reply) }
                 }
             }
         }
-        return false
     }
 
     private func stateChanged(of changed: RecordingSession, from old: RecordingState) {

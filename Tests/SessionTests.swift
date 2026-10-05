@@ -120,7 +120,7 @@ final class Rig {
     init(_ name: String) throws {
         folder = try Suite.folder(name)
         var environment = RecorderEnvironment()
-        environment.startRefused = { [journal] in journal.note("refused") }
+        environment.startRefused = { [journal] reason in journal.note(reason == .quitting ? "refused: quitting" : "refused") }
         environment.startAbandoned = { [journal] in journal.note("abandoned") }
         environment.tearDown = { [journal] in journal.note("tearDown") }
         var wasIdle = true
@@ -381,6 +381,23 @@ func sessionTests() async {
         expect(await rig.idle(), "idle")
         expectEqual(replies, 1, "one reply once idle, however often quitting was asked for")
         expectEqual(rig.journal.count("save"), 1, "saved once")
+    }
+
+    await test("session: no recording starts while a quit waits, and the quit goes ahead only when idle") {
+        let rig = try Rig("session-quit-pending")
+        try rig.start()
+        rig.holdSave = true
+        var replies = 0
+        expect(!rig.controller.canQuit { replies += 1 }, "does not quit while recording")
+        expect(await rig.wait { rig.controller.state == .finalizing }, "finalizing")
+        expect(!rig.controller.canStart(), "no start while quitting")
+        expectEqual(rig.journal.count("refused: quitting"), 1, "the user is told why")
+        expect(StatusDisplay(rig.controller.statusInput).detail.contains("quits"), "the status item says the app will quit")
+        rig.releaseSave()
+        expect(await rig.idle(), "idle")
+        expectEqual(replies, 1, "the quit goes ahead")
+        expect(rig.controller.begin(.screen) == nil, "and nothing can be started before it does")
+        expectEqual(rig.controller.state, .idle, "still idle")
     }
 
     await test("session: quitting while starting stops the recording when it runs, then replies") {

@@ -14,7 +14,10 @@ import ScreenCaptureKit
 private func scriptCanStart(_ command: NSScriptCommand) -> Bool {
     if withRecorder({ $0.canStart() }) { return true }
     command.scriptErrorNumber = errOSAGeneralError
-    command.scriptErrorString = withRecorder({ $0.isSaving }) ? "The previous recording is still being saved." : "Already recording!"
+    command.scriptErrorString = withRecorder { recorder in
+        if recorder.quitRequested { return "Holdfast is quitting." }
+        return recorder.isSaving ? "The previous recording is still being saved." : "Already recording!"
+    }
     return false
 }
 

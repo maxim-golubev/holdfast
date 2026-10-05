@@ -239,11 +239,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             menu.addItem(separator)
             add("Open Main Panel".local, symbol: "rectangle.on.rectangle", #selector(openMainPanel))
             menu.addItem(.separator())
-            add("Record System Audio".local, symbol: "waveform", #selector(recordSystemAudio))
-            add("Record Screen…".local, symbol: "tv.inset.filled", #selector(chooseScreen))
-            add("Record Screen Area…".local, symbol: "viewfinder", #selector(chooseArea))
-            add("Record Application…".local, symbol: "app", #selector(chooseApplication))
-            add("Record Window…".local, symbol: "macwindow", #selector(chooseWindow))
+            // Nothing can be started while the app waits to quit (`canStart`)
+            let starts = [
+                add("Record System Audio".local, symbol: "waveform", #selector(recordSystemAudio)),
+                add("Record Screen…".local, symbol: "tv.inset.filled", #selector(chooseScreen)),
+                add("Record Screen Area…".local, symbol: "viewfinder", #selector(chooseArea)),
+                add("Record Application…".local, symbol: "app", #selector(chooseApplication)),
+                add("Record Window…".local, symbol: "macwindow", #selector(chooseWindow)),
+            ]
+            starts.forEach { $0.isEnabled = !recorder.quitRequested }
             menu.addItem(.separator())
             add("Settings…".local, symbol: "gearshape", #selector(openSettings))
         }

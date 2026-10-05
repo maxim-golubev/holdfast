@@ -217,8 +217,13 @@ extension RecorderEnvironment {
         var app = RecorderEnvironment()
         // The status item reads the recorder itself, whatever it was that changed
         app.statusChanged = { _ in StatusItemController.shared.refresh() }
-        app.startRefused = {
-            UserNotice.showAlertLater(title: "Failed to Record".local, message: "The previous recording is still being saved. Start the new one when \"Saving…\" has gone from the menu bar.".local)
+        app.startRefused = { reason in
+            switch reason {
+            case .saving:
+                UserNotice.showAlertLater(title: "Failed to Record", message: "The previous recording is still being saved. Start the new one when \"Saving\" has gone from the menu bar.")
+            case .quitting:
+                UserNotice.showAlertLater(title: "Failed to Record", message: "Holdfast is quitting: it quits as soon as what it is saving or recovering is done, and a new recording would end with it. Open Holdfast again to record.")
+            }
         }
         app.startAbandoned = { closeAreaOverlay() }
         app.tearDown = {
