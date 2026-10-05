@@ -47,16 +47,17 @@ struct RecordingContext {
     var audioFileEnding: String { RecordingContext.fileEnding(for: audioFormat) }
     /// MP3 is recorded as AAC and converted afterwards
     var audioEncoder: String { audioFormat == .mp3 ? AudioFormat.aac.rawValue : audioFormat.rawValue }
-    /// The encoder settings of this recording's audio tracks
+    /// The encoder settings of this recording's audio tracks: of the video file, or of the audio files
     var audioSettings: [String: Any] {
-        return MovieWriter.audioSettings(format: audioFormat.rawValue, quality: audioQuality, videoFormat: videoFormat.rawValue)
+        return MovieWriter.audioSettings(format: audioFormat.rawValue, quality: audioQuality, videoFormat: audioOnly ? nil : videoFormat.rawValue)
     }
 
+    /// Core Audio writes Opus into a CAF file only: an .ogg file it cannot write, and one named so it cannot read
     private static func fileEnding(for format: AudioFormat) -> String {
         switch format {
         case .mp3, .aac, .alac: return "m4a"
         case .flac: return "flac"
-        case .opus: return "ogg"
+        case .opus: return "caf"
         }
     }
 

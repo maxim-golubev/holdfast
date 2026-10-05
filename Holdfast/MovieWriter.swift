@@ -207,11 +207,12 @@ final class MovieWriter {
         audioFile = try AVAudioFile(forWriting: systemAudioURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
     }
 
-    /// The encoder settings of an audio track. The defaults are the current settings; code that works on a
-    /// recording passes that recording's values instead (`RecordingContext.audioSettings`).
+    /// The encoder settings of an audio track. `videoFormat` is the container of a video recording, nil for an audio
+    /// file. The defaults are the current settings; code that works on a recording passes that recording's values
+    /// instead (`RecordingContext.audioSettings`).
     static func audioSettings(format: String = AppSettings.audioFormat.rawValue,
                               quality: Int = AppSettings.audioQuality.rawValue,
-                              videoFormat: String = AppSettings.videoFormat.rawValue) -> [String : Any] {
+                              videoFormat: String?) -> [String : Any] {
         var audioSettings: [String : Any] = [AVSampleRateKey : 48000, AVNumberOfChannelsKey : 2]
         let bitRate = quality * 1000
         switch format {
@@ -225,7 +226,8 @@ final class MovieWriter {
         case AudioFormat.flac.rawValue:
             audioSettings[AVFormatIDKey] = kAudioFormatFLAC
         case AudioFormat.opus.rawValue:
-            audioSettings[AVFormatIDKey] = videoFormat != VideoFormat.mp4.rawValue ? kAudioFormatOpus : kAudioFormatMPEG4AAC
+            // An .mp4 cannot hold Opus, so a video in one gets AAC; a .mov and the .caf of an audio file can
+            audioSettings[AVFormatIDKey] = videoFormat == VideoFormat.mp4.rawValue ? kAudioFormatMPEG4AAC : kAudioFormatOpus
             audioSettings[AVEncoderBitRateKey] =  bitRate
         default:
             // An unknown format must not cost the recording: AAC goes into every container used here

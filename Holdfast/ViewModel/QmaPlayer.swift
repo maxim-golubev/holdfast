@@ -527,11 +527,10 @@ class AudioPlayerManager: ObservableObject {
         }
     }
     
-    /// `audioQuality` and `videoFormat` default to the current settings; finishing a recording passes the ones it was
-    /// started with. `completion` is called once, when the export has ended, whether it worked or not.
+    /// `audioQuality` defaults to the current setting; finishing a recording passes the one it was started with.
+    /// `completion` is called once, when the export has ended, whether it worked or not.
     func saveFile(_ url: URL, saveAsMP3: Bool = false,
                   audioQuality: Int = AppSettings.audioQuality.rawValue,
-                  videoFormat: String = AppSettings.videoFormat.rawValue,
                   completion: (() -> Void)? = nil) {
         var url = url
         if url.pathExtension == "mp3" { url = url.deletingPathExtension() }
@@ -549,7 +548,7 @@ class AudioPlayerManager: ObservableObject {
                 self.playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
                 self.playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
                 
-                let audioSettings = MovieWriter.audioSettings(format: self.fileEncoder, quality: audioQuality, videoFormat: videoFormat)
+                let audioSettings = MovieWriter.audioSettings(format: self.fileEncoder, quality: audioQuality, videoFormat: nil)
                 let outputFormat = self.playerNode1.outputFormat(forBus: 0)
                 let outputFile = try AVAudioFile(forWriting: url, settings: audioSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
                 self.engine.stop()

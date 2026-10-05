@@ -335,6 +335,33 @@ func writerTests() async {
         expectClose(microphone, 2, within: 0.15, "microphone file")
     }
 
+    await test("Writer: every audio format records audio-only files that open, with and without a microphone") {
+        for audioFormat in ["aac", "alac", "flac", "opus", "mp3"] {
+            for videoFormat in ["mp4", "mov"] {
+                for microphone in [false, true] {
+                    let what = "\(audioFormat), video format \(videoFormat), \(microphone ? "with" : "without") microphone"
+                    let run = try TestRecording(folder: "writer-formats-\(audioFormat)-\(videoFormat)-\(microphone)", audioOnly: true, microphone: microphone,
+                                                settings: ["audioFormat": audioFormat, "videoFormat": videoFormat, "remuxAudio": false])
+                    try run.writer.prepareAudio()
+                    run.writer.startCapturing()
+                    try run.feed(from: 0, to: 1, video: false, mic: microphone)
+                    _ = try await run.close()
+                    expect(run.failures.isEmpty, "\(what): no failure: \(run.failures)")
+                    var files = [try require(run.recording.systemAudioURL, "system audio file")]
+                    if microphone { files.append(try require(run.recording.micAudioURL, "microphone file")) }
+                    for file in files {
+                        do {
+                            let read = try AVAudioFile(forReading: file)
+                            expectClose(Double(read.length) / read.fileFormat.sampleRate, 1, within: 0.15, "\(what): length of \(file.lastPathComponent)")
+                        } catch {
+                            expect(false, "\(what): \(file.lastPathComponent) does not open: \(error)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     await test("Writer: audio settings follow the format, and an unknown one is written as AAC") {
         func format(_ settings: [String: Any]) -> AudioFormatID? { settings[AVFormatIDKey] as? AudioFormatID }
         let aac = MovieWriter.audioSettings(format: "aac", quality: 192, videoFormat: "mp4")
@@ -347,6 +374,7 @@ func writerTests() async {
         expectEqual(format(MovieWriter.audioSettings(format: "flac", quality: 128, videoFormat: "mp4")), kAudioFormatFLAC, "flac")
         expectEqual(format(MovieWriter.audioSettings(format: "opus", quality: 128, videoFormat: "mov")), kAudioFormatOpus, "opus in a .mov")
         expectEqual(format(MovieWriter.audioSettings(format: "opus", quality: 128, videoFormat: "mp4")), kAudioFormatMPEG4AAC, "opus does not go into an .mp4")
+        expectEqual(format(MovieWriter.audioSettings(format: "opus", quality: 128, videoFormat: nil)), kAudioFormatOpus, "opus in an audio file, whatever the video format")
         expectEqual(format(MovieWriter.audioSettings(format: "wma", quality: 128, videoFormat: "mp4")), kAudioFormatMPEG4AAC, "an unknown format")
     }
 }

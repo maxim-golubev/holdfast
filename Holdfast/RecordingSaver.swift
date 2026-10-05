@@ -195,7 +195,7 @@ enum RecordingSaver {
                 audioPlayerManager.sysVol = document.info.sysVol
                 audioPlayerManager.micVol = document.info.micVol
                 // With the settings the recording was started with, not the current ones
-                audioPlayerManager.saveFile(recording.finalURL, saveAsMP3: document.info.exportMP3, audioQuality: recording.audioQuality, videoFormat: recording.videoFormat.rawValue, completion: completion)
+                audioPlayerManager.saveFile(recording.finalURL, saveAsMP3: document.info.exportMP3, audioQuality: recording.audioQuality, completion: completion)
             } else {
                 let body = String(format: "The recording was kept with separate audio files: %@".local, package.path)
                 UserNotice.showNotification(title: "Audio Mix Failed".local, body: body, id: "holdfast.error.\(UUID().uuidString)")
