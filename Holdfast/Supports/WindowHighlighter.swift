@@ -243,7 +243,7 @@ class WindowHighlighter {
     
     func getSCWindowWithID(_ windowID: UInt32?) -> SCWindow? {
         guard let windowID else { return nil }
-        _ = ScreenContent.updateAvailableContentSync()
+        ScreenContent.updateAvailableContentSync()
         let windows = ScreenContent.getWindows()
         return windows.first(where: { $0.windowID == windowID })
     }

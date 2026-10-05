@@ -46,7 +46,7 @@ struct ScreenSelector: View {
         } bar: {
             SelectorBar(autoStop: $autoStop, canStart: selected != nil, start: startRecording) {
                 SymbolButton("Refresh", symbol: "arrow.clockwise.circle.fill", color: .blue, help: "Look for the screens again") {
-                    viewModel.setupStreams()
+                    viewModel.reload()
                 }
             }
         }
@@ -66,69 +66,56 @@ struct ScreenSelector: View {
     }
 }
 
-class ScreenSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCStreamOutput {
-    @Published var screenThumbnails = [ScreenThumbnail]()
-    private var allScreens = [SCDisplay]()
-    private var streams = [SCStream]()
-    
-    override init() {
-        super.init()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.setupStreams()
-        }
+/// The screens that can be recorded, each with a picture of what is on it. A new `reload` drops whatever an older
+/// one was still doing.
+@MainActor
+final class ScreenSelectorViewModel: ObservableObject {
+    @Published private(set) var screenThumbnails = [ScreenThumbnail]()
+    private var generation = 0
+    private var pictures: Task<Void, Never>?
+
+    init() {
+        reload()
     }
-    
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        if CMSampleBufferGetImageBuffer(sampleBuffer) == nil { return }
-        if let index = self.streams.firstIndex(of: stream), index + 1 <= self.allScreens.count {
-            let currentScreen = self.allScreens[index]
-            let nsImage = sampleBuffer.nsImage ?? ScreenContent.getWallpaper(currentScreen) ?? NSImage.unknowScreen
-            let thumbnail = ScreenThumbnail(image: nsImage, screen: currentScreen)
-            DispatchQueue.main.async {
-                if !self.screenThumbnails.contains(where: { $0.screen == currentScreen }) { self.screenThumbnails.append(thumbnail) }
+
+    /// Fetches the screens, takes their pictures (a few, one after the other) and then shows them all at once
+    func reload() {
+        generation += 1
+        let run = generation
+        pictures?.cancel()
+        ScreenContent.updateAvailableContent { [weak self] in
+            guard let self, run == self.generation else { return }
+            let displays = ScreenContent.availableContent?.displays ?? []
+            let ownApp = ScreenContent.getSelf().map { [$0] } ?? []
+            self.pictures = Task { [weak self] in
+                var thumbnails = [ScreenThumbnail]()
+                for display in displays {
+                    let picture = await Self.picture(of: display, excluding: ownApp)
+                    thumbnails.append(ScreenThumbnail(image: picture ?? ScreenContent.getWallpaper(display) ?? .unknowScreen, screen: display))
+                }
+                guard let self, !Task.isCancelled else { return }
+                self.screenThumbnails = thumbnails
             }
-            self.streams[index].stopCapture()
         }
     }
 
-    func setupStreams() {
-        ScreenContent.updateAvailableContent {
-            Task {
-                do {
-                    self.streams.removeAll()
-                    DispatchQueue.main.async { self.screenThumbnails.removeAll() }
-                    guard let screens = ScreenContent.availableContent?.displays else { return }
-                    self.allScreens = screens
-                    let qrSelf = ScreenContent.getSelf().map { [$0] } ?? []
-                    let contentFilters = self.allScreens.map { SCContentFilter(display: $0, excludingApplications: qrSelf, exceptingWindows: []) }
-                    for (index, contentFilter) in contentFilters.enumerated() {
-                        let streamConfiguration = SCStreamConfiguration()
-                        streamConfiguration.width = Int(self.allScreens[index].frame.width)
-                        streamConfiguration.height = Int(self.allScreens[index].frame.height)
-                        streamConfiguration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(1))
-                        streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA
-                        streamConfiguration.capturesAudio = false
-                        streamConfiguration.showsCursor = false
-                        streamConfiguration.queueDepth = 3
-                        let stream = SCStream(filter: contentFilter, configuration: streamConfiguration, delegate: self)
-                        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .main)
-                        try await stream.startCapture()
-                        self.streams.append(stream)
-                    }
-                } catch {
-                    print("Get screenshot error：\(error)")
-                }
-            }
+    private static func picture(of display: SCDisplay, excluding ownApp: [SCRunningApplication]) async -> NSImage? {
+        let configuration = SCStreamConfiguration()
+        configuration.width = max(1, Int(display.frame.width))
+        configuration.height = max(1, Int(display.frame.height))
+        configuration.showsCursor = false
+        let filter = SCContentFilter(display: display, excludingApplications: ownApp, exceptingWindows: [])
+        do {
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            return NSImage(cgImage: image, size: .zero)
+        } catch {
+            print("No picture of display \(display.displayID): \(error.localizedDescription)")
+            return nil
         }
     }
 }
 
-class ScreenThumbnail {
+struct ScreenThumbnail {
     let image: NSImage
     let screen: SCDisplay
-
-    init(image: NSImage, screen: SCDisplay) {
-        self.image = image
-        self.screen = screen
-    }
 }

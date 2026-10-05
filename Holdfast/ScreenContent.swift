@@ -14,64 +14,47 @@ import ScreenCaptureKit
 enum ScreenContent {
     /// The area the area selector chose, which the next area recording captures
     static var screenArea: NSRect?
+    /// The screens, windows and applications of the last fetch. Assigned and read on the main thread only.
     static var availableContent: SCShareableContent?
     static let excludedApps = ["", "com.apple.dock", "com.apple.screencaptureui", "com.apple.controlcenter", "com.apple.notificationcenterui", "com.apple.systemuiserver", "com.apple.WindowManager", "dev.mnpn.Azayaka", "com.gaosun.eul", "com.pointum.hazeover", "net.matthewpalmer.Vanilla", "com.dwarvesv.minimalbar", "com.bjango.istatmenus.status"]
 
-    static func updateAvailableContentSync() -> SCShareableContent? {
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: SCShareableContent? = nil
+    private static func fetch(_ completion: @escaping (SCShareableContent?, Error?) -> Void) {
+        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false, completionHandler: completion)
+    }
 
-        updateAvailableContent { content in
-            result = content
+    /// Fetches the list again and calls `completion` on the main thread once `availableContent` holds it. A failed
+    /// fetch keeps the old list; a denied permission asks for it and quits instead of calling back.
+    static func updateAvailableContent(completion: @escaping @MainActor () -> Void) {
+        fetch { content, error in
+            DispatchQueue.main.async {
+                if let error {
+                    if case SCStreamError.userDeclined = error {
+                        requestPermissions()
+                        return
+                    }
+                    // The caller goes on with the list it has; a start that needs what is missing says so
+                    print("Failed to fetch the screens and windows: \(error.localizedDescription)")
+                } else {
+                    availableContent = content
+                    if content?.displays.isEmpty != false { print("There needs to be at least one display connected!") }
+                }
+                completion()
+            }
+        }
+    }
+
+    /// The same fetch for the main thread, which it blocks until the list is there: the launch and the click-a-window
+    /// picker, which need the list before they go on. A failed fetch keeps the old list and asks for nothing.
+    static func updateAvailableContentSync() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let semaphore = DispatchSemaphore(value: 0)
+        var fetched: SCShareableContent?
+        fetch { content, _ in
+            fetched = content
             semaphore.signal()
         }
-
         semaphore.wait()
-        return result
-    }
-    
-    private static func updateAvailableContent(completion: @escaping (SCShareableContent?) -> Void) {
-        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { [self] content, error in
-            if let error = error {
-                switch error {
-                case SCStreamError.userDeclined:
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
-                        self.updateAvailableContent() {_ in}
-                    }
-                default:
-                    print("Error: failed to fetch available content: ".local, error.localizedDescription)
-                }
-                completion(nil)
-                return
-            }
-
-            availableContent = content
-            if let displays = content?.displays, !displays.isEmpty {
-                completion(content)
-            } else {
-                print("There needs to be at least one display connected!".local)
-                completion(nil)
-            }
-        }
-    }
-    
-    static func updateAvailableContent(completion: @escaping () -> Void) {
-        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { content, error in
-            if let error = error {
-                switch error {
-                case SCStreamError.userDeclined:
-                    requestPermissions()
-                default:
-                    // The caller goes on with the list it has; a start that needs what is missing says so
-                    print("Error: failed to fetch available content: ".local, error.localizedDescription)
-                    completion()
-                }
-                return
-            }
-            availableContent = content
-            if content?.displays.isEmpty != false { print("There needs to be at least one display connected!".local) }
-            completion()
-        }
+        if let fetched { availableContent = fetched }
     }
     
     static func getSelf() -> SCRunningApplication? {
@@ -151,10 +134,11 @@ enum ScreenContent {
     
     private static func requestPermissions() {
         UserNotice.onMainRunLoop {
+            // macOS applies the permission when the app is opened again, so Holdfast quits either way
             let alert = createAlert(title: "Permission Required",
-                                                       message: "Holdfast needs screen recording permissions, even if you only intend on recording audio.",
-                                                       button1: "Open Settings",
-                                                       button2: "Cancel")
+                                    message: "Holdfast needs permission to record the screen, even to record audio only. Allow it in System Settings, then open Holdfast again. Holdfast quits now.",
+                                    button1: "Open System Settings",
+                                    button2: "Quit")
             if alert.runModal() == .alertFirstButtonReturn {
                 UserNotice.openPrivacySettings("Privacy_ScreenCapture")
             }

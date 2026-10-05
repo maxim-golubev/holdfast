@@ -188,7 +188,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     func applicationWillFinishLaunching(_ notification: Notification) {
-        _ = ScreenContent.updateAvailableContentSync()
+        ScreenContent.updateAvailableContentSync()
         
         let process = NSWorkspace.shared.runningApplications.filter({ $0.bundleIdentifier == Bundle.main.bundleIdentifier })
         if process.count > 1 {

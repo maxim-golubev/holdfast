@@ -87,25 +87,29 @@ struct AppSelector: View {
     }
 }
 
-class AppSelectorViewModel: ObservableObject {
-    @Published var allApps = [SCDisplay: [SCRunningApplication]]()
-    @Published var isReady = false
+/// The applications with a window on each display
+@MainActor
+final class AppSelectorViewModel: ObservableObject {
+    @Published private(set) var allApps = [SCDisplay: [SCRunningApplication]]()
+    @Published private(set) var isReady = false
     
     init() {
         updateAppList()
     }
     
     func updateAppList() {
-        ScreenContent.updateAvailableContent {
-            guard let screens = ScreenContent.availableContent?.displays else { return }
+        ScreenContent.updateAvailableContent { [weak self] in
+            guard let self, let screens = ScreenContent.availableContent?.displays else { return }
+            var list = [SCDisplay: [SCRunningApplication]]()
             for screen in screens {
                 var apps = [SCRunningApplication]()
                 let windows = ScreenContent.getWindows().filter({ NSIntersectsRect(screen.frame, $0.frame) })
-                for app in windows.compactMap({ $0.owningApplication }) { if !apps.contains(app) { apps.append(app) }}
-                if AppSettings.hideSelf { apps = apps.filter({$0.bundleIdentifier != Bundle.main.bundleIdentifier}) }
-                DispatchQueue.main.async { self.allApps[screen] = apps }
+                for app in windows.compactMap({ $0.owningApplication }) where !apps.contains(app) { apps.append(app) }
+                if AppSettings.hideSelf { apps = apps.filter({ $0.bundleIdentifier != Bundle.main.bundleIdentifier }) }
+                list[screen] = apps
             }
-            DispatchQueue.main.async { self.isReady = true }
+            self.allApps = list
+            self.isReady = true
         }
     }
 }
