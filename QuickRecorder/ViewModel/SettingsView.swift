@@ -74,7 +74,8 @@ struct GeneralView: View {
             }
         }
         .onAppear{ launchAtLogin = (SMAppService.mainApp.status == .enabled) }
-        .onChange(of: showMenubar) { _ in updateStatusBar() }
+        // Once the setting is stored
+        .onChange(of: showMenubar) { _ in DispatchQueue.main.async { StatusItemController.shared.refresh() } }
         .onChange(of: showOnDock) { newValue in
             if !newValue {
                 NSApp.setActivationPolicy(.accessory)
@@ -92,7 +93,6 @@ struct RecorderView: View {
     @AppStorage(AppSettings.$includeMenuBar)   private var includeMenuBar: Bool
     @AppStorage(AppSettings.$hideDesktopFiles) private var hideDesktopFiles: Bool
     @AppStorage(AppSettings.$trimAfterRecord)  private var trimAfterRecord: Bool
-    @AppStorage(AppSettings.$miniStatusBar)    private var miniStatusBar: Bool
     @AppStorage(AppSettings.$hideSelf)         private var hideSelf: Bool
     @AppStorage(AppSettings.$preventSleep)     private var preventSleep: Bool
     @AppStorage(AppSettings.$showPreview)      private var showPreview: Bool
@@ -104,8 +104,6 @@ struct RecorderView: View {
                 SSteper("Delay Before Recording", value: $countdown, min: 0, max: 99)
             }
             SGroupBox {
-                SToggle("Mini size Menu Bar controller", isOn: $miniStatusBar)
-                SDivider()
                 SToggle("Prevent Mac from sleeping while recording", isOn: $preventSleep)
                 SDivider()
                 SToggle("Show floating preview after recording", isOn: $showPreview)
@@ -215,6 +213,8 @@ struct HotkeyView: View {
                 SItem(label: "Stop Recording") { KeyboardShortcuts.Recorder("", name: .stop) }
                 SDivider()
                 SItem(label: "Pause / Resume") { KeyboardShortcuts.Recorder("", name: .pauseResume) }
+                SDivider()
+                SItem(label: "Mute / Unmute Microphone") { KeyboardShortcuts.Recorder("", name: .muteMicrophone) }
             }
             SGroupBox {
                 SItem(label: "Record System Audio") { KeyboardShortcuts.Recorder("", name: .startWithAudio) }
@@ -256,6 +256,7 @@ extension KeyboardShortcuts.Name {
     static let screenMagnifier = Self("screenMagnifier")
     static let saveFrame = Self("saveFrame")
     static let pauseResume = Self("pauseResume")
+    static let muteMicrophone = Self("muteMicrophone")
     static let stop = Self("stop")
     static let showPanel = Self("showPanel")
 }

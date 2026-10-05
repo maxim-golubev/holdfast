@@ -23,7 +23,6 @@ func settingsTests() async {
         }
         check(AppSettings.$showOnDock, "showOnDock", true)
         check(AppSettings.$showMenubar, "showMenubar", false)
-        check(AppSettings.$miniStatusBar, "miniStatusBar", false)
         check(AppSettings.$countdown, "countdown", 0)
         check(AppSettings.$preventSleep, "preventSleep", true)
         check(AppSettings.$showPreview, "showPreview", true)

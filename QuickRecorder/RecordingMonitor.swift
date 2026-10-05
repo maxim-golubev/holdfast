@@ -171,7 +171,15 @@ final class RecordingMonitor {
 
         var micProblem: String?
         var level: Int?
-        if writer.hasMicrophoneTrack {
+        if writer.hasMicrophoneTrack, writer.isMicrophoneMuted {
+            // Silence the user asked for is no problem to report. The time muted does not count towards a
+            // warning afterwards either, and a warning that was up goes without a "Microphone Is Back".
+            micHeard = now
+            micSound = now
+            micWarning = nil
+            micPeak = 0
+            level = 0
+        } else if writer.hasMicrophoneTrack {
             if seconds(from: micHeard ?? sessionStart, to: now) > silentSeconds {
                 micProblem = String(format: "No audio has arrived from the microphone for %d seconds. The recording continues with silence in its place until the microphone comes back.".local, Int(silentSeconds))
             } else if seconds(from: micSound ?? sessionStart, to: now) > zeroSeconds {

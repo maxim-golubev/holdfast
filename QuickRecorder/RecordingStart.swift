@@ -224,22 +224,12 @@ extension RecorderController {
 }
 
 extension RecorderEnvironment {
-    /// The app around the recorder: the status bar, the windows of a recording, alerts and notifications
+    /// The app around the recorder: the status item, the windows of a recording, alerts and notifications
     static var app: RecorderEnvironment {
         var app = RecorderEnvironment()
-        app.refreshStatusItem = { updateStatusBar() }
-        app.statusChanged = { recorder in
-            let shown = RecordingHealth.shared
-            let health = recorder.health
-            if shown.saving != recorder.isSaving { shown.saving = recorder.isSaving }
-            if shown.warning != health.warning { shown.warning = health.warning }
-            if shown.micLevel != health.micLevel { shown.micLevel = health.micLevel }
-            if shown.mixProgress != health.mixProgress { shown.mixProgress = health.mixProgress }
-            if shown.recoveryProgress != recorder.recovery.progress { shown.recoveryProgress = recorder.recovery.progress }
-            if PopoverState.shared.isPaused != recorder.isPaused { PopoverState.shared.isPaused = recorder.isPaused }
-        }
-        // The floating controller stayed open to show "Saving…" where the menu bar is not visible
-        app.becameIdle = { controlPanel.close() }
+        // The status item reads the recorder itself, whatever it was that changed
+        app.refreshStatusItem = { StatusItemController.shared.refresh() }
+        app.statusChanged = { _ in StatusItemController.shared.refresh() }
         app.startRefused = {
             UserNotice.showAlertLater(title: "Failed to Record".local, message: "The previous recording is still being saved. Start the new one when \"Saving…\" has gone from the menu bar.".local)
         }
@@ -250,8 +240,6 @@ extension RecorderEnvironment {
             AppDelegate.shared.stopGlobalMouseMonitor()
             AppDelegate.shared.stopRecordingMouseMonitor()
             closeAreaOverlay()
-            // The floating controller stays for the "Saving…" pill; it is closed when the recorder is idle again
-            hideMousePointer = false
         }
         app.save = { session, recording, taken, earlyReason, cancelled in
             await RecordingSaver.save(session, recording: recording, taken: taken, earlyReason: earlyReason, cancelled: cancelled)

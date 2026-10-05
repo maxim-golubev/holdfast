@@ -11,7 +11,7 @@ import Foundation
 
 /// Times on the writer's timeline, and how they are shown
 enum Timeline {
-    /// "07:05" up to an hour, "1:07:05" from then on. The status bar makes room for the longer form (`getStatusBarWidth`).
+    /// "07:05" up to an hour, "1:07:05" from then on.
     static func lengthText(_ interval: TimeInterval) -> String {
         let total = interval.isFinite ? max(0, Int(interval)) : 0
         let hours = total / 3600, minutes = total % 3600 / 60, seconds = total % 60

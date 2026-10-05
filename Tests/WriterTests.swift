@@ -222,6 +222,55 @@ func writerTests() async {
         expect(try require(tracks.audio.last, "microphone").end > 3.2, "the microphone track is padded to the end of the recording")
     }
 
+    await test("Writer: a muted microphone is written as silence of the same length, and comes back at its own time") {
+        let run = try TestRecording(folder: "writer-mute")
+        let writer = run.writer
+        let converter = try require(writer.micConverter, "converter")
+        let rate = Double(MicConverter.sampleRate)
+        try writer.prepareVideo(width: 320, height: 240)
+        writer.startCapturing()
+        try run.feed(from: 0, to: 1)
+        let before = converter.buffersIn
+        expectEqual(converter.silenceFrames, 0, "no silence while the microphone delivers")
+
+        // A mute as short as one buffer: what follows it must not move up into its place
+        writer.setMicrophoneMuted(true)
+        expect(writer.isMicrophoneMuted, "muted")
+        try run.feed(from: 1, to: 1.1)
+        expectEqual(converter.buffersIn, before, "a muted buffer does not reach the track")
+        writer.setMicrophoneMuted(false)
+        try run.feed(from: 1.1, to: 2)
+        expectClose(Double(converter.silenceFrames) / rate, 0.1, within: 0.02, "the muted tenth of a second is silence")
+        // The resampler hands its output on in blocks, so the end of the track is up to a block behind
+        expectClose(converter.lag(behind: run.at(2)), 0, within: 0.05, "and the track is where the recording is")
+
+        // A longer one: the microphone goes on delivering, the monitor keeps the track going a second behind
+        writer.setMicrophoneMuted(true)
+        try run.feed(from: 2, to: 4)
+        expectEqual(converter.buffersIn, before + 9, "nothing of the microphone is taken while muted")
+        run.until({ converter.lag(behind: run.at(3)) < 0.001 }) { writer.fillMicrophone(upTo: run.at(3)) }
+        expectClose(converter.lag(behind: run.at(3)), 0, within: 0.001, "the track is continued with silence")
+        expect(run.microphoneEnd.map { CMTimeGetSeconds($0) < TestRecording.base + 2.05 } ?? false, "which is not reported as microphone audio")
+        writer.setMicrophoneMuted(false)
+        try run.feed(from: 4, to: 5)
+        expectClose(Double(converter.silenceFrames) / rate, 2.1, within: 0.05, "silence for as long as it was muted")
+        expectClose(Double(converter.framesWritten) / rate, 2.9, within: 0.1, "real audio before, between and after")
+        expectClose(converter.lag(behind: run.at(5)), 0, within: 0.05, "the microphone is back at its own time")
+        expectEqual(converter.buffersDropped, 0, "nothing was dropped on the way back")
+
+        _ = try await run.close()
+        expect(run.failures.isEmpty, "no failure: \(run.failures)")
+        let tracks = try await TestRecording.tracks(of: run.recording.rawURL)
+        let microphone = try require(tracks.audio.last, "microphone")
+        expectClose(microphone.start, 0, within: 0.1, "the microphone track starts with the file")
+        expectClose(microphone.end, 5, within: 0.25, "and is as long as the recording, the mute included")
+        expect(RecLog.lines.contains("Microphone muted by the user") && RecLog.lines.contains("Microphone unmuted by the user"), "the log says that the silence was asked for")
+
+        let plain = try TestRecording(folder: "writer-mute-none", microphone: false)
+        plain.writer.setMicrophoneMuted(true)
+        expect(!plain.writer.isMicrophoneMuted, "a recording without a microphone has nothing to mute")
+    }
+
     await test("Writer: without a complete frame there is no session, and a failure is reported once") {
         let run = try TestRecording(folder: "writer-empty")
         let writer = run.writer

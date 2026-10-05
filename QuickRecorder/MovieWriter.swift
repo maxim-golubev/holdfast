@@ -70,6 +70,8 @@ final class MovieWriter {
     private(set) var isPaused = false
     /// Set when a pause ends, until the first time after it has been put on the timeline
     private(set) var isResume = false
+    /// While set, what the microphone delivers is left out of its track, which goes on as silence
+    private(set) var isMicrophoneMuted = false
     /// Latest end time of anything on the timeline, including what was written in place of a silent source
     private(set) var lastPTS: CMTime?
     /// Total paused time, subtracted from every buffer's timestamps
@@ -252,6 +254,18 @@ final class MovieWriter {
         return isPaused
     }
 
+    /// Mutes the microphone track or gives it its audio back. While muted the microphone's buffers are not
+    /// written: the track is continued like that of a microphone that delivers nothing, with the silence the
+    /// monitor asks for (`fillMicrophone`), and the first buffer after the mute is placed at its own time, behind
+    /// silence up to it (`MicConverter.convert`). The timeline never has a hole.
+    func setMicrophoneMuted(_ muted: Bool) {
+        guard muted != isMicrophoneMuted, micConverter != nil else { return }
+        isMicrophoneMuted = muted
+        // To the sample, not within the tolerance of a jitter: a short mute must not move what follows it
+        micConverter?.realign()
+        RecLog.write(muted ? "Microphone muted by the user" : "Microphone unmuted by the user")
+    }
+
     /// The one way a recording ends when it cannot go on: nothing more is appended, and the owner is told why,
     /// once. It stops the recording, which closes the file as far as possible.
     func fail(_ reason: String) {
@@ -356,7 +370,7 @@ final class MovieWriter {
                 writeAudioToTrack(sampleBuffer, rawPTS: rawPTS, from: pts, to: endPTS)
             }
         case .microphone:
-            guard sessionStart != nil, let micInput = micInput, let converter = micConverter else { return }
+            guard sessionStart != nil, !isMicrophoneMuted, let micInput = micInput, let converter = micConverter else { return }
             let written = converter.convert(sampleBuffer, at: pts) { buffer in
                 append(buffer, to: micInput)
             }

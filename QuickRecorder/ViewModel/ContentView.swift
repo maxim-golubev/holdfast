@@ -10,7 +10,6 @@ import AVFoundation
 import ScreenCaptureKit
 
 struct ContentView: View {
-    var fromStatusBar = false
     @State private var window: NSWindow?
     @State private var xmarkGlowing = false
     @State private var infoGlowing = false
@@ -26,22 +25,15 @@ struct ContentView: View {
         ZStack(alignment: Alignment(horizontal: .leading, vertical: .top)) {
             ZStack {
                 ZStack {
-                    if !fromStatusBar {
-                        Color.clear
-                            .background(.ultraThinMaterial)
-                            .environment(\.controlActiveState, .active)
-                    }
+                    Color.clear
+                        .background(.ultraThinMaterial)
+                        .environment(\.controlActiveState, .active)
                 }.cornerRadius(14)
                 HStack {
-                    if !fromStatusBar { Spacer() }
+                    Spacer()
                     ZStack(alignment: Alignment(horizontal: .center, vertical: .bottom)) {
                         Button(action: {
-                            if let display = ScreenContent.getSCDisplayWithMouse() {
-                                closeMainWindow()
-                                appDelegate.createCountdownPanel(screen: display) {
-                                    RecorderController.shared.start(type: "audio", screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil)
-                                }
-                            }
+                            appDelegate.recordSystemAudio()
                         }, label: {
                             SelectorView(title: "System Audio".local, symbol: "waveform").cornerRadius(8)
                         }).buttonStyle(.plain)
@@ -61,6 +53,8 @@ struct ContentView: View {
                                     }
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityLabel("Record Microphone".local)
+                                .accessibilityValue(recordMic ? "On".local : "Off".local)
                                 .onChange(of: recordMic) { _ in  Task { await MicSelection.performMicCheck() }}
                                 .disabled(micList.isEmpty)
                                 Image(systemName: "mic.fill")
@@ -94,43 +88,26 @@ struct ContentView: View {
                     }
                     Divider().frame(height: 70)
                     Button(action: {
-                        closeMainWindow()
-                        appDelegate.createNewWindow(view: ScreenSelector(), title: "Screen Selector".local)
+                        appDelegate.chooseScreen()
                     }, label: {
                         SelectorView(title: "Screen".local, symbol: "tv.inset.filled").cornerRadius(8)
                     }).buttonStyle(.plain)
                     Divider().frame(height: 70)
                     Button(action: {
-                        closeMainWindow()
-                        ScreenContent.updateAvailableContent {
-                            DispatchQueue.main.async {
-                                appDelegate.showAreaSelector(size: NSSize(width: 600, height: 450))
-                                var currentDisplay = ScreenContent.getSCDisplayWithMouse()
-                                mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .rightMouseDown, .leftMouseDown, .otherMouseDown]) { event in
-                                    let display = ScreenContent.getSCDisplayWithMouse()
-                                    if display != currentDisplay {
-                                        currentDisplay = display
-                                        closeAllWindow()
-                                        appDelegate.showAreaSelector(size: NSSize(width: 600, height: 450))
-                                    }
-                                }
-                            }
-                        }
+                        appDelegate.chooseArea()
                     }, label: {
                         SelectorView(title: "Screen Area".local, symbol: "viewfinder").cornerRadius(8)
                     }).buttonStyle(.plain)
                     Divider().frame(height: 70)
                     Button(action: {
-                        closeMainWindow()
-                        appDelegate.createNewWindow(view: AppSelector(), title: "App Selector".local, identifier: .appSelector)
+                        appDelegate.chooseApplication()
                     }, label: {
                         SelectorView(title: "Application".local, symbol: "app", symbolSize: 38, overlayer: "App")
                             .cornerRadius(8)
                     }).buttonStyle(.plain)
                     Divider().frame(height: 70)
                     Button(action: {
-                        closeMainWindow()
-                        appDelegate.createNewWindow(view: WinSelector(), title: "Window Selector".local, identifier: .windowSelector)
+                        appDelegate.chooseWindow()
                     }, label: {
                         SelectorView(title: "Window".local, symbol: "macwindow").cornerRadius(8)
                     }).buttonStyle(.plain)
@@ -141,7 +118,7 @@ struct ContentView: View {
                     }, label: {
                         SelectorView(title: "Preferences".local, symbol: "gearshape").cornerRadius(8)
                     }).buttonStyle(.plain)
-                    if fromStatusBar || (!showOnDock && !showMenubar) {
+                    if !showOnDock && !showMenubar {
                         Divider().frame(height: 70)
                         Button(action: {
                             NSApp.terminate(self)
@@ -151,22 +128,21 @@ struct ContentView: View {
                                 .foregroundStyle(.darkMyRed)
                         }).buttonStyle(.plain)
                     }
-                    if !fromStatusBar { Spacer() }
-                }.padding(.vertical, 10).padding(.horizontal, fromStatusBar ? 10 : 20)
+                    Spacer()
+                }.padding(.vertical, 10).padding(.horizontal, 20)
             }
-            if !fromStatusBar {
-                Button(action: {
-                    closeMainWindow()
-                }, label: {
-                    Image(systemName: "x.circle")
-                        .font(.system(size: 13, weight: .bold))
-                        .opacity(xmarkGlowing ? 1.0 : 0.4)
-                        .foregroundStyle(.secondary)
-                        .onHover{ hovering in xmarkGlowing = hovering }
-                })
-                .buttonStyle(.plain)
-                .padding([.horizontal, .top], 7)
-            }
+            Button(action: {
+                closeMainWindow()
+            }, label: {
+                Image(systemName: "x.circle")
+                    .font(.system(size: 13, weight: .bold))
+                    .opacity(xmarkGlowing ? 1.0 : 0.4)
+                    .foregroundStyle(.secondary)
+                    .onHover{ hovering in xmarkGlowing = hovering }
+            })
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close".local)
+            .padding([.horizontal, .top], 7)
         }.focusable(false)
     }
 }
@@ -261,6 +237,49 @@ struct CountdownView: View {
 
 
 extension AppDelegate {
+    // What the tiles of the main panel and the items of the status item's menu do
+
+    func recordSystemAudio() {
+        guard let display = ScreenContent.getSCDisplayWithMouse() else { return }
+        closeMainWindow()
+        createCountdownPanel(screen: display) {
+            withRecorder { $0.start(type: "audio", screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil) }
+        }
+    }
+
+    func chooseScreen() {
+        closeMainWindow()
+        createNewWindow(view: ScreenSelector(), title: "Screen Selector".local)
+    }
+
+    func chooseArea() {
+        closeMainWindow()
+        ScreenContent.updateAvailableContent {
+            DispatchQueue.main.async { [self] in
+                showAreaSelector(size: NSSize(width: 600, height: 450))
+                var currentDisplay = ScreenContent.getSCDisplayWithMouse()
+                mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .rightMouseDown, .leftMouseDown, .otherMouseDown]) { [self] event in
+                    let display = ScreenContent.getSCDisplayWithMouse()
+                    if display != currentDisplay {
+                        currentDisplay = display
+                        closeAllWindow()
+                        showAreaSelector(size: NSSize(width: 600, height: 450))
+                    }
+                }
+            }
+        }
+    }
+
+    func chooseApplication() {
+        closeMainWindow()
+        createNewWindow(view: AppSelector(), title: "App Selector".local, identifier: .appSelector)
+    }
+
+    func chooseWindow() {
+        closeMainWindow()
+        createNewWindow(view: WinSelector(), title: "Window Selector".local, identifier: .windowSelector)
+    }
+
     func showAreaSelector(size: NSSize, noPanel: Bool = false) {
         guard let scDisplay = ScreenContent.getSCDisplayWithMouse() else { return }
         guard let screen = scDisplay.nsScreen else { return }

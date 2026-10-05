@@ -16,6 +16,7 @@ sources=(
   QuickRecorder/RecordingMonitor.swift
   QuickRecorder/RecordingRecovery.swift
   QuickRecorder/RecordingSession.swift
+  QuickRecorder/StatusDisplay.swift
   QuickRecorder/Supports/DiskSpace.swift
   Tests/*.swift
 )

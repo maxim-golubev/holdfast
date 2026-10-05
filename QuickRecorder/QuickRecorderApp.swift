@@ -17,15 +17,10 @@ import VideoToolbox
 
 var scPerm = false
 let fd = FileManager.default
-var statusBarItem: NSStatusItem!
 var mouseMonitor: Any?
 var keyMonitor: Any?
-var hideMousePointer = false
-var hideScreenMagnifier = false
-let updateTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 let mousePointer = NSWindow(contentRect: NSRect(x: -70, y: -70, width: 70, height: 70), styleMask: [.borderless], backing: .buffered, defer: false)
 let screenMagnifier = NSWindow(contentRect: NSRect(x: -402, y: -402, width: 402, height: 348), styleMask: [.borderless], backing: .buffered, defer: false)
-let controlPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
 let countdownPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 120), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
 let previewWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 266, height: 156), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
 
@@ -96,7 +91,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     func mousePointerReLocation(event: NSEvent) {
         if event.type == .scrollWheel { return }
-        if !AppSettings.highlightMouse || hideMousePointer || withRecorder({ !$0.hasStream || $0.streamType == .window }) {
+        if !AppSettings.highlightMouse || withRecorder({ !$0.hasStream || $0.streamType == .window }) {
             mousePointer.orderOut(nil)
             return
         }
@@ -117,7 +112,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     func screenMagnifierReLocation(event: NSEvent) {
-        if !withRecorder({ $0.isMagnifierEnabled }) || hideScreenMagnifier { screenMagnifier.orderOut(nil); return }
+        if !withRecorder({ $0.isMagnifierEnabled }) { screenMagnifier.orderOut(nil); return }
         // Captures are asynchronous: run one at a time and keep only the latest event that arrived meanwhile
         if isMagnifierCapturing { pendingMagnifierEvent = event; return }
         isMagnifierCapturing = true
@@ -126,7 +121,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let rect = NSRect(x: mouseLocation.x - 67, y: mouseLocation.y - 58, width: 134, height: 116)
         NSImage.createScreenShot(of: rect) { [self] image in
             isMagnifierCapturing = false
-            if let image, withRecorder({ $0.isMagnifierEnabled }), !hideScreenMagnifier {
+            if let image, withRecorder({ $0.isMagnifierEnabled }) {
                 screenMagnifier.contentView = NSHostingView(rootView: ScreenMagnifier(screenShot: image, event: event))
                 screenMagnifier.setFrameOrigin(origin)
                 screenMagnifier.orderFront(nil)
@@ -233,9 +228,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             if let error = error { print("Notification authorization denied: \(error.localizedDescription)") }
         }
         
-        statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusBarItem.button?.image = NSImage()
-
         mousePointer.title = WindowTitle.mousePointer
         mousePointer.level = .screenSaver
         mousePointer.ignoresMouseEvents = true
@@ -254,14 +246,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         countdownPanel.isReleasedWhenClosed = false
         countdownPanel.isMovableByWindowBackground = false
         countdownPanel.backgroundColor = NSColor.clear
-        
-        controlPanel.title = "Recording Controller".local
-        controlPanel.level = .floating
-        controlPanel.titleVisibility = .hidden
-        controlPanel.backgroundColor = NSColor.clear
-        controlPanel.isReleasedWhenClosed = false
-        controlPanel.titlebarAppearsTransparent = true
-        controlPanel.isMovableByWindowBackground = true
         
         previewWindow.level = .statusBar
         previewWindow.titlebarAppearsTransparent = true
@@ -282,6 +266,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // During a countdown there is no recording yet: the pending start is cancelled, as its Cancel button does
         KeyboardShortcuts.onKeyDown(for: .stop) { [self] in if !cancelCountdown() { withRecorder { $0.stop() } } }
         KeyboardShortcuts.onKeyDown(for: .pauseResume) { withRecorder { if $0.hasStream { $0.togglePause() } } }
+        KeyboardShortcuts.onKeyDown(for: .muteMicrophone) { withRecorder { $0.toggleMicrophoneMute() } }
         KeyboardShortcuts.onKeyDown(for: .startWithAudio) {
             withRecorder { recorder in
                 guard recorder.canStart() else { return }
@@ -312,7 +297,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 }
             }
         }
-        updateStatusBar()
+        withRecorder { _ in StatusItemController.shared.install() }
     }
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -346,12 +331,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                     mainPanel.setFrameOrigin(NSPoint(x: wX, y: wY))
                 }
                 mainPanel.makeKeyAndOrderFront(self)
-                PopoverState.shared.isShowing = false
             }
         }
         return false
     }
     
+    /// The status item's commands under the Dock icon too, which is there when the status item is out of sight
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        return withRecorder { _ in StatusItemController.shared.dockMenu() }
+    }
+
     func openSettingPanel() {
         NSApp.activate(ignoringOtherApps: true)
         // SwiftUI gives the Settings item a private action, so it can only be triggered through the app menu.
@@ -399,20 +388,6 @@ func findNSSplitVIew(view: NSView?) -> NSSplitView? {
         for subview in current.subviews { queue.append(subview) }
     }
     return nil
-}
-
-@MainActor
-func getStatusBarWidth() -> CGFloat {
-    let recorder = RecorderController.shared
-    // "Saving…" or "Finishing… 100%" while a stopped recording is being closed and post-processed
-    if recorder.isSaving { return 124.0 }
-    // "Recovering… 100%" while a recording of an earlier run is being mixed
-    if recorder.streamType == nil { return recorder.showsRecovery ? 136.0 : 36.0 }
-    let width = AppSettings.miniStatusBar ? 68.0 : 114.0
-    // The widths above are made for a timer that reads "07:05". From the first hour on it reads "1:07:05",
-    // and every character more needs its own room (15 pt monospaced digits are about 9 pt wide).
-    let extraCharacters = max(0, recorder.recordingLength().count - 5)
-    return width + (Double(extraCharacters) * 9.5).rounded(.up)
 }
 
 func tips(_ message: String, title: String? = nil, id: String, buttonTitle: String = "OK", switchButton: Bool = false, width: Int? = nil, action: (() -> Void)? = nil) {

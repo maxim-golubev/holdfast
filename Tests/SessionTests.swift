@@ -51,22 +51,25 @@ final class FakeWriter: RecordingWriter {
     private(set) var isCapturing = false
     private(set) var isPaused = false
     private(set) var written = 0
+    private(set) var isMicrophoneMuted = false
     let isResume = false
-    let sessionStart: CMTime? = nil
-    let clockAnchor: (raw: CMTime, uptime: UInt64)? = nil
+    /// Set by a test of the monitor, which does nothing before the writer's session has started
+    var sessionStart: CMTime?
+    var clockAnchor: (raw: CMTime, uptime: UInt64)?
     let audioEndPTS: CMTime? = nil
     let hasSystemAudio = false
-    let hasMicrophoneTrack = false
+    var hasMicrophoneTrack: Bool { recording.recordMic }
 
-    init(_ journal: Journal, queue: DispatchQueue, folder: URL) {
+    init(_ journal: Journal, queue: DispatchQueue, folder: URL, microphone: Bool = false) {
         self.journal = journal
         self.queue = queue
-        recording = RecordingContext(audioOnly: false, recordMic: false, fastStart: false, saveDirectory: folder.path)
+        recording = RecordingContext(audioOnly: false, recordMic: microphone, fastStart: false, saveDirectory: folder.path)
     }
 
     private func onQueue() { dispatchPrecondition(condition: .onQueue(queue)) }
     func startCapturing() { onQueue(); isCapturing = true; journal.note("writer.start") }
     func togglePause() -> Bool { onQueue(); isPaused.toggle(); return isPaused }
+    func setMicrophoneMuted(_ muted: Bool) { onQueue(); isMicrophoneMuted = muted; journal.note(muted ? "writer.mute" : "writer.unmute") }
     func write(_ sample: CaptureSample) { onQueue(); written += 1 }
     func checkWriter() -> Bool { onQueue(); return true }
     func timelineTime(_ raw: CMTime) -> CMTime { onQueue(); return raw }
@@ -131,9 +134,9 @@ final class Rig {
 
     /// What the app does between an accepted start and the running capture
     @discardableResult
-    func start(autoStop: Int = 0, enter: Bool = true) throws -> (session: RecordingSession, capture: FakeCapture, writer: FakeWriter) {
+    func start(autoStop: Int = 0, enter: Bool = true, microphone: Bool = false) throws -> (session: RecordingSession, capture: FakeCapture, writer: FakeWriter) {
         let session = try require(controller.begin(.screen, autoStop: autoStop), "an accepted start")
-        let writer = FakeWriter(journal, queue: queue, folder: folder)
+        let writer = FakeWriter(journal, queue: queue, folder: folder, microphone: microphone)
         session.install(writer)
         let capture = FakeCapture(journal)
         session.attach(capture)
@@ -145,17 +148,23 @@ final class Rig {
 
     /// Lets the main queue and the session's tasks run until `condition` holds; false after 3 s
     func wait(for condition: @MainActor () -> Bool) async -> Bool {
-        let deadline = Date().addingTimeInterval(3)
-        while !condition() {
-            if Date() > deadline { return false }
-            try? await Task.sleep(nanoseconds: 2_000_000)
-        }
-        return true
+        return await waitUntil(condition)
     }
 
     func idle() async -> Bool { await wait { self.controller.state == .idle } }
     /// Long enough for anything that was wrongly set off to show
     func settle() async { try? await Task.sleep(nanoseconds: 150_000_000) }
+}
+
+/// Lets the main queue and the queues of the code under test run until `condition` holds; false after 3 s
+@MainActor
+func waitUntil(_ condition: @MainActor () -> Bool) async -> Bool {
+    let deadline = Date().addingTimeInterval(3)
+    while !condition() {
+        if Date() > deadline { return false }
+        try? await Task.sleep(nanoseconds: 2_000_000)
+    }
+    return true
 }
 
 @MainActor
@@ -387,5 +396,64 @@ func sessionTests() async {
         expect(await rig.idle(), "idle")
         rig.controller.togglePause()
         expect(!rig.controller.isPaused, "nothing to pause when idle")
+    }
+
+    await test("session: the microphone is muted for one recording, and only one that has a microphone") {
+        let rig = try Rig("session-mute")
+        expect(!rig.controller.setMicrophoneMuted(true), "nothing to mute when idle")
+        let plain = try rig.start()
+        expect(!rig.controller.canMuteMicrophone, "a recording without a microphone track has nothing to mute")
+        expect(!rig.controller.setMicrophoneMuted(true) && !plain.writer.isMicrophoneMuted, "and is not muted")
+        rig.controller.stop()
+        expect(await rig.idle(), "idle")
+
+        let (session, _, writer) = try rig.start(enter: false, microphone: true)
+        expect(!rig.controller.setMicrophoneMuted(true), "not while the recording is still starting")
+        session.enterRecording()
+        expect(rig.controller.canMuteMicrophone && !rig.controller.isMicrophoneMuted, "a recording starts with its microphone on")
+        expect(rig.controller.setMicrophoneMuted(true), "muted")
+        expect(rig.controller.isMicrophoneMuted && writer.isMicrophoneMuted, "the writer is told on its queue")
+        expect(rig.controller.setMicrophoneMuted(true), "muting twice is no error")
+        rig.controller.toggleMicrophoneMute()
+        expect(!rig.controller.isMicrophoneMuted && !writer.isMicrophoneMuted, "unmuted")
+        rig.controller.toggleMicrophoneMute()
+        expect(rig.controller.isMicrophoneMuted, "muted again")
+        expect(rig.controller.state == .recording, "the recording goes on meanwhile")
+        rig.controller.stop()
+        expect(!rig.controller.setMicrophoneMuted(false), "nothing to change once the recording is stopped")
+        expect(await rig.idle(), "idle")
+        expect(!rig.controller.isMicrophoneMuted, "the mute went with its recording")
+        let next = try rig.start(microphone: true)
+        expect(!rig.controller.isMicrophoneMuted && !next.writer.isMicrophoneMuted, "the next recording has its microphone on")
+        rig.controller.stop()
+        expect(await rig.idle(), "idle")
+    }
+
+    await test("monitor: a muted microphone raises no warning, and takes down one that was up without calling it back") {
+        let journal = Journal()
+        let queue = DispatchQueue(label: "QuickRecorderTests.monitor")
+        let writer = FakeWriter(journal, queue: queue, folder: try Suite.folder("monitor-mute"), microphone: true)
+        let monitor = RecordingMonitor(queue: queue)
+        let shown = Journal()
+        monitor.notify = { title, _ in journal.note("notify: " + title) }
+        monitor.show = { warning, level in shown.note("\(warning ?? "none") \(level.map(String.init) ?? "-")") }
+        // A session that started 100 s ago, from whose microphone nothing was ever written
+        writer.sessionStart = time(0)
+        writer.clockAnchor = (time(100), DispatchTime.now().uptimeNanoseconds)
+        queue.sync {
+            writer.startCapturing()
+            monitor.start(writer)
+        }
+        expect(await waitUntil { journal.count("notify: Microphone is not being recorded") == 1 }, "a microphone that delivers nothing is reported")
+        expectEqual(shown.all.last, "Microphone is not being recorded 0", "and shown")
+        queue.sync { writer.setMicrophoneMuted(true) }
+        expect(await waitUntil { shown.all.last == "none 0" }, "muted: the warning goes")
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        expectEqual(journal.all.filter { $0.hasPrefix("notify") }, ["notify: Microphone is not being recorded"], "nothing is reported while muted, and no \"Microphone Is Back\"")
+        queue.sync { writer.setMicrophoneMuted(false) }
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        expectEqual(journal.all.filter { $0.hasPrefix("notify") }.count, 1, "the time muted does not count towards a warning after it")
+        expectEqual(shown.all.last, "none 0", "no warning right after the mute")
+        queue.sync { monitor.stop() }
     }
 }

@@ -41,6 +41,14 @@
             <cocoa class="QuickRecorder.stopRecording"/>
         </command>
         
+        <command name="mute microphone" code="QKrdMUte" description="Record silence in place of the microphone from now on. The recording goes on and its microphone track stays as long as the recording. Returns an error when no recording with a microphone is running">
+            <cocoa class="QuickRecorder.muteMicrophone"/>
+        </command>
+        
+        <command name="unmute microphone" code="QKrdUNmu" description="Record the microphone again after 'mute microphone'. Returns an error when no recording with a microphone is running">
+            <cocoa class="QuickRecorder.unmuteMicrophone"/>
+        </command>
+        
         <command name="configure" code="QKrdSEtt" description="Modify recording settings">
             <cocoa class="QuickRecorder.setPreferences"/>
             <parameter name="hires" code="REsl" type="boolean" description="Recording in Retina resolution" optional="yes">

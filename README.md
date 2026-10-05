@@ -30,7 +30,7 @@ This fork has no binary releases. Build it from source with `Tools/build.sh` (re
 
 ## Q&A
 **1. Where can I reopen the main panel after closing it?**
-> Click the Dock tile or Menubar icon of QuickRecorder to reopen the main panel at any time.
+> Click the Dock tile of QuickRecorder, or "Open Main Panel" in its menu bar item, to reopen the main panel at any time. While recording, the menu bar item shows the elapsed time, and its menu has Stop Recording, Pause and Mute Microphone.
 
 **2. Why does QuickRecorder not a sandbox app?**
 > QuickRecorder has no plans to be uploaded to the App Store, so it does not need to be designed as a sandbox app.  

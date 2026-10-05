@@ -98,7 +98,6 @@ enum AppSettings {
     // General
     @Setting("showOnDock", default: true) static var showOnDock: Bool
     @Setting("showMenubar", default: false) static var showMenubar: Bool
-    @Setting("miniStatusBar", default: false) static var miniStatusBar: Bool
     /// Seconds counted down before a recording starts, 0 for none
     @Setting("countdown", default: 0) static var countdown: Int
     @Setting("preventSleep", default: true) static var preventSleep: Bool

@@ -194,10 +194,32 @@ class stopRecording: NSScriptCommand {
         // Script commands are dispatched on the main thread. A countdown runs before a recording is started, so
         // there is either one to cancel, like its Cancel button does, or a recording to stop.
         if !AppDelegate.shared.cancelCountdown() {
-            // Same action as the status-bar Stop button. It returns at once; a recording that is still starting is
+            // Same action as Stop Recording in the status item's menu. It returns at once; a recording that is still starting is
             // stopped as soon as its capture runs.
             withRecorder { $0.stop() }
         }
+        return nil
+    }
+}
+
+/// `mute microphone` and `unmute microphone`: each says what the track is to be, so a script that runs twice does
+/// not undo itself. An error when no recording with a microphone track is running.
+private func scriptSetMicrophoneMuted(_ muted: Bool, _ command: NSScriptCommand) {
+    if withRecorder({ $0.setMicrophoneMuted(muted) }) { return }
+    command.scriptErrorNumber = errOSAGeneralError
+    command.scriptErrorString = "No recording with a microphone track is running."
+}
+
+class muteMicrophone: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        scriptSetMicrophoneMuted(true, self)
+        return nil
+    }
+}
+
+class unmuteMicrophone: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        scriptSetMicrophoneMuted(false, self)
         return nil
     }
 }

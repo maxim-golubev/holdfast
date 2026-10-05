@@ -40,8 +40,10 @@ protocol RecordingWriter: AnyObject {
     var audioEndPTS: CMTime? { get }
     var hasSystemAudio: Bool { get }
     var hasMicrophoneTrack: Bool { get }
+    var isMicrophoneMuted: Bool { get }
     func startCapturing()
     func togglePause() -> Bool
+    func setMicrophoneMuted(_ muted: Bool)
     func write(_ sample: CaptureSample)
     func checkWriter() -> Bool
     func timelineTime(_ raw: CMTime) -> CMTime
@@ -101,6 +103,8 @@ final class RecordingSession: @unchecked Sendable {
     /// From the moment the stream exists until it is stopped
     @MainActor private(set) var capture: RecordingCapture?
     @MainActor private(set) var isPaused = false
+    /// Every recording starts with its microphone on: a mute is this recording's and goes with it
+    @MainActor private(set) var isMicrophoneMuted = false
     @MainActor private(set) var health = Health()
     @MainActor var isMagnifierEnabled = false
     /// The wall clock of the status-bar timer and of the automatic stop. It gates nothing.
@@ -269,6 +273,29 @@ final class RecordingSession: @unchecked Sendable {
         isPaused = paused
         if !paused { startTime = Date.now.addingTimeInterval(-1) - timePassed }
         statusChanged(self)
+    }
+
+    /// Whether the recording has a microphone track
+    @MainActor var hasMicrophone: Bool { recording?.recordMic ?? false }
+
+    /// Mutes the microphone track of the running recording (silence in place of the microphone, see
+    /// `MovieWriter.setMicrophoneMuted`) or gives it its audio back. False when there is nothing to mute: no
+    /// recording that runs, or one without a microphone track.
+    @MainActor
+    @discardableResult
+    func setMicrophoneMuted(_ muted: Bool) -> Bool {
+        guard state == .recording, hasMicrophone else { return false }
+        let done: Bool = queue.sync {
+            guard let writer = queueWriter else { return false }
+            writer.setMicrophoneMuted(muted)
+            return true
+        }
+        guard done else { return false }
+        if isMicrophoneMuted != muted {
+            isMicrophoneMuted = muted
+            statusChanged(self)
+        }
+        return true
     }
 
     /// The stream ended without having been asked to. Any thread. `reason` is nil when the user stopped it from

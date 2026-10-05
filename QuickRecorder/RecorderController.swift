@@ -9,9 +9,9 @@ import Foundation
 /// What a recording needs from the app around it: the status bar, the windows, alerts and notifications, and the
 /// work on the finished file. The app's is `RecorderEnvironment.app`; the tests use their own.
 struct RecorderEnvironment {
-    /// The state changed, the recovery began or ended, or quitting was asked for: the status item is built anew
+    /// The state changed, the recovery began or ended, or quitting was asked for
     var refreshStatusItem: @MainActor () -> Void = {}
-    /// Something else the status bar shows has changed (pause, warning, microphone level, progress)
+    /// Something else the status item shows has changed (pause, mute, warning, microphone level, progress)
     var statusChanged: @MainActor (RecorderController) -> Void = { _ in }
     var becameIdle: @MainActor () -> Void = {}
     /// A start was asked for while the previous recording is still being saved
@@ -70,11 +70,10 @@ final class RecorderController {
     var hasStream: Bool { session?.capture != nil }
     var isPaused: Bool { session?.isPaused ?? false }
     var isMagnifierEnabled: Bool { session?.isMagnifierEnabled ?? false }
+    var isMicrophoneMuted: Bool { session?.isMicrophoneMuted ?? false }
+    /// Whether a recording runs that has a microphone track, which can be muted
+    var canMuteMicrophone: Bool { state == .recording && (session?.hasMicrophone ?? false) }
     var health: RecordingSession.Health { session?.health ?? RecordingSession.Health() }
-    /// Whether the status item shows the "Recovering…" pill: always while quitting waits for the recovery, so the
-    /// app does not look hung, and otherwise only where it does not take the place of the menu bar icon, from which
-    /// a recording can be started meanwhile.
-    var showsRecovery: Bool { recovery.isRunning && (quitRequested || !AppSettings.showMenubar) }
 
     /// The text of the status-bar timer
     func recordingLength() -> String {
@@ -125,7 +124,17 @@ final class RecorderController {
         session?.togglePause()
     }
 
-    /// Called by the status-bar timer: stops the recording when it has run for the minutes it was started with
+    /// Mutes or unmutes the microphone track of the running recording. False when there is none to mute.
+    @discardableResult
+    func setMicrophoneMuted(_ muted: Bool) -> Bool {
+        return session?.setMicrophoneMuted(muted) ?? false
+    }
+
+    func toggleMicrophoneMute() {
+        setMicrophoneMuted(!isMicrophoneMuted)
+    }
+
+    /// Called by the status item's timer: stops the recording when it has run for the minutes it was started with
     func stopIfDue(at now: Date) {
         guard let session = session, streamType != nil, session.autoStopIsDue(at: now) else { return }
         session.stop()
@@ -146,7 +155,6 @@ final class RecorderController {
         stop()
         if !quitRequested {
             quitRequested = true
-            // The pill says "Recovering…" while a recording of an earlier run keeps the app from quitting
             environment.refreshStatusItem()
             whenIdle { [self] in
                 recovery.whenDone { [self] in
