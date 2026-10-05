@@ -159,6 +159,8 @@ extension AppDelegate {
                 UserNotice.showAlertLater(title: "Failed to Record".local, message: "No display to record was found.".local)
                 return
             }
+            // As every other start: no selector outlives it, whose own Start would be refused while this one records
+            closeAllWindow()
             createCountdownPanel(screen: display) {
                 withRecorder { $0.start(type: .systemaudio, display: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil) }
             }
