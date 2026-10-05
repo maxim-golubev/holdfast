@@ -380,9 +380,19 @@ class AudioPlayerManager: ObservableObject {
     /// The export's save panel while it is open, and the extension of an export that is not an MP3
     private var exportPanel: NSSavePanel?
     private var exportEnding = "m4a"
+    private var outputObserver: NSObjectProtocol?
     
     init() {
         setupAudioEngine()
+        // A change of the output (AirPods connected, a call app switching them to the headset profile) stops the
+        // engine and uninitializes it: what was playing has stopped
+        outputObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            self?.outputChanged()
+        }
+    }
+
+    deinit {
+        if let observer = outputObserver { NotificationCenter.default.removeObserver(observer) }
     }
     
     /// The engine plays the two files. An export does not use it: it mixes with an engine of its own.
@@ -396,12 +406,37 @@ class AudioPlayerManager: ObservableObject {
         engine.connect(playerNode1, to: mixerNode, format: outputFormat)
         engine.connect(playerNode2, to: mixerNode, format: outputFormat)
         engine.connect(mixerNode, to: engine.mainMixerNode, format: outputFormat)
-        
         do {
             try engine.start()
         } catch {
+            // Play tries again and says so when it cannot
             print("Audio engine start error: \(error)")
         }
+    }
+
+    /// Starts the engine unless it runs. False, after telling the user, when it cannot: Play must not show Pause
+    /// over an engine that plays nothing.
+    private func startEngine() -> Bool {
+        if engine.isRunning { return true }
+        do {
+            try engine.start()
+            return true
+        } catch {
+            UserNotice.showAlertLater(title: "Cannot Play", message: String(format: "The audio output could not be started: %@", error.localizedDescription))
+            return false
+        }
+    }
+
+    /// The engine stopped for a new output. Playing stops where it was, and Play goes on from there on the new output.
+    private func outputChanged() {
+        let position = progress * audioLength
+        playerNode1.stop()
+        playerNode2.stop()
+        scheduled = false
+        stopProgressTimer()
+        isPlaying = false
+        guard audioFile1 != nil, startEngine() else { return }
+        seek(to: position)
     }
     
     /// Opens the system audio and microphone files of the package, at the volumes it was saved with
@@ -418,7 +453,7 @@ class AudioPlayerManager: ObservableObject {
     }
     
     func play() {
-        guard let audioFile1 = audioFile1, let audioFile2 = audioFile2 else { return }
+        guard let audioFile1 = audioFile1, let audioFile2 = audioFile2, startEngine() else { return }
         if !scheduled {
             playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
             playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
@@ -456,25 +491,25 @@ class AudioPlayerManager: ObservableObject {
         stopProgressTimer()
         
         let startFrame = AVAudioFramePosition(time * audioFile1.processingFormat.sampleRate)
-        let frameCount = AVAudioFrameCount(audioFile1.length - startFrame)
-        
-        if frameCount > 0 {
+        let remaining = audioFile1.length - startFrame
+        if remaining > 0 {
+            let frameCount = AVAudioFrameCount(clamping: remaining)
             lastStartFramePosition = startFrame
             playerNode1.scheduleSegment(audioFile1, startingFrame: startFrame, frameCount: frameCount, at: nil, completionHandler: nil)
             playerNode2.scheduleSegment(audioFile2, startingFrame: startFrame, frameCount: frameCount, at: nil, completionHandler: nil)
             scheduled = true
             progress = time / audioLength
             if isPlaying || shouldPlay {
-                playerNode1.play()
-                playerNode2.play()
-                startProgressTimer()
-                isPlaying = true
+                isPlaying = startEngine()
+                if isPlaying {
+                    playerNode1.play()
+                    playerNode2.play()
+                    startProgressTimer()
+                }
             }
         } else {
             stop()
         }
-        
-        
     }
     
     private func startProgressTimer() {
