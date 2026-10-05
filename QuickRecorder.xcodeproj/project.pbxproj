@@ -36,6 +36,11 @@
 		18FEBDAA2BCF8200003F09BC /* RecordEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDA92BCF8200003F09BC /* RecordEngine.swift */; };
 		18FEBDAC2BCF8200003F09BC /* MicConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDAB2BCF8200003F09BC /* MicConverter.swift */; };
 		18FEBDB22BCF8500003F09BC /* RecordingLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDB12BCF8500003F09BC /* RecordingLogic.swift */; };
+		18FEBDD42BCF8700003F09BC /* RecordingRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC42BCF8700003F09BC /* RecordingRecovery.swift */; };
+		18FEBDD32BCF8700003F09BC /* CaptureSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC32BCF8700003F09BC /* CaptureSource.swift */; };
+		18FEBDD22BCF8700003F09BC /* MovieWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC22BCF8700003F09BC /* MovieWriter.swift */; };
+		18FEBDD12BCF8700003F09BC /* RecordingContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC12BCF8700003F09BC /* RecordingContext.swift */; };
+		18FEBDD02BCF8700003F09BC /* RecordingFileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC02BCF8700003F09BC /* RecordingFileStore.swift */; };
 		18FEBDB62BCF8700003F09BC /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDB52BCF8700003F09BC /* AppSettings.swift */; };
 		18FEBDC22BCF8400003F09BC /* RecordingMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC12BCF8400003F09BC /* RecordingMonitor.swift */; };
 		18FEBDC42BCF8500003F09BC /* RecordingMixer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC32BCF8500003F09BC /* RecordingMixer.swift */; };
@@ -75,6 +80,11 @@
 		18FEBDA92BCF8200003F09BC /* RecordEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordEngine.swift; sourceTree = "<group>"; };
 		18FEBDAB2BCF8200003F09BC /* MicConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicConverter.swift; sourceTree = "<group>"; };
 		18FEBDB12BCF8500003F09BC /* RecordingLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingLogic.swift; sourceTree = "<group>"; };
+		18FEBDC42BCF8700003F09BC /* RecordingRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingRecovery.swift; sourceTree = "<group>"; };
+		18FEBDC32BCF8700003F09BC /* CaptureSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSource.swift; sourceTree = "<group>"; };
+		18FEBDC22BCF8700003F09BC /* MovieWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieWriter.swift; sourceTree = "<group>"; };
+		18FEBDC12BCF8700003F09BC /* RecordingContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingContext.swift; sourceTree = "<group>"; };
+		18FEBDC02BCF8700003F09BC /* RecordingFileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingFileStore.swift; sourceTree = "<group>"; };
 		18FEBDB52BCF8700003F09BC /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		18FEBDC12BCF8400003F09BC /* RecordingMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingMonitor.swift; sourceTree = "<group>"; };
 		18FEBDC32BCF8500003F09BC /* RecordingMixer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingMixer.swift; sourceTree = "<group>"; };
@@ -144,6 +154,11 @@
 				18FEBDA92BCF8200003F09BC /* RecordEngine.swift */,
 				18FEBDAB2BCF8200003F09BC /* MicConverter.swift */,
 				18FEBDB12BCF8500003F09BC /* RecordingLogic.swift */,
+				18FEBDC42BCF8700003F09BC /* RecordingRecovery.swift */,
+				18FEBDC32BCF8700003F09BC /* CaptureSource.swift */,
+				18FEBDC22BCF8700003F09BC /* MovieWriter.swift */,
+				18FEBDC12BCF8700003F09BC /* RecordingContext.swift */,
+				18FEBDC02BCF8700003F09BC /* RecordingFileStore.swift */,
 				18FEBDB52BCF8700003F09BC /* AppSettings.swift */,
 				18FEBDC12BCF8400003F09BC /* RecordingMonitor.swift */,
 				18FEBDC32BCF8500003F09BC /* RecordingMixer.swift */,
@@ -288,6 +303,11 @@
 				18FEBDAA2BCF8200003F09BC /* RecordEngine.swift in Sources */,
 				18FEBDAC2BCF8200003F09BC /* MicConverter.swift in Sources */,
 				18FEBDB22BCF8500003F09BC /* RecordingLogic.swift in Sources */,
+				18FEBDD42BCF8700003F09BC /* RecordingRecovery.swift in Sources */,
+				18FEBDD32BCF8700003F09BC /* CaptureSource.swift in Sources */,
+				18FEBDD22BCF8700003F09BC /* MovieWriter.swift in Sources */,
+				18FEBDD12BCF8700003F09BC /* RecordingContext.swift in Sources */,
+				18FEBDD02BCF8700003F09BC /* RecordingFileStore.swift in Sources */,
 				18FEBDB62BCF8700003F09BC /* AppSettings.swift in Sources */,
 				18FEBDC22BCF8400003F09BC /* RecordingMonitor.swift in Sources */,
 				18FEBDC42BCF8500003F09BC /* RecordingMixer.swift in Sources */,

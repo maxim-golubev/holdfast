@@ -7,6 +7,9 @@ cd "$(dirname "$0")/.."
 sources=(
   QuickRecorder/AppSettings.swift
   QuickRecorder/MicConverter.swift
+  QuickRecorder/MovieWriter.swift
+  QuickRecorder/RecordingContext.swift
+  QuickRecorder/RecordingFileStore.swift
   QuickRecorder/RecordingLogic.swift
   QuickRecorder/RecordingMixer.swift
   QuickRecorder/Supports/DiskSpace.swift

@@ -123,7 +123,7 @@ enum AppSettings {
     // Video. The defaults are chosen for long meetings.
     /// 2: the display's pixels (Retina), 1: its points. Decide with `recordsPixels`, not by comparing the number.
     @Setting("highRes", default: 2) static var highRes: Int
-    /// A script can store any number; `SCContext.captureFrameRate` makes it usable
+    /// A script can store any number; `captureFrameRate` makes it usable
     @Setting("frameRate", default: 30) static var frameRate: Int
     /// 0.3 low, 0.7 medium, anything else high
     @Setting("videoQuality", default: 0.7) static var videoQuality: Double
@@ -160,6 +160,12 @@ enum AppSettings {
 
     /// A stored 0 means pixels like 2 does: versions before this type rewrote it to 2 at launch
     static func recordsPixels(_ highRes: Int) -> Bool { highRes == 2 || highRes == 0 }
+
+    /// The frame rate a recording is captured and encoded at, whatever "frameRate" holds
+    static var captureFrameRate: Int { captureFrameRate(frameRate) }
+
+    /// Never 0 or negative, which would make an invalid frame interval
+    static func captureFrameRate(_ setting: Int) -> Int { min(240, max(1, setting)) }
 
     static var hiddenApps: [AppInfo] {
         get { (try? JSONDecoder().decode([AppInfo].self, from: hiddenAppsData)) ?? [] }

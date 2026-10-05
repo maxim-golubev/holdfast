@@ -580,7 +580,7 @@ class AudioPlayerManager: ObservableObject {
                 self.playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
                 self.playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
                 
-                let audioSettings = SCContext.updateAudioSettings(format: self.fileEncoder, quality: audioQuality, videoFormat: videoFormat)
+                let audioSettings = MovieWriter.audioSettings(format: self.fileEncoder, quality: audioQuality, videoFormat: videoFormat)
                 let outputFormat = self.playerNode1.outputFormat(forBus: 0)
                 let outputFile = try AVAudioFile(forWriting: url, settings: audioSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
                 self.engine.stop()

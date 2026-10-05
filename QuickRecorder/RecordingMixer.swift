@@ -6,35 +6,16 @@
 import AVFoundation
 import Foundation
 
-/// The audio mix that follows a video recording with system audio and a microphone, and what is done about the
-/// files such a recording leaves behind when the app does not get to finish it.
-///
-/// File names. A recording that is going to be mixed is written as `<name>.recording.<ext>` and the mix as
-/// `<name>.mixing.<ext>`, both in the folder the recording is saved to. Neither name is ever a final one: a file
-/// under one of them is a recording that is still running or being finished, or one that was left behind by a
-/// crash or a kill. The final names are `<name>.<ext>` for the mixed recording and
-/// `<name> (unmixed, 2 audio tracks).<ext>` for the recording as it was written.
+/// The audio mix that follows a video recording with system audio and a microphone, and what can be told about a
+/// recording an earlier run left behind by opening it. The names of the files are `RecordingFileStore`'s.
 ///
 /// Nothing here deletes or renames a file. It writes the mix to the URL it is given and says whether that file can
-/// be trusted, and it finds and describes leftovers; the caller decides what happens to the files.
+/// be trusted; the caller decides what happens to the files.
 enum RecordingMixer {
     struct Failure: LocalizedError {
         let message: String
         init(_ message: String) { self.message = message }
         var errorDescription: String? { message }
-    }
-
-    static let rawMarker = "recording"
-    static let mixMarker = "mixing"
-    static let unmixedSuffix = " (unmixed, 2 audio tracks)"
-
-    /// `base` is the path of the final file without its extension
-    static func temporaryURL(base: String, marker: String, ending: String) -> URL {
-        return URL(fileURLWithPath: "\(base).\(marker).\(ending)")
-    }
-
-    static func unmixedURL(base: String, ending: String) -> URL {
-        return URL(fileURLWithPath: "\(base)\(unmixedSuffix).\(ending)")
     }
 
     // MARK: - Mix
@@ -320,15 +301,6 @@ enum RecordingMixer {
 
     // MARK: - Leftovers of an earlier run
 
-    /// What a temporary name is made of: `<base>.<marker>.<ending>`
-    struct Leftover {
-        let url: URL
-        /// Path of the final file without its extension
-        let base: String
-        let isMix: Bool
-        let ending: String
-    }
-
     /// What can be told about a leftover recording by opening it
     struct Inspection {
         /// Nil when the file does not open
@@ -337,26 +309,6 @@ enum RecordingMixer {
         let fragmented: Bool
         /// One video track and two audio tracks
         let mixable: Bool
-    }
-
-    /// The files in `directory` that this app left under a temporary name: `<prefix>….recording.<ext>` and
-    /// `<prefix>….mixing.<ext>`, `prefix` being what the app's recordings are named with. A file that merely has
-    /// such an ending is someone else's and is left alone. Only call this when no recording is running or being
-    /// finished, in this or in another instance of the app: until then such a file is not a leftover.
-    static func leftovers(in directory: String, prefix: String) -> [Leftover] {
-        let folder = URL(fileURLWithPath: directory, isDirectory: true)
-        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
-        return files.sorted { $0.path < $1.path }.compactMap { url in
-            let ending = url.pathExtension
-            guard ["mp4", "mov"].contains(ending.lowercased()) else { return nil }
-            let stem = url.deletingPathExtension()
-            let marker = stem.pathExtension
-            guard marker == rawMarker || marker == mixMarker else { return nil }
-            let name = stem.deletingPathExtension().lastPathComponent
-            guard !prefix.isEmpty, name.hasPrefix(prefix), name.count > prefix.count else { return nil }
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return nil }
-            return Leftover(url: url, base: stem.deletingPathExtension().path, isMix: marker == mixMarker, ending: ending)
-        }
     }
 
     static func inspect(_ url: URL) async -> Inspection {
@@ -371,17 +323,5 @@ enum RecordingMixer {
         let video = (try? await asset.loadTracks(withMediaType: .video).count) ?? 0
         let audio = (try? await asset.loadTracks(withMediaType: .audio).count) ?? 0
         return Inspection(seconds: length, fragmented: fragmented, mixable: video == 1 && audio == 2)
-    }
-
-    /// `<base>.<ending>`, or `<base> (<label>).<ending>` with a label, numbered when that name is taken
-    static func freeURL(base: String, label: String?, ending: String) -> URL {
-        let manager = FileManager.default
-        var target = URL(fileURLWithPath: label.map { "\(base) (\($0)).\(ending)" } ?? "\(base).\(ending)")
-        var number = 2
-        while manager.fileExists(atPath: target.path) && number < 100 {
-            target = URL(fileURLWithPath: "\(base) (\(label.map { $0 + " " } ?? "")\(number)).\(ending)")
-            number += 1
-        }
-        return target
     }
 }

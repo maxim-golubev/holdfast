@@ -128,4 +128,12 @@ func settingsTests() async {
         withStored(["highRes": 1]) { expect(!AppSettings.recordsPixels, "1") }
         withStored(["highRes": 3]) { expect(!AppSettings.recordsPixels, "a number that was never pixels") }
     }
+
+    await test("Settings: the frame rate of a recording is always between 1 and 240") {
+        withStored([:]) { expectEqual(AppSettings.captureFrameRate, 30, "nothing stored") }
+        withStored(["frameRate": 60]) { expectEqual(AppSettings.captureFrameRate, 60, "60") }
+        withStored(["frameRate": 0]) { expectEqual(AppSettings.captureFrameRate, 1, "0 would make an invalid frame interval") }
+        withStored(["frameRate": -5]) { expectEqual(AppSettings.captureFrameRate, 1, "a negative number") }
+        withStored(["frameRate": 1000]) { expectEqual(AppSettings.captureFrameRate, 240, "more than any display") }
+    }
 }

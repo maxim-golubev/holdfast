@@ -35,7 +35,7 @@ struct QuickRecorderApp: App {
     
     var body: some Scene {
         DocumentGroup(newDocument: qmaPackageHandle()) { file in
-            //if SCContext.stream == nil {
+            //if SCContext.capture == nil {
                 if let fileURL = file.fileURL {
                     qmaPlayerView(document: file.$document, fileURL: fileURL)
                         .frame(minWidth: 400, minHeight: 100, maxHeight: 100)
@@ -76,9 +76,8 @@ struct QuickRecorderApp: App {
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, UNUserNotificationCenterDelegate {
-    /// The delegate SwiftUI created for `@NSApplicationDelegateAdaptor`, which is the one the app's events and the
-    /// stream's callbacks go to. `NSApp.delegate` is a SwiftUI object that forwards to it, so it is noted when it is created.
+class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    /// The delegate SwiftUI created for `@NSApplicationDelegateAdaptor`, which is the one the app's events go to. `NSApp.delegate` is a SwiftUI object that forwards to it, so it is noted when it is created.
     private static var created: AppDelegate?
     static var shared: AppDelegate { created ?? AppDelegate() }
     private var quitWhenIdle = false
@@ -89,9 +88,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         AppDelegate.created = self
     }
     
-    var filter: SCContentFilter?
     var isResizing = false
-    var frameQueue = FixedLengthArray<CMTime>(maxLength: 20)
     private var isMagnifierCapturing = false
     private var pendingMagnifierEvent: NSEvent?
     /// The monitor that drives the mouse highlight and the magnifier of a recording. Not `mouseMonitor`, which
@@ -102,7 +99,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     
     func mousePointerReLocation(event: NSEvent) {
         if event.type == .scrollWheel { return }
-        if !AppSettings.highlightMouse || hideMousePointer || SCContext.stream == nil || SCContext.streamType == .window {
+        if !AppSettings.highlightMouse || hideMousePointer || SCContext.capture == nil || SCContext.streamType == .window {
             mousePointer.orderOut(nil)
             return
         }
@@ -290,18 +287,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         
         KeyboardShortcuts.onKeyDown(for: .showPanel) {
             _ = self.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
-            if SCContext.stream == nil { NSApp.activate(ignoringOtherApps: true) }
+            if SCContext.capture == nil { NSApp.activate(ignoringOtherApps: true) }
         }
-        KeyboardShortcuts.onKeyDown(for: .saveFrame) { if SCContext.stream != nil { SCContext.saveFrame = true }}
+        KeyboardShortcuts.onKeyDown(for: .saveFrame) { if SCContext.capture != nil { SCContext.saveFrame = true }}
         KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { [self] in
-            if SCContext.stream != nil {
+            if SCContext.capture != nil {
                 SCContext.isMagnifierEnabled.toggle()
                 updateRecordingMouseMonitor()
             }
         }
         // During a countdown there is no recording yet: the pending start is cancelled, as its Cancel button does
         KeyboardShortcuts.onKeyDown(for: .stop) { [self] in if !cancelCountdown() { SCContext.stopRecording() } }
-        KeyboardShortcuts.onKeyDown(for: .pauseResume) { if SCContext.stream != nil { SCContext.pauseRecording() }}
+        KeyboardShortcuts.onKeyDown(for: .pauseResume) { if SCContext.capture != nil { SCContext.pauseRecording() }}
         KeyboardShortcuts.onKeyDown(for: .startWithAudio) {[self] in
             guard SCContext.canStart() else { return }
             closeAllWindow()
@@ -337,7 +334,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if SCContext.stream == nil {
+        if SCContext.capture == nil {
             let w1 = NSApp.windows.filter({ !$0.title.contains("Item-0") && !$0.title.isEmpty && $0.isVisible })
             let w2 = w1.filter({ !$0.title.contains(".qma") })
             if (!w1.isEmpty && w2.isEmpty) || w1.isEmpty {
@@ -561,26 +558,6 @@ extension NSImage {
 class NNSWindow: NSWindow {
     override var canBecomeKey: Bool {
         return true
-    }
-}
-
-struct FixedLengthArray<T> {
-    private var array: [T] = []
-    private let maxLength: Int
-
-    init(maxLength: Int) {
-        self.maxLength = maxLength
-    }
-
-    mutating func append(_ element: T) {
-        if array.count >= maxLength {
-            array.removeFirst()
-        }
-        array.append(element)
-    }
-
-    func getArray() -> [T] {
-        return array
     }
 }
 

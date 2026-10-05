@@ -25,8 +25,8 @@ final class RecordingHealth: ObservableObject {
 
 /// Runs twice a second on `SCContext.sampleQueue` while a recording is capturing, whether or not any buffer arrives.
 ///
-/// It keeps every track of the file advancing when its source delivers nothing: silence for the microphone and for
-/// system audio, the last frame again for video. A track that stops would hold back the fragments of all the others
+/// It has the recording's `MovieWriter` keep every track of the file advancing when its source delivers nothing:
+/// silence for the microphone and for system audio, the last frame again for video. A track that stops would hold back the fragments of all the others
 /// and leave a hole that players handle badly. It is also the watchdog that tells the user while a source is not
 /// being recorded. Everything here is only used on the sample queue.
 enum RecordingMonitor {
@@ -34,8 +34,6 @@ enum RecordingMonitor {
     /// How long a source may deliver nothing before its track is continued without it. The tracks are filled up to
     /// this far behind the present, so that a buffer which is merely late still fits.
     static let gapSeconds: Double = 1
-    /// A hole between two system audio buffers shorter than this is not filled
-    static let gapTolerance: Double = 0.1
     /// How long a source may deliver nothing before the user is warned
     static let silentSeconds: Double = 5
     /// How long the microphone may deliver nothing but zeros before the user is warned
@@ -63,7 +61,7 @@ enum RecordingMonitor {
 
     static func start(for id: UUID) {
         stop()
-        guard SCContext.isCapturing, SCContext.recording?.id == id else { return }
+        guard let writer = SCContext.writer, writer.isCapturing, writer.recording.id == id else { return }
         let source = DispatchSource.makeTimerSource(flags: .strict, queue: SCContext.sampleQueue)
         source.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(50))
         source.setEventHandler { tick(id) }
@@ -107,9 +105,10 @@ enum RecordingMonitor {
         let uptime = DispatchTime.now().uptimeNanoseconds
         let sinceLastTick = lastTick == 0 ? 0 : Double(uptime &- lastTick) / 1_000_000_000
         lastTick = uptime
-        guard SCContext.isCapturing, !SCContext.isPaused, let recording = SCContext.recording, recording.id == id else { return }
+        guard let writer = SCContext.writer, writer.isCapturing, !writer.isPaused, writer.recording.id == id else { return }
+        let recording = writer.recording
         let startTitle = "Nothing is being recorded yet".local
-        guard let sessionStart = SCContext.sessionStart else {
+        guard let sessionStart = writer.sessionStart else {
             // The file starts with the first complete picture (the first system audio of an audio-only recording),
             // and all audio that arrives before it is left out. When that takes this long it may never come, a
             // window that is minimized or a display that is asleep for example, and the user must know.
@@ -128,7 +127,7 @@ enum RecordingMonitor {
             report(nil, was: startWarning, title: startTitle, backTitle: "Recording Started".local, backBody: "The recording has started now. What came before is not in it.".local)
             startWarning = nil
         }
-        guard let anchor = SCContext.clockAnchor, uptime >= anchor.uptime else { return }
+        guard let anchor = writer.clockAnchor, uptime >= anchor.uptime else { return }
         // After the process was held up, the buffers that piled up may still be waiting behind this tick. Judging the
         // sources now would take them for stalled, put silence where their audio belongs and warn about nothing.
         // Only one tick in a row is passed over: by the next one those buffers have been handled, and a timer that
@@ -138,35 +137,29 @@ enum RecordingMonitor {
             return
         }
         skippedLateTick = false
-        if SCContext.isResume && !resumeWaited {
+        if writer.isResume && !resumeWaited {
             resumeWaited = true
             return
         }
         resumeWaited = false
-        if let writer = SCContext.vW, writer.status == .failed {
-            SCContext.abortRecording(reason: SCContext.writeFailure(writer.error))
-            return
-        }
+        guard writer.checkWriter() else { return }
         // The present on the clock of the buffers, taken from the last buffer that arrived and the time since then.
         // That is the timestamp a buffer arriving now would carry, whatever clock the stream uses.
         let raw = CMTimeAdd(anchor.raw, CMTime(value: CMTimeValue(uptime - anchor.uptime), timescale: 1_000_000_000))
-        let now = SCContext.timelineTime(raw)
+        let now = writer.timelineTime(raw)
         let target = CMTimeSubtract(now, CMTime(seconds: gapSeconds, preferredTimescale: 600))
 
-        if let converter = SCContext.micConverter, let micInput = SCContext.micInput {
-            converter.fill(upTo: target, atLeast: Int64(MicConverter.sampleRate / 2)) { SCContext.append($0, to: micInput) }
-            SCContext.noteEnd(converter.end)
+        writer.fillMicrophone(upTo: target)
+        let hasSystemAudio = writer.hasSystemAudio
+        if hasSystemAudio, seconds(from: writer.audioEndPTS ?? sessionStart, to: target) >= 0.5 {
+            writer.fillSystemAudio(upTo: target)
         }
-        let hasSystemAudio = SCContext.awInput != nil || SCContext.audioFile != nil
-        if hasSystemAudio, seconds(from: SCContext.audioEndPTS ?? sessionStart, to: target) >= 0.5 {
-            fillSystemAudio(upTo: target)
-        }
-        repeatVideoFrame(at: now)
-        guard SCContext.isCapturing else { return }
+        writer.repeatVideoFrame(at: now)
+        guard writer.isCapturing else { return }
 
         var micProblem: String?
         var level: Int?
-        if SCContext.micInput != nil {
+        if writer.hasMicrophoneTrack {
             if seconds(from: micHeard ?? sessionStart, to: now) > silentSeconds {
                 micProblem = String(format: "No audio has arrived from the microphone for %d seconds. The recording continues with silence in its place until the microphone comes back.".local, Int(silentSeconds))
             } else if seconds(from: micSound ?? sessionStart, to: now) > zeroSeconds {
@@ -209,81 +202,6 @@ enum RecordingMonitor {
         DispatchQueue.main.async {
             RecordingHealth.shared.warning = warning
             RecordingHealth.shared.micLevel = level
-        }
-    }
-
-    /// Where a system audio buffer that covers `pts` to `endPTS` goes: at the end of the system audio written so far.
-    /// Nil when it must not be written: it lies before that end (silence was already written in its place), or the
-    /// silence for a hole in front of it could not be written yet. That end is counted from what was written, not
-    /// read from the timestamps, so a buffer the writer did not take leaves a hole that is still there for the next
-    /// buffer to see. Holes add up and are filled with silence once they exceed `gapTolerance`; a buffer that
-    /// overlaps the end is written whole, which puts the audio late by less than one buffer and no more.
-    static func placeSystemAudio(from pts: CMTime, to endPTS: CMTime) -> CMTime? {
-        return SystemAudioPlacement.place(from: pts, to: endPTS, end: SCContext.audioEndPTS, tolerance: gapTolerance) { time in
-            fillSystemAudio(upTo: time)
-            return SCContext.audioEndPTS
-        }
-    }
-
-    /// Appends silence to the system audio from where it ends up to `time`: to the audio track of a video recording,
-    /// or to the system audio file of an audio-only recording, which has no timestamps and would otherwise come out
-    /// shorter than the microphone file next to it.
-    static func fillSystemAudio(upTo time: CMTime) {
-        guard let from = SCContext.audioEndPTS ?? SCContext.sessionStart else { return }
-        let file = SCContext.audioFile
-        let input = SCContext.awInput
-        var description = SCContext.audioFormatDescription
-        var format: AVAudioFormat?
-        if let file = file {
-            format = file.processingFormat
-        } else if let known = description {
-            // The format ScreenCaptureKit delivered last, so the track does not change format for the silence
-            format = AVAudioFormat(cmAudioFormatDescription: known)
-        } else {
-            // Nothing was delivered yet: what the stream is configured for
-            format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)
-            description = format?.formatDescription
-        }
-        guard let format = format, format.sampleRate > 0 else { return }
-        let scale = CMTimeScale(format.sampleRate)
-        var (position, left) = SystemAudioPlacement.silence(from: from, upTo: time, scale: scale)
-        while left > 0 {
-            let count = min(left, Int64(scale / 2))
-            guard let pcm = AudioSilence.pcm(format: format, frames: count) else { return }
-            if let file = file {
-                do {
-                    try file.write(from: pcm)
-                } catch {
-                    SCContext.abortRecording(reason: SCContext.writeFailure(error))
-                    return
-                }
-            } else {
-                guard let input = input, let description = description,
-                      let buffer = AudioSilence.sampleBuffer(from: pcm, description: description, at: position),
-                      SCContext.append(buffer, to: input) else { return }
-            }
-            position = CMTimeAdd(position, CMTime(value: count, timescale: scale))
-            left -= count
-            SCContext.audioEndPTS = position
-            SCContext.noteEnd(position)
-        }
-    }
-
-    /// ScreenCaptureKit delivers no frames while the picture does not change (a static slide, a locked or sleeping
-    /// display). The last frame is then written again once a second, so the video track keeps up with the audio.
-    private static func repeatVideoFrame(at now: CMTime) {
-        guard let vwInput = SCContext.vwInput, let last = SCContext.videoPTS, SCContext.lastVideoFrame != nil else { return }
-        guard seconds(from: last, to: now) > SCContext.videoStallSeconds else { return }
-        // The frame is going to be used for a while: give its surface back to the stream
-        SCContext.detachLastVideoFrame()
-        guard let repeated = SCContext.lastVideoFrame else { return }
-        // A little in the past, so a frame that is on its way with an earlier timestamp than now still comes after it
-        let time = CMTimeSubtract(now, CMTime(seconds: SCContext.videoStallSeconds / 2, preferredTimescale: 600))
-        let timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: time, decodeTimeStamp: .invalid)
-        guard let again = try? CMSampleBuffer(copying: repeated, withNewTiming: [timing]) else { return }
-        if SCContext.append(again, to: vwInput) {
-            SCContext.videoPTS = time
-            SCContext.noteEnd(time)
         }
     }
 }
@@ -335,12 +253,13 @@ enum MicDevices {
     }
 
     private static func followDevices(announce: Bool) {
-        guard SCContext.recordsMic, let stream = SCContext.stream, let conf = SCContext.streamConfiguration else { return }
+        guard let capture = SCContext.capture, capture.recordsMic else { return }
+        let conf = capture.configuration
         let devices = SCContext.getMicrophone()
-        let selection = SCContext.micSelection
+        let selection = capture.micSelection
         let selectedIsPresent = selection != "default" && devices.contains(where: { $0.uniqueID == selection })
         guard let wanted = selectedIsPresent ? selection : defaultInputUID() else { return }
-        let previous = SCContext.micActiveDeviceID
+        let previous = capture.micActiveDeviceID
         guard wanted != previous else { return }
         func name(_ id: String?) -> String {
             guard let id = id else { return "none" }
@@ -351,12 +270,12 @@ enum MicDevices {
         // A default input that is not among the capture devices is left to the system to pick
         let previousCaptureID = conf.microphoneCaptureDeviceID
         conf.microphoneCaptureDeviceID = devices.contains(where: { $0.uniqueID == wanted }) ? wanted : nil
-        SCContext.micActiveDeviceID = wanted
+        capture.micActiveDeviceID = wanted
         if announce && selection != "default" && !selectedIsPresent {
             let body = String(format: "\"%@\" is not connected any more. Recording continues with the default microphone \"%@\".".local, SCContext.selectedMicName(), wantedName)
             SCContext.showNotification(title: "Microphone Unavailable".local, body: body, id: "quickrecorder.microphone.\(UUID().uuidString)")
         }
-        stream.updateConfiguration(conf) { error in
+        capture.applyConfiguration { error in
             guard let error = error else {
                 RecLog.write("Microphone switch: now capturing \"\(wantedName)\"")
                 return
@@ -364,8 +283,8 @@ enum MicDevices {
             RecLog.write("Microphone switch to \"\(wantedName)\" failed: \(error.localizedDescription)")
             DispatchQueue.main.async {
                 // Back to what the stream is still capturing, then a few more tries; after those, at the next device change
-                guard SCContext.stream === stream, SCContext.micActiveDeviceID == wanted else { return }
-                SCContext.micActiveDeviceID = previous
+                guard SCContext.capture === capture, capture.micActiveDeviceID == wanted else { return }
+                capture.micActiveDeviceID = previous
                 conf.microphoneCaptureDeviceID = previousCaptureID
                 if retriesLeft > 0 {
                     retriesLeft -= 1
