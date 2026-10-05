@@ -187,7 +187,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func applicationWillTerminate(_ aNotification: Notification) {
         // applicationShouldTerminate has waited for the recording, so there is nothing left to do here. Should the
         // app ever be terminated past it, the recording is stopped the same way and given a moment to be saved:
-        // the run loop is run, not blocked, because saving continues on the main thread.
+        // the run loop is run, not blocked, because saving continues on the main thread. That works only outside a
+        // main-queue block, which is why every terminate of the app's own runs as a run loop block.
         guard withRecorder({ $0.state != .idle }) else { return }
         withRecorder { $0.stop() }
         let deadline = Date.now.addingTimeInterval(30)
@@ -205,19 +206,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // The default action would end the process at once, leaving a recording unclosed and unmixed
+        // The default action would end the process at once, leaving a recording unclosed and unmixed. Terminate
+        // runs as a run loop block: called inside a main-queue block, its wait for the reply would hold up the main
+        // queue, and with it the stop it waits for.
         signal(SIGTERM, SIG_IGN)
         let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        terminate.setEventHandler { NSApp.terminate(nil) }
+        terminate.setEventHandler { UserNotice.onMainRunLoop { NSApp.terminate(nil) } }
         terminate.resume()
         terminateSignal = terminate
         ScreenContent.updateAvailableContentSync()
         
         let process = NSWorkspace.shared.runningApplications.filter({ $0.bundleIdentifier == Bundle.main.bundleIdentifier })
         if process.count > 1 {
-            DispatchQueue.main.async {
-                let button = createAlert(title: "Holdfast Is Already Running", message: "Another copy of Holdfast is already open. This copy quits.", button1: "Quit").runModal()
-                if button == .alertFirstButtonReturn { NSApp.terminate(self) }
+            UserNotice.onMainRunLoop {
+                _ = createAlert(title: "Holdfast Is Already Running", message: "Another copy of Holdfast is already open. This copy quits.", button1: "Quit").runModal()
+                NSApp.terminate(nil)
             }
         }
         
