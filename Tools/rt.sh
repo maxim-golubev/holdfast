@@ -8,10 +8,31 @@ RT_LOG=~/Library/Logs/Holdfast/recordings.log
 # The bundle identifier of the build, whatever it is set to in Xcode
 rt_id() { /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$RT_APP/Contents/Info.plist" 2>/dev/null || { echo "rt: no app at $RT_APP, run Tools/build.sh" >&2; return 1 } }
 
-rt_quit() { local id; id=$(rt_id) || return 1; osascript -e "tell application id \"$id\" to quit" 2>/dev/null; for i in {1..40}; do pgrep -f "Release/Holdfast.app" >/dev/null || return 0; sleep 0.5; done; echo "rt: app did not quit"; return 1 }
+rt_quit() { local id; id=$(rt_id) || return 1; osascript -e "tell application id \"$id\" to quit" 2>/dev/null; for i in {1..40}; do pgrep -f "Release/Holdfast.app" >/dev/null || { rt_restore; return 0 }; sleep 0.5; done; echo "rt: app did not quit"; return 1 }
+# rt_launch points the app's save folder at the test folder and turns the preview off; rt_restore puts both back as
+# they were (or removes them when they were not set). rt_quit calls it, and so does leaving this shell.
+RT_DEFAULTS=(saveDirectory showPreview)
+rt_remember() {
+  [[ -n $RT_SAVED ]] && return 0
+  typeset -gA RT_OLD; RT_OLD=(); local k
+  for k in $RT_DEFAULTS; do RT_OLD[$k]=$(defaults read "$1" $k 2>/dev/null) || unset "RT_OLD[$k]"; done
+  RT_SAVED=$1
+}
+rt_restore() {
+  [[ -n $RT_SAVED ]] || return 0
+  pgrep -f "Release/Holdfast.app" >/dev/null && { echo "rt: app still running, defaults not restored"; return 1 }
+  local k
+  for k in $RT_DEFAULTS; do
+    if (( ${+RT_OLD[$k]} )); then
+      case $k in showPreview) defaults write $RT_SAVED $k -bool ${RT_OLD[$k]} ;; *) defaults write $RT_SAVED $k -string "${RT_OLD[$k]}" ;; esac
+    else defaults delete $RT_SAVED $k 2>/dev/null; fi
+  done
+  unset RT_SAVED
+}
+zshexit_functions+=(rt_restore)
 rt_launch() { # rt_launch <save-dir>
   local id; id=$(rt_id) || return 1
-  mkdir -p "$1"; RT_DIR="$1"
+  mkdir -p "$1"; RT_DIR="$1"; rt_remember $id
   defaults write $id saveDirectory -string "$1"; defaults write $id showPreview -bool false
   nohup "$RT_APP/Contents/MacOS/Holdfast" > "$1/app.out" 2>&1 &
   RT_PID=$!; sleep 4
