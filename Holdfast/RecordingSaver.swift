@@ -69,7 +69,7 @@ enum RecordingSaver {
             // The microphone file did not close: the package is kept as it is and is not mixed
             var body = earlyReason ?? ""
             if let error = writer.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
-            body += (body.isEmpty ? "" : " ") + String(format: "The microphone file could not be closed. The recording was kept with separate audio files: %@".local, recording.rawURL.path)
+            body += (body.isEmpty ? "" : " ") + keptNote(recording.rawURL, "The microphone file could not be closed. The recording was kept with separate audio files: %@".local)
             UserNotice.reportFailure(title: failureTitle, message: body)
         } else {
             // The package is only read now that the microphone file is complete
@@ -154,19 +154,19 @@ enum RecordingSaver {
             Task {
                 defer { completion() }
                 do {
-                    try await m4a2mp3(inputUrl: source, outputUrl: output, bitrate: recording.audioQuality)
+                    try await convertToMP3(source, to: output, bitrate: recording.audioQuality)
+                    // Only now that the MP3 is known to be complete
                     try? fd.removeItem(at: source)
                     present(output, image: audioIcon, recording: recording, earlyReason: earlyReason)
                 } catch {
-                    try? fd.removeItem(at: output)
-                    let body = early + String(format: "Converting to MP3 failed: %@ Nothing is lost: the recording is kept as: %@".local, error.localizedDescription, source.path)
-                    UserNotice.reportFailure(title: "MP3 Conversion Failed".local, message: body)
+                    let reason = String(format: "Converting to MP3 failed: %@".local, error.localizedDescription)
+                    UserNotice.reportFailure(title: "MP3 Conversion Failed".local, message: early + reason + " " + keptNote(source, "Nothing is lost: the recording is kept as: %@".local))
                 }
             }
         } else if recording.remuxAudio && recording.recordMic {
             let package = recording.rawURL
             func failed(_ reason: String) {
-                let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept with separate audio files in: %@".local, reason, package.path)
+                let body = early + String(format: "Mixing the audio failed: %@".local, reason) + " " + keptNote(package, "Nothing is lost: the recording is kept with separate audio files in: %@".local)
                 UserNotice.reportFailure(title: "Audio Mix Failed".local, message: body)
             }
             let player = AudioPlayerManager()
@@ -223,6 +223,12 @@ enum RecordingSaver {
         return String(format: "The recording is no longer at %@: the folder was moved or renamed, or its disk was removed, while recording. Look for the file \"%@\" where the folder is now; it holds everything that was recorded.".local, written.deletingLastPathComponent().path, written.lastPathComponent)
     }
 
+    /// `sentence` (a format with the path) when the recording is at `url`, where it was written; where to look for it
+    /// when it is not.
+    private static func keptNote(_ url: URL, _ sentence: String) -> String {
+        return fd.fileExists(atPath: url.path) ? String(format: sentence, url.path) : movedNote(for: url)
+    }
+
     /// Shows the floating preview for a finished recording. `image` is that recording's first frame or an icon.
     static func showPreview(path: String, image: NSImage?) {
         if let previewImage = image, let screen = ScreenContent.getScreenWithMouse() {
@@ -233,16 +239,27 @@ enum RecordingSaver {
         }
     }
 
-    nonisolated static func m4a2mp3(inputUrl: URL, outputUrl: URL, bitrate: Int) async throws {
-        let lameEncoder = try SwiftLameEncoder(
-            sourceUrl: inputUrl,
-            configuration: .init(
-                sampleRate: .custom(48000),
-                bitrateMode: .constant(Int32(bitrate)),
-                quality: .nearBest
-            ),
-            destinationUrl: outputUrl
-        )
-        try await lameEncoder.encode(priority: .userInitiated)
+    /// Converts the audio file `source` to MP3 at `bitrate` kbit/s into `output`, replacing what is there (a name
+    /// the caller has chosen: a recording's free name, or one confirmed in the save panel). Returns only when the
+    /// MP3 opens and is as long as `source`; otherwise it throws and leaves no file at `output`. `source` is only read.
+    nonisolated static func convertToMP3(_ source: URL, to output: URL, bitrate: Int) async throws {
+        guard RecordingFileStore.hasRoomForCopy(of: source) else {
+            throw RecordingError("Not enough free disk space to convert the recording to MP3.")
+        }
+        // The encoder appends to a file that exists
+        if fd.fileExists(atPath: output.path) { try fd.removeItem(at: output) }
+        do {
+            let encoder = try SwiftLameEncoder(
+                sourceUrl: source,
+                configuration: .init(sampleRate: .custom(48000), bitrateMode: .constant(Int32(bitrate)), quality: .nearBest),
+                destinationUrl: output
+            )
+            try await encoder.encode(priority: .userInitiated)
+            // The encoder does not report a failed write: a full disk leaves an empty or cut-off file
+            try RecordingMixer.verifyConversion(source: source, output: output)
+        } catch {
+            try? fd.removeItem(at: output)
+            throw error
+        }
     }
 }

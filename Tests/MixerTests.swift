@@ -220,6 +220,34 @@ func mixerTests() async {
         expectClose(try await TestMovie.seconds(of: output), try await TestMovie.seconds(of: raw), within: 0.1, "length of the mix")
     }
 
+    await test("Conversion: a converted file is accepted only when it opens and is as long as the recording") {
+        let folder = try Suite.folder("conversion")
+        /// An AAC file of `seconds` of tone, as an audio-only recording is written
+        func audioFile(_ name: String, seconds: Double) throws -> URL {
+            let url = folder.appendingPathComponent(name)
+            let file = try AVAudioFile(forWriting: url, settings: TestMovie.aac)
+            let pcm = try require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48000), "buffer")
+            pcm.frameLength = 48000
+            let data = try require(pcm.floatChannelData, "float data")
+            for channel in 0..<Int(file.processingFormat.channelCount) {
+                for frame in 0..<48000 { data[channel][frame] = 0.3 * Float(sin(2 * Double.pi * 440 * Double(frame) / 48000)) }
+            }
+            for _ in 0..<Int(seconds) { try file.write(from: pcm) }
+            return url
+        }
+        let source = try audioFile("recording.m4a", seconds: 5)
+        try RecordingMixer.verifyConversion(source: source, output: try audioFile("complete.m4a", seconds: 5))
+        let short = await expectThrows("a cut-off file") { try RecordingMixer.verifyConversion(source: source, output: try audioFile("cut.m4a", seconds: 2)) }
+        expect(short.contains("long"), "the reason gives both lengths: \(short)")
+        let empty = folder.appendingPathComponent("empty.mp3")
+        try Data().write(to: empty)
+        await expectThrows("an empty file") { try RecordingMixer.verifyConversion(source: source, output: empty) }
+        let garbage = folder.appendingPathComponent("garbage.mp3")
+        try Data(repeating: 7, count: 4096).write(to: garbage)
+        await expectThrows("a file that does not open") { try RecordingMixer.verifyConversion(source: source, output: garbage) }
+        await expectThrows("a file that was not written") { try RecordingMixer.verifyConversion(source: source, output: folder.appendingPathComponent("missing.mp3")) }
+    }
+
     await test("Leftovers: a recording is inspected by opening it") {
         let raw = try await source()
         let closed = await RecordingMixer.inspect(raw)

@@ -562,11 +562,10 @@ class AudioPlayerManager: ObservableObject {
             guard saveAsMP3 else { finish(.success(mixed)); return }
             Task {
                 do {
-                    try await RecordingSaver.m4a2mp3(inputUrl: mixed, outputUrl: mp3, bitrate: audioQuality)
+                    try await RecordingSaver.convertToMP3(mixed, to: mp3, bitrate: audioQuality)
                     try? fd.removeItem(at: mixed)
                     finish(.success(mp3))
                 } catch {
-                    try? fd.removeItem(at: mp3)
                     try? fd.removeItem(at: mixed)
                     finish(.failure(error))
                 }

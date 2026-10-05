@@ -238,6 +238,21 @@ enum RecordingMixer {
         try checkMicrophone(system: rawAudio[0], microphone: rawAudio[1], in: raw, mixed: mixedAudio, in: mixed, seconds: rawSeconds)
     }
 
+    /// Throws unless `output`, an audio file converted from the audio file `source`, opens and is as long as
+    /// `source` to within a second. The MP3 encoder does not report a failed write, so an empty or cut-off file
+    /// is only found here.
+    static func verifyConversion(source: URL, output: URL) throws {
+        func seconds(_ url: URL) -> Double? {
+            guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else { return nil }
+            return Double(file.length) / file.fileFormat.sampleRate
+        }
+        guard let outputSeconds = seconds(output), outputSeconds > 0 else { throw RecordingError("The converted file was not written completely.") }
+        guard let sourceSeconds = seconds(source) else { throw RecordingError("The recording cannot be read to check the converted file.") }
+        guard abs(outputSeconds - sourceSeconds) <= 1 else {
+            throw RecordingError(String(format: "The converted file is %.1f s long, the recording %.1f s.", outputSeconds, sourceSeconds))
+        }
+    }
+
     /// A sound below this (-60 dBFS) counts as silence
     private static let silence = 0.001
 
