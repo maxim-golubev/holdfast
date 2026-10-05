@@ -45,7 +45,7 @@ struct HighlightMask: View {
                     }
                 }
             }
-            .onPressGesture {
+            .onClick {
                 if let w = WindowHighlighter.shared.getSCWindowWithID(UInt32(windowID)),
                    let d = ScreenContent.getSCDisplayWithMouse() {
                     display = d
@@ -61,8 +61,8 @@ struct HighlightMask: View {
     
     func startRecording() {
         closeAllWindow()
-        switch WindowHighlighter.shared.Mode {
-        case 2:
+        switch WindowHighlighter.shared.mode {
+        case .area:
             guard let screen = display, let nsScreen = display?.nsScreen, let frame = window?.frame else { return }
             let onDesktop = CGRectTransform(cgRect: frame)
             // Relative to its screen, as the area selector gives it
@@ -71,7 +71,7 @@ struct HighlightMask: View {
             appDelegate.createCountdownPanel(screen: screen) {
                 RecorderController.shared.start(type: .screenarea, display: screen, windows: nil, applications: nil, autoStop: autoStop, area: area)
             }
-        default:
+        case .window:
             if let d = display, let w = window {
                 appDelegate.createCountdownPanel(screen: d) {
                     RecorderController.shared.start(type: .window, display: d, windows: [w], applications: nil, autoStop: autoStop)
@@ -88,23 +88,21 @@ class WindowHighlighter {
     private var keyMonitor: Any?
     var targetWindowID: Int?
     var mask: EscPanel?
-    var Mode: Int = 1
-    
-    func registerMouseMonitor(mode: Int = 1) {
+
+    /// What a click on a window picks: the window, recorded as a window, or its frame, recorded as an area
+    enum PickMode { case window, area }
+    private(set) var mode = PickMode.window
+
+    func registerMouseMonitor(mode: PickMode = .window) {
         closeAllWindow()
-        Mode = mode
-        DispatchQueue.main.async {
-            var message = ""
-            var id = ""
+        self.mode = mode
+        // A run loop block: the tip is modal, and must not hold up the main queue
+        UserNotice.onMainRunLoop {
+            // The ids are those dismissed tips were stored under
             switch mode {
-            case 2:
-                id = "qr.how-to-select.note2"
-                message = "Click on a window to select its area\nor press Esc to cancel.".local
-            default:
-                message = "Click the window you want to record\nor press Esc to cancel.".local
-                id = "qr.how-to-select.note"
+            case .area: tips("Click on a window to select its area\nor press Esc to cancel.".local, id: "qr.how-to-select.note2")
+            case .window: tips("Click the window you want to record\nor press Esc to cancel.".local, id: "qr.how-to-select.note")
             }
-            tips(message, id: id)
             // The tip's alert had the keyboard
             self.makeCoverKey()
         }
@@ -284,10 +282,8 @@ func CGRectTransform(cgRect: CGRect) -> NSRect {
 }
 
 extension View {
-    func onPressGesture(perform: @escaping () -> Void) -> some View {
-        self.gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in perform() }
-        )
+    /// Once per click, when the button is released: `perform` looks the window up, which blocks the main thread
+    func onClick(perform: @escaping () -> Void) -> some View {
+        gesture(DragGesture(minimumDistance: 0).onEnded { _ in perform() })
     }
 }

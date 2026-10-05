@@ -105,7 +105,7 @@ struct AreaSelector: View {
                     nsWindow?.close()
                     for w in NSApp.windows(.areaSelector) { w.close() }
                     appDelegate.stopAreaSelectorMonitor()
-                    WindowHighlighter.shared.registerMouseMonitor(mode: 2)
+                    WindowHighlighter.shared.registerMouseMonitor(mode: .area)
                 } icon: {
                     ZStack {
                         Image(systemName: "circle.fill")
