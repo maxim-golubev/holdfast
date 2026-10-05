@@ -359,12 +359,12 @@ func closeAllWindow(except: NSUserInterfaceItemIdentifier? = nil) {
         && (except == nil || $0.identifier != except) }) { w.close() }
 }
 
-/// A tip that is shown until "Don't remind me again" is chosen
+/// A tip that is shown until "Don't Remind Me Again" is chosen. Return is OK: it shows the tip again next time.
 func tips(_ message: String, id: String) {
     let never = AppSettings.dismissedTips
     if never.contains(id) { return }
-    let alert = createAlert(title: Bundle.main.appName + " Tips".local, message: message, button1: "Don't remind me again", button2: "OK").runModal()
-    if alert == .alertFirstButtonReturn { AppSettings.dismissedTips = never + [id] }
+    let alert = createAlert(title: Bundle.main.appName + " Tips".local, message: message, button1: "OK", button2: "Don't Remind Me Again").runModal()
+    if alert == .alertSecondButtonReturn { AppSettings.dismissedTips = never + [id] }
 }
 
 func createAlert(level: NSAlert.Style = .warning, title: String, message: String, button1: String, button2: String = "") -> NSAlert {

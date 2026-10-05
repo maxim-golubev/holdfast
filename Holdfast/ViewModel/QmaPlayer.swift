@@ -250,11 +250,12 @@ struct PlayerSlider: View {
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 2) {
+                // As the menu bar shows a recording's length
                 HStack {
-                    Text("\(String(format: "%.2d:%.2d:%.2d", isDragging ? Int(temporaryPercentage * audioLength) / 3600 : Int(percentage * audioLength) / 3600, isDragging ? Int(temporaryPercentage * audioLength) / 60 : Int(percentage * audioLength) / 60, isDragging ? Int(temporaryPercentage * audioLength) % 60 : Int(percentage * audioLength) % 60))"
-                    ).foregroundColor(.secondary)
+                    Text(Timeline.lengthText((isDragging ? temporaryPercentage : percentage) * audioLength))
+                        .foregroundColor(.secondary)
                     Spacer()
-                    Text("\(String(format: "%.2d:%.2d:%.2d", Int(audioLength) / 3600, Int(audioLength) / 60, Int(audioLength) % 60))")
+                    Text(Timeline.lengthText(audioLength))
                         .foregroundColor(.secondary)
                 }
                 ZStack(alignment: .leading) {

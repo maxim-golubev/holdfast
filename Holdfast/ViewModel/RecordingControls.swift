@@ -56,7 +56,8 @@ struct MicToggle: View {
         })) {
             ControlLabel("Record Microphone", "mic.fill")
         }
-        .disabled(!hasDevices)
+        // With no microphone it can still be switched off, so that starts stop asking about the missing one
+        .disabled(!hasDevices && !recordMic)
         .help(hasDevices ? "Record the microphone along with the recording" : "No microphone is connected")
         .onAppear { hasDevices = !MicSelection.getMicrophone().isEmpty }
         .onReceive(MicSelection.devicesChanged) { hasDevices = !MicSelection.getMicrophone().isEmpty }

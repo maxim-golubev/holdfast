@@ -380,10 +380,18 @@ struct GeneralSettings: View {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            print("Failed to \(enabled ? "enable" : "disable") launch at login: \(error.localizedDescription)")
+            UserNotice.showAlertLater(title: enabled ? "Launch at Login Not Turned On" : "Launch at Login Not Turned Off", message: error.localizedDescription)
         }
         // What the system says now, so that the switch never shows what was not done
-        launchAtLogin = SMAppService.mainApp.status == .enabled
+        let status = SMAppService.mainApp.status
+        launchAtLogin = status == .enabled
+        if enabled && status == .requiresApproval {
+            // Holdfast was switched off in Login Items once; only the user can switch it on there again
+            let answer = createAlert(level: .informational, title: "Launch at Login Needs Your Approval",
+                                     message: "Holdfast is switched off in System Settings → General → Login Items. Switch it on there to have it open at login.",
+                                     button1: "Open Login Items", button2: "Cancel").runModal()
+            if answer == .alertFirstButtonReturn { SMAppService.openSystemSettingsLoginItems() }
+        }
     }
 }
 
