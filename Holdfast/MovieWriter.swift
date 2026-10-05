@@ -198,10 +198,8 @@ final class MovieWriter {
         // From here on what is at the recording's name is this writer's: the package, or the file AVAudioFile creates
         created = recording.rawURL
         if let micAudioURL = recording.micAudioURL {
-            let exportMP3 = recording.audioFormat == .mp3
-            let jsonString = "{\"format\": \"\(recording.audioFileEnding)\", \"encoder\": \"\(recording.audioEncoder)\", \"exportMP3\": \(exportMP3), \"sysVol\": 1.0, \"micVol\": 1.0}"
             try FileManager.default.createDirectory(at: recording.rawURL, withIntermediateDirectories: true, attributes: nil)
-            try jsonString.write(to: recording.rawURL.appendingPathComponent("info.json"), atomically: true, encoding: .utf8)
+            try QmaInfo(format: recording.audioFileEnding, encoder: recording.audioEncoder, exportMP3: recording.audioFormat == .mp3).write(package: recording.rawURL)
 
             // MicConverter delivers 48 kHz stereo whatever the device's own format is
             let writer = try AVAssetWriter(outputURL: micAudioURL, fileType: recording.audioFileType)

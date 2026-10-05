@@ -167,6 +167,22 @@ func filesTests() async {
         expectEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 2, "files in the folder")
     }
 
+    await test("Package: info.json of earlier versions is read, and what is written reads back") {
+        // As the writer wrote it before it used JSONEncoder
+        let earlier = Data("{\"format\": \"flac\", \"encoder\": \"flac\", \"exportMP3\": false, \"sysVol\": 1.0, \"micVol\": 1.5}".utf8)
+        let info = try QmaInfo.decode(earlier)
+        expectEqual(info, QmaInfo(format: "flac", encoder: "flac", exportMP3: false, sysVol: 1, micVol: 1.5), "an earlier package")
+        let package = try Suite.folder("package").appendingPathComponent("Recording at X.qma")
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: false)
+        var changed = info
+        changed.sysVol = 0.5
+        try changed.write(package: package)
+        expectEqual(try QmaInfo.read(package: package), changed, "read back")
+        expectEqual(changed.systemAudio(in: package).lastPathComponent, "sys.flac", "system audio file")
+        expectEqual(changed.microphone(in: package).lastPathComponent, "mic.flac", "microphone file")
+        await expectThrows("a package without info.json") { _ = try QmaInfo.read(package: package.deletingLastPathComponent()) }
+    }
+
     await test("Staging: a file made from a recording gets its name only when it is complete") {
         let folder = try Suite.folder("staging")
         let output = folder.appendingPathComponent("Standup.mp3")

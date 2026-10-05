@@ -144,12 +144,10 @@ struct qmaPlayerView: View {
         }
         .onAppear {
             do {
-                try audioPlayerManager.loadAudioFiles(format: document.info.format, package: fileURL, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
+                try audioPlayerManager.loadAudioFiles(package: fileURL, info: document.info)
             } catch {
                 UserNotice.showAlertLater(title: "Recording Not Opened", message: String(format: "The audio files of %@ could not be opened: %@", fileURL.lastPathComponent, error.localizedDescription))
             }
-            audioPlayerManager.sysVol = document.info.sysVol
-            audioPlayerManager.micVol = document.info.micVol
         }
         .background(WindowAccessor(onWindowOpen: { w in
             guard let w = w else { return }
@@ -321,67 +319,31 @@ struct PlayerSlider: View {
     }
 }
 
+/// A .qma package opened in the player. Only its `info.json` is read and written (`QmaInfo`): the player reads the
+/// audio files from disk, and saving a changed volume leaves them as they are.
 struct qmaPackageHandle: FileDocument {
     static var readableContentTypes: [UTType] { [UTType.qma] }
     
-    var info: Info
-    var sysAudio: Data
-    var micAudio: Data
+    var info: QmaInfo
     
-    struct Info: Codable {
-        var format: String
-        var encoder: String
-        var exportMP3: Bool
-        var sysVol: Float
-        var micVol: Float
-    }
-    
-    init(info: Info = Info(format: "m4a", encoder: "aac", exportMP3: false, sysVol: 1.0, micVol: 1.0), sysAudio: Data = Data(), micAudio: Data = Data()) {
+    init(info: QmaInfo = QmaInfo(format: "m4a", encoder: "aac", exportMP3: false)) {
         self.info = info
-        self.sysAudio = sysAudio
-        self.micAudio = micAudio
     }
 
     init(configuration: ReadConfiguration) throws {
-        try self.init(wrappers: configuration.file.fileWrappers)
-    }
-
-    /// The package at `url`, for code that has no document
-    static func load(from url: URL) throws -> qmaPackageHandle {
-        return try qmaPackageHandle(wrappers: FileWrapper(url: url, options: .immediate).fileWrappers)
-    }
-
-    private init(wrappers: [String: FileWrapper]?) throws {
-        guard let wrappers = wrappers,
-              let infoData = wrappers["info.json"]?.regularFileContents,
-              let info = try? JSONDecoder().decode(Info.self, from: infoData),
-              let sysAudio = wrappers["sys.\(info.format)"]?.regularFileContents,
-              let micAudio = wrappers["mic.\(info.format)"]?.regularFileContents else {
+        guard let data = configuration.file.fileWrappers?[QmaInfo.fileName]?.regularFileContents else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        self.info = info
-        self.sysAudio = sysAudio
-        self.micAudio = micAudio
+        info = try QmaInfo.decode(data)
     }
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        let infoData = try JSONEncoder().encode(info)
-        let infoFileWrapper = FileWrapper(regularFileWithContents: infoData)
-        infoFileWrapper.preferredFilename = "info.json"
-        
-        let sysAudioFileWrapper = FileWrapper(regularFileWithContents: sysAudio)
-        sysAudioFileWrapper.preferredFilename = "sys.\(info.format)"
-        
-        let micAudioFileWrapper = FileWrapper(regularFileWithContents: micAudio)
-        micAudioFileWrapper.preferredFilename = "mic.\(info.format)"
-        
-        let fileWrapper = FileWrapper(directoryWithFileWrappers: [
-            "info.json": infoFileWrapper,
-            "sys.\(info.format)": sysAudioFileWrapper,
-            "mic.\(info.format)": micAudioFileWrapper
-        ])
-        
-        return fileWrapper
+        let package = configuration.existingFile ?? FileWrapper(directoryWithFileWrappers: [:])
+        if let old = package.fileWrappers?[QmaInfo.fileName] { package.removeFileWrapper(old) }
+        let infoFile = FileWrapper(regularFileWithContents: try info.encoded())
+        infoFile.preferredFilename = QmaInfo.fileName
+        package.addFileWrapper(infoFile)
+        return package
     }
 }
 
@@ -443,19 +405,19 @@ class AudioPlayerManager: ObservableObject {
         }
     }
     
-    /// Opens the system audio and microphone files of the package
-    func loadAudioFiles(format: String, package: URL, encoder: String, saveMP3: Bool) throws {
-        fileFormat = format
-        fileEncoder = encoder
-        exportMP3 = saveMP3
+    /// Opens the system audio and microphone files of the package, at the volumes it was saved with
+    func loadAudioFiles(package: URL, info: QmaInfo) throws {
+        fileFormat = info.format
+        fileEncoder = info.encoder
+        exportMP3 = info.exportMP3
         packageURL = package
-        let system = try AVAudioFile(forReading: package.appendingPathComponent("sys.\(format)"))
-        let microphone = try AVAudioFile(forReading: package.appendingPathComponent("mic.\(format)"))
+        let system = try AVAudioFile(forReading: info.systemAudio(in: package))
+        let microphone = try AVAudioFile(forReading: info.microphone(in: package))
         audioFile1 = system
         audioFile2 = microphone
         audioLength = Double(system.length) / system.processingFormat.sampleRate
-        updateSysVol()
-        updateMicVol()
+        sysVol = info.sysVol
+        micVol = info.micVol
     }
     
     func play() {

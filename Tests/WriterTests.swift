@@ -343,8 +343,10 @@ func writerTests() async {
         let recording = run.recording
         expectEqual(recording.rawURL.pathExtension, "qma", "a package")
         try writer.prepareAudio()
-        let info = try String(contentsOf: recording.rawURL.appendingPathComponent("info.json"), encoding: .utf8)
-        expect(info.contains("\"format\": \"m4a\"") && info.contains("\"encoder\": \"aac\""), "what the package says about itself: \(info)")
+        let info = try QmaInfo.read(package: recording.rawURL)
+        expectEqual(info, QmaInfo(format: "m4a", encoder: "aac", exportMP3: false, sysVol: 1, micVol: 1), "what the package says about itself")
+        expectEqual(info.systemAudio(in: recording.rawURL), recording.systemAudioURL, "where it says its system audio is")
+        expectEqual(info.microphone(in: recording.rawURL), recording.micAudioURL, "and its microphone")
         writer.startCapturing()
         try run.microphone(-0.1)
         try run.frame(-0.1)

@@ -174,12 +174,10 @@ enum RecordingSaver {
             }
             let player = AudioPlayerManager()
             do {
-                let document = try qmaPackageHandle.load(from: package)
-                try player.loadAudioFiles(format: document.info.format, package: package, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
-                player.sysVol = document.info.sysVol
-                player.micVol = document.info.micVol
+                let info = try QmaInfo.read(package: package)
+                try player.loadAudioFiles(package: package, info: info)
                 // With the settings the recording was started with, not the current ones
-                player.saveFile(recording.finalURL, saveAsMP3: document.info.exportMP3, audioQuality: recording.audioQuality) { result in
+                player.saveFile(recording.finalURL, saveAsMP3: info.exportMP3, audioQuality: recording.audioQuality) { result in
                     switch result {
                     case .success(let file): present(file, image: audioIcon, recording: recording, earlyReason: earlyReason)
                     case .failure(let error): failed(error.localizedDescription)

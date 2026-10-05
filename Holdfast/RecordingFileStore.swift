@@ -239,6 +239,40 @@ struct RecordingFiles {
     }
 }
 
+/// What a .qma package (an audio-only recording with a microphone) says about itself in its `info.json`: the
+/// extension and encoder of its two files `sys.<format>` and `mic.<format>`, whether its mix is converted to MP3, and
+/// the volumes of the two in the mix. Read and written by itself, without the audio files.
+struct QmaInfo: Codable, Equatable {
+    var format: String
+    var encoder: String
+    var exportMP3: Bool
+    var sysVol: Float = 1
+    var micVol: Float = 1
+
+    static let fileName = "info.json"
+
+    static func read(package: URL) throws -> QmaInfo {
+        return try decode(Data(contentsOf: package.appendingPathComponent(fileName)))
+    }
+
+    static func decode(_ data: Data) throws -> QmaInfo {
+        return try JSONDecoder().decode(QmaInfo.self, from: data)
+    }
+
+    func encoded() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(self)
+    }
+
+    func write(package: URL) throws {
+        try encoded().write(to: package.appendingPathComponent(QmaInfo.fileName), options: .atomic)
+    }
+
+    func systemAudio(in package: URL) -> URL { package.appendingPathComponent("sys.\(format)") }
+    func microphone(in package: URL) -> URL { package.appendingPathComponent("mic.\(format)") }
+}
+
 /// The labels launch recovery puts in the names of the files an earlier run left behind: `<name> (<label>).<ext>`
 enum RecoveryNames {
     /// What an interrupted mix had written
