@@ -211,7 +211,8 @@ extension AppDelegate {
         mainPanel.backgroundColor = .clear
         mainPanel.isReleasedWhenClosed = false
         mainPanel.isMovableByWindowBackground = true
-        mainPanel.collectionBehavior = [.canJoinAllSpaces]
+        // Also over a full-screen app, where the hotkey and the menus may open it
+        mainPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         mainPanel.center()
         if let screen = mainPanel.screen {
             mainPanel.setFrameOrigin(NSPoint(x: screen.frame.midX - mainPanel.frame.width / 2, y: screen.frame.midY - mainPanel.frame.height / 2))
@@ -241,7 +242,8 @@ extension AppDelegate {
             let frame = NSRect(x: screen.frame.midX - size.width / 2, y: screen.visibleFrame.minY + gapAboveDock, width: size.width, height: size.height)
             contentView.focusRingType = .none
             let areaPanel = AreaPanel(contentRect: frame, styleMask: [.fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
-            areaPanel.collectionBehavior = [.canJoinAllSpaces]
+            // With the selector it belongs to, which is on a full-screen app's Space too
+            areaPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             areaPanel.level = .screenSaver
             areaPanel.title = "Start Recording"
             areaPanel.identifier = .areaPanel
@@ -269,6 +271,8 @@ extension AppDelegate {
         window.level = .screenSaver
         window.ignoresMouseEvents = true
         window.isReleasedWhenClosed = false
+        // The area is recorded whatever Space its display shows
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.title = "Area Overlayer"
         window.identifier = .areaOverlay
         window.backgroundColor = NSColor.clear

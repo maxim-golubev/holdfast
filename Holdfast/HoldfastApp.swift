@@ -235,6 +235,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             if let error = error { print("Notification authorization denied: \(error.localizedDescription)") }
         }
         
+        // The windows that go with a recording or its start are on every Space, a full-screen app's included: an
+        // app that is not active shows a window there only when it is a full-screen auxiliary
+        for window in [mousePointer, screenMagnifier, countdownPanel] {
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        }
         mousePointer.title = WindowTitle.mousePointer
         mousePointer.level = .screenSaver
         mousePointer.ignoresMouseEvents = true

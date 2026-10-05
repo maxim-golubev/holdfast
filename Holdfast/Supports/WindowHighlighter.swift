@@ -125,7 +125,8 @@ class WindowHighlighter {
             cover.backgroundColor = .clear
             cover.ignoresMouseEvents = true
             cover.isReleasedWhenClosed = false
-            cover.collectionBehavior = [.canJoinAllSpaces, .stationary]
+            // A full-screen app's window can be picked too
+            cover.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
             cover.title = "Screen Cover"
             cover.identifier = .screenCover
             cover.orderFront(self)
@@ -217,7 +218,7 @@ class WindowHighlighter {
         mask?.titleVisibility = .hidden
         mask?.isMovableByWindowBackground = false
         mask?.isReleasedWhenClosed = false
-        mask?.collectionBehavior = [.canJoinAllSpaces, .transient]
+        mask?.collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary]
         mask?.setFrame(CGRectTransform(cgRect: frame), display: true)
         mask?.order(.above, relativeTo: windowID)
         mask?.makeKey()

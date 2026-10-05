@@ -236,6 +236,8 @@ enum RecordingSaver {
                                    styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
         window.identifier = .preview
         window.level = .statusBar
+        // Where the user is when the recording ends, a full-screen meeting included
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
