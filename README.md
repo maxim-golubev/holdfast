@@ -1,52 +1,79 @@
-> **Note:** this is a modified personal fork of [lihaoyun6/QuickRecorder](https://github.com/lihaoyun6/QuickRecorder), distributed under the same [AGPL-3.0](./LICENSE) license. It targets macOS 15+ on Apple Silicon, has no auto-updater and makes no network requests. For official releases, use the upstream project.
+# QuickRecorder (meeting-recording fork)
 
-<p align="center">
-<img src="./QuickRecorder/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png" width="200" height="200" />
-<h1 align="center">QuickRecorder</h1>
-<h3 align="center">A lightweight and high-performance screen recorder for macOS</h3>
-</p>
+A personal, modified fork of [lihaoyun6/QuickRecorder](https://github.com/lihaoyun6/QuickRecorder), the macOS screen recorder built on ScreenCaptureKit. It is not an official release; for those, use the upstream project.
 
-## Screenshot
-<p align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./img/preview_en_dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="./img/preview_en.png">
-  <img alt="QuickRecorder Screenshots" src="./img/preview_en.png" width="840"/>
-</picture>
-</p>
+The fork is narrowed to one job: recording 60 to 90 minute video meetings (screen, system audio and a Bluetooth microphone, mixed to one audio track) without losing any of it. It runs on macOS 15 or later on Apple Silicon, has no updater and makes no network requests.
 
-## Installation and Usage
-### System Requirements:
-- macOS 15.0 and later
+## What it records
 
-### Install:
-This fork has no binary releases. Build it from source with `Tools/build.sh` (requires Xcode); the app is written to `build/Build/Products/Release/`.
+- A screen, a screen area, an application, a window, or system audio alone.
+- System audio and the microphone as two tracks, mixed into one after the recording (Settings, Audio, "Mix Microphone into the Main Track").
+- The menu bar item shows the elapsed time while recording; its menu has Stop Recording, Pause and Mute Microphone. The same menu is on the Dock icon.
 
-### Features/Usage:
-- You can use QuickRecorder to record your screens / screen areas / windows / applications, or system audio alone.
+Removed from upstream: the updater, iPhone/iPad recording, the camera and Presenter Overlay, GIF export, the background colour option and localizations (English only).
 
-- QuickRecorder supports driver-free audio loopback recording, mouse highlighting, screen magnifier and many more useful features.  
-- QuickRecorder is able to record `HEVC with Alpha` video format, that can contain alpha channel in the output file *(currently only iMovie and FCPX support this feature)*  
+## Reliability
 
-## Q&A
-**1. Where can I reopen the main panel after closing it?**
-> Click the Dock tile of QuickRecorder, or "Open Main Panel" in its menu bar item, to reopen the main panel at any time. While recording, the menu bar item shows the elapsed time, and its menu has Stop Recording, Pause and Mute Microphone.
+| Guarantee | How |
+| --- | --- |
+| The microphone keeps recording when a call app (Zoom, Meet, Teams) takes it | The microphone is captured through ScreenCaptureKit only, never through an audio engine tap, which goes silent for good when another app opens the microphone with voice processing. The device's changing format is converted to one continuous 48 kHz track. |
+| The microphone follows the device | When AirPods disconnect, reconnect or the default input changes, the running recording switches device and says so in the log. |
+| A crash, kill or power loss leaves a playable file | The movie is written in 10 second fragments, and a timer keeps every track fed (silence, or the last frame again) so fragments keep reaching the disk even when a source delivers nothing. |
+| An interrupted recording is finished at the next launch | Files left under a temporary name are found, mixed, checked and renamed; one report lists what was recovered. Nothing is deleted. |
+| The mix cannot cost you the recording | The mix is written under a temporary name and checked (tracks, length, and that the microphone is audible in it) before anything is renamed. The recording as written is kept next to it as "(unmixed, 2 audio tracks)". If the mix fails, that file is what you get, with a report. |
+| A silent track is noticed while it happens | No microphone or system audio for 5 seconds, or only digital silence from the microphone for 20 seconds, turns the menu bar item into an orange warning and posts a notification; another one when the audio is back. |
+| No silent failures | A start that cannot record what was asked for (no microphone, no permission, under 2 GB free) is refused with an alert. A write error, a full disk (under 500 MB) or a stream that dies stops the recording, closes the file and reports it. |
+| Quitting never truncates | Quit while recording, saving or mixing waits for the final file. |
 
-**2. Why does QuickRecorder not a sandbox app?**
-> QuickRecorder has no plans to be uploaded to the App Store, so it does not need to be designed as a sandbox app.  
+## Known limits
 
-**3. How to independently control the volume of system sound and sound from microphone in other video editor?**
-> QuickRecorder will merge the audio input from the microphone to the main audio track after recording by default. If you need to edit the video, you can turn off the `Mix Microphone into the Main Track` option in Settings, under Audio. After turning off, the system sound and sound from microphone will be recorded into two audio tracks and can be edited independently.  
+- **FaceTime call audio cannot be recorded.** macOS keeps it out of system audio capture, so no ScreenCaptureKit recorder gets the other side of a FaceTime call. Your own microphone is still recorded. Zoom, Meet, Teams and browser calls are captured.
+- **A file that was never closed misses its end.** After a crash or kill, about the last 12 seconds are lost (one fragment plus the lag of the slowest track). While paused nothing reaches the disk, so the seconds just before a pause are only safe after resuming.
+- In an audio-only recording, the system audio file and a FLAC or Opus microphone file (`.caf`) are not written in fragments and do not survive a crash.
+- Only the current save folder is searched for interrupted recordings.
+- A second recording cannot start until the first one's file is final.
+- A muted microphone is recorded as silence; the system's microphone indicator stays on.
 
-## Thanks
-[Azayaka](https://github.com/Mnpn/Azayaka) @Mnpn
-> The source of inspiration and part of the code of the screen recording engine comes from the Azayaka project, and I am also one of the code contributors to this project
+## Build
 
-[KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) @sindresorhus  
-> QuickRecorder uses this swift library to handle shortcut key events  
+Requires Xcode. There are no binary releases.
 
-[SwiftLAME](https://github.com/hidden-spectrum/SwiftLAME) @Hidden Spectrum
-> QuickRecorder uses this swift library to handle MP3 output
+```
+Tools/build.sh    # Release build into build/Build/Products/Release/QuickRecorder.app
+Tools/test.sh     # logic tests, a few seconds, no app, screen or microphone needed
+```
 
-[ChatGPT](https://chat.openai.com) @OpenAI
-> Note: Part of the code in this project was generated or refactored using ChatGPT.
+The project signs with the owner's development team; set your own team and bundle identifier in Xcode to build it yourself. A different bundle identifier means its own settings and its own Screen Recording and Microphone permissions.
+
+## AppleScript
+
+```applescript
+tell application "QuickRecorder"
+    record screen numbered 1
+    record screen area
+    record application named "Safari"
+    record window titled "Notes" in application "Notes"
+    record system audio microphone true
+    mute microphone
+    unmute microphone
+    stop recording
+    configure fps 30 quality 2 hires true cursor true sound true microphone true mic device "default" hdr false
+end tell
+```
+
+- The record commands without a parameter open the matching selector. They return an error when a recording is already running or still being saved.
+- `stop recording` returns at once and the file is saved in the background: wait until the menu bar item no longer says "Saving…" or "Finishing…". It also cancels a countdown and does nothing when idle.
+- `mute microphone` and `unmute microphone` return an error when no recording with a microphone is running.
+- `configure` takes any subset of its parameters; `mic device` must name a connected input.
+
+## Log
+
+`~/Library/Logs/QuickRecorder/recordings.log` (Settings, Output, "Recordings Log") has one line per event: microphone device switches and format changes, mute and unmute, track warnings, and a summary of the microphone track for every recording (buffers written and dropped, seconds of silence filled, loudest peak).
+
+## Credits and license
+
+- [QuickRecorder](https://github.com/lihaoyun6/QuickRecorder) by lihaoyun6: the original app, of which this is a modified version. Its recording engine began from [Azayaka](https://github.com/Mnpn/Azayaka) by Mnpn.
+- [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) by Sindre Sorhus: global shortcuts.
+- [SwiftLAME](https://github.com/hidden-spectrum/SwiftLAME) by Hidden Spectrum: MP3 output.
+
+Licensed under the [GNU AGPL-3.0](./LICENSE), like the original. Copyright © 2024 lihaoyun6; modifications by the fork's author.

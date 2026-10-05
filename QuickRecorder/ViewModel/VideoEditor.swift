@@ -174,7 +174,5 @@ struct VideoTrimmerView: View {
             playerViewModel.cleanup()
             trimingList.removeAll(where: { $0 == videoURL })
         }))
-        //.navigationTitle(videoURL.lastPathComponent)
-        //.preferredColorScheme(.dark)
     }
 }

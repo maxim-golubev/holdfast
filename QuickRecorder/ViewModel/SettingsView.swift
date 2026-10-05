@@ -156,7 +156,6 @@ struct ExcludedApps: View {
 }
 
 extension Bundle {
-    var bundleName: String? { return object(forInfoDictionaryKey: "CFBundleName") as? String }
     var fileName: String { return self.bundleURL.lastPathComponent }
 }
 
@@ -347,9 +346,16 @@ struct GeneralSettings: View {
                     RowLabel("Countdown Before a Recording", "Seconds counted down on screen after Start. A recording started directly by a shortcut begins at once.")
                 }
             }
-            if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
-                Section {
+            Section("About") {
+                if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
                     LabeledContent("Version", value: version)
+                }
+                LabeledContent {
+                    if let upstream = URL(string: "https://github.com/lihaoyun6/QuickRecorder") {
+                        Link("Original Project", destination: upstream)
+                    }
+                } label: {
+                    RowLabel("Modified Fork", "A personal, modified fork of QuickRecorder by lihaoyun6, under the same GNU AGPL-3.0 license. It is not an official release.")
                 }
             }
         }

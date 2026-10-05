@@ -10,7 +10,7 @@ import Cocoa
 
 struct MousePointerView: View {
     @AppStorage(AppSettings.$showMouse) private var showMouse: Bool
-    var event: NSEvent!
+    let event: NSEvent
     
     var body: some View {
         ZStack {

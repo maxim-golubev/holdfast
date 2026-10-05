@@ -83,15 +83,6 @@ enum ScreenContent {
         })
     }
     
-    static func getApps(isOnScreen: Bool = true, hideSelf: Bool = true) -> [SCRunningApplication] {
-        var apps = [SCRunningApplication]()
-        for app in getWindows(isOnScreen: isOnScreen, hideSelf: hideSelf).compactMap({ $0.owningApplication }) {
-            if !apps.contains(app) { apps.append(app) }
-        }
-        if hideSelf && AppSettings.hideSelf { apps = apps.filter({$0.bundleIdentifier != Bundle.main.bundleIdentifier}) }
-        return apps
-    }
-    
     static func getWindows(isOnScreen: Bool = true, hideSelf: Bool = true) -> [SCWindow] {
         guard let content = availableContent else { return [] }
         var windows = content.windows.filter {

@@ -107,7 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         NSImage.createScreenShot(of: rect) { [self] image in
             isMagnifierCapturing = false
             if let image, withRecorder({ $0.isMagnifierEnabled }) {
-                screenMagnifier.contentView = NSHostingView(rootView: ScreenMagnifier(screenShot: image, event: event))
+                screenMagnifier.contentView = NSHostingView(rootView: ScreenMagnifier(screenShot: image))
                 screenMagnifier.setFrameOrigin(origin)
                 screenMagnifier.orderFront(nil)
             }
@@ -384,15 +384,6 @@ extension Bundle {
 
 extension String {
     var local: String { return NSLocalizedString(self, comment: "") }
-    var deletingPathExtension: String {
-        return (self as NSString).deletingPathExtension
-    }
-    var pathExtension: String {
-        return (self as NSString).pathExtension
-    }
-    var lastPathComponent: String {
-        return (self as NSString).lastPathComponent
-    }
     var url: URL { return URL(fileURLWithPath: self) }
 }
 
@@ -449,26 +440,5 @@ extension NSImage {
                 print("Error saving image: \(error.localizedDescription)")
             }
         }
-    }
-}
-
-class NNSWindow: NSWindow {
-    override var canBecomeKey: Bool {
-        return true
-    }
-}
-
-extension utsname {
-    static var sMachine: String {
-        var utsname = utsname()
-        uname(&utsname)
-        return withUnsafePointer(to: &utsname.machine) {
-            $0.withMemoryRebound(to: CChar.self, capacity: Int(_SYS_NAMELEN)) {
-                String(cString: $0)
-            }
-        }
-    }
-    static var isAppleSilicon: Bool {
-        sMachine == "arm64"
     }
 }
