@@ -122,4 +122,45 @@ recording:
 - The app's floating windows on a full-screen Space.
 - "Leave Holdfast's Own Windows Out" with windows that open during the
   recording.
-- A 90-minute recording. The longest measured here is six minutes.
+
+## 90-minute simulation
+
+This is a simulation of the pipeline with synthetic buffers, not a live
+capture: `Tools/soak.sh` feeds the real writer, monitor, mixer and recovery
+code as fast as they take it, on a simulated clock, without the app, the
+screen or a microphone. The longest live recording measured is still six
+minutes.
+
+The simulated meeting runs 90 minutes, of which 2 are paused: 64 × 36 frames
+at 5 fps with a time code in each, and a 5-minute static slide with no frames;
+48 kHz stereo system audio with a tone every minute; a 24 kHz mono microphone
+with its own tone every minute, whose clock runs 50 ppm fast, with irregular
+buffer sizes and arrival. At 10 minutes a call app takes the microphone (10 s
+with nothing, then 3 minutes at 48 kHz), at 33 minutes the AirPods disconnect
+for 30 s, and the microphone is muted for 1 minute after the pause.
+
+- **Lengths:** 88 minutes expected (5,279.9 s from the first frame). Video
+  5,280.005 s, system audio 5,279.879 s, microphone 5,279.936 s; the mixed
+  file the same. Every track within 0.11 s.
+- **Sync, from the files:** the picture is where its time code says to the
+  millisecond. System audio within 0.2 ms of its place until the pause and
+  4.9 ms early after it. The microphone is late by its clock drift, up to
+  68 ms, and back in place after each gap, pause or mute; the largest
+  microphone-to-system offset is 71 ms. Each is less than the 0.1 s the
+  writer allows before it corrects.
+- **Silence:** the microphone track is digital silence exactly where the
+  microphone delivered nothing or was muted (10 s, 30 s, 60 s), to within the
+  drift and one AAC frame, and nowhere else. The system audio and the mixed
+  track have none.
+- **Mix:** the check after the mix passed (29 of 30 windows had the microphone
+  alone, all audible in the mix); every marker of both sources is in the mixed
+  file within 0.1 ms of where it is in the recording.
+- **Monitor:** a microphone warning and its all-clear for the call and the
+  disconnect, none for the mute; the static slide's last frame was written
+  again once a second (379 frames).
+- **Killed at 45 minutes**, writer not finished: the file opened, recovery
+  mixed it, and 2,694 s of the 2,699.9 s recorded were in it (the last 5.9 s
+  of video, 10 s of system audio and 8 s of microphone lost).
+- **Resources:** the whole run, mix and checks included, took 95 s.
+  Memory: 37 to 74 MB once the writer had caught up; up to 480 MB while it
+  was fed about 180 times faster than real time.
