@@ -97,14 +97,6 @@ struct PreviewView: View {
                 }
                 closeWindow()
             }
-            Button("Delete") {
-                do {
-                    try fd.removeItem(atPath: filePath)
-                } catch {
-                    print("Failed to delete file: \(error.localizedDescription)")
-                }
-                closeWindow()
-            }
             Divider()
             Button("Copy") {
                 if fd.fileExists(atPath: filePath) {
@@ -114,7 +106,7 @@ struct PreviewView: View {
                 }
                 closeWindow()
             }
-            Button("Share...") { showSharingServicePicker(for: filePath.url) }
+            Button("Share…") { showSharingServicePicker(for: filePath.url) }
             Divider()
             if !trimAfterRecord {
                 Button("Trim") {
@@ -125,6 +117,12 @@ struct PreviewView: View {
                 }
             }
             Button("Close") { closeWindow() }
+            Divider()
+            // Last and apart from the rest, and to the Trash: this may be the only copy of a meeting
+            Button("Move to Trash", role: .destructive) {
+                moveToTrash()
+                closeWindow()
+            }
         }
     }
     
@@ -132,6 +130,14 @@ struct PreviewView: View {
         if fd.fileExists(atPath: filePath) {
             NSWorkspace.shared.open(filePath.url)
             closeWindow()
+        }
+    }
+    
+    private func moveToTrash() {
+        do {
+            try fd.trashItem(at: filePath.url, resultingItemURL: nil)
+        } catch {
+            UserNotice.showAlertLater(title: "Not Moved to Trash", message: "\(filePath) could not be moved to the Trash: \(error.localizedDescription)")
         }
     }
     
