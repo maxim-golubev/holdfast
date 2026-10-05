@@ -95,7 +95,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 106 tests in under half a minute, without the app, a screen
+`Tools/test.sh` runs 120 tests in under half a minute, without the app, a screen
 or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
@@ -112,6 +112,7 @@ synthetic buffers and read them back.
 | Settings | 7 | Keys, defaults and stored types of earlier installations |
 | Status item | 6 | Every state's symbol, title and sentence, the timer text, the item's width |
 | Package | 1 | `.qma` info files of earlier versions |
+| System audio tap | 14 | Build and teardown order against fake Core Audio calls, cleanup after each failed step, the IOProc's copy (interleaved, non-interleaved, behind other input streams, malformed lists), host-time stamps, conversion and resampling to 48 kHz stereo, the choice between tap and screen capture with its notice, rebuilds on device changes with nothing of the old device after the new, retries, a sound-only file written from the tap's buffers |
 
 ## Not yet checked on the real machine
 
@@ -122,6 +123,12 @@ recording:
 - The app's floating windows on a full-screen Space.
 - "Leave Holdfast's Own Windows Out" with windows that open during the
   recording.
+- System audio through the Core Audio process tap: that it hears a FaceTime
+  call (`Tools/tapprobe`, then a recording during a call), its permission
+  prompt and what the permission reads as before and after, its format and
+  rate on the built-in speakers and on AirPods in their call mode, the rebuild
+  when the output device changes, and the sync of tap audio with the picture
+  over a long recording.
 
 ## 90-minute simulation
 

@@ -35,6 +35,12 @@ struct RecordingContext {
 
     subscript<T>(dynamicMember file: KeyPath<RecordingFiles, T>) -> T { files[keyPath: file] }
 
+    /// Whether a recording started so captures system audio: the setting says so, or it was started by a hotkey
+    /// or records sound only
+    static func wantsSystemAudio(audioOnly: Bool, fastStart: Bool) -> Bool {
+        return AppSettings.recordWinSound || fastStart || audioOnly
+    }
+
     var mixesAudio: Bool { files.mixURL != nil }
     var fileType: AVFileType { videoFormat == .mov ? .mov : .mp4 }
     /// MP3 is recorded as AAC and converted afterwards
@@ -48,7 +54,7 @@ struct RecordingContext {
     /// was started is handed in: `recordMic` is whether it got a microphone, `saveDirectory` the folder
     /// `RecorderController.start` has checked.
     init(audioOnly: Bool, recordMic: Bool, fastStart: Bool, saveDirectory: String) {
-        let systemAudio = AppSettings.recordWinSound || fastStart || audioOnly
+        let systemAudio = RecordingContext.wantsSystemAudio(audioOnly: audioOnly, fastStart: fastStart)
         let remuxAudio = AppSettings.remuxAudio
         let videoFormat = AppSettings.videoFormat
         let audioFormat = AppSettings.audioFormat

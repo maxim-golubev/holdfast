@@ -29,9 +29,10 @@ next to it.
   10-second fragments. After a `kill -9` 35 s into a recording, the next launch
   found the file, recovered 30 s of it, and mixed it. Quitting during a
   recording waits for the file.
-- **Built with:** Swift and SwiftUI, ScreenCaptureKit for picture, system audio
-  and microphone on one clock, AVFoundation for writing and mixing. No network
-  requests, no updater, no account.
+- **Built with:** Swift and SwiftUI, ScreenCaptureKit for picture and
+  microphone, a Core Audio process tap for system audio, all on one clock, and
+  AVFoundation for writing and mixing. No network requests, no updater, no
+  account.
 
 ## Engineering
 
@@ -76,14 +77,17 @@ Most of the work went into five problems:
 
 One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
-final file. 106 tests run in under half a minute without the app, a screen, or
+final file. 120 tests run in under half a minute without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 
 ## Limits
 
-- FaceTime call audio is not available to any screen recorder through
-  ScreenCaptureKit. Your own microphone is still recorded.
+- ScreenCaptureKit leaves out the audio of FaceTime calls and of phone calls
+  taken on the Mac. Holdfast records system audio through a Core Audio process
+  tap instead, which should include them, but this has not yet been verified
+  on a real FaceTime call. Without the System Audio Recording permission it
+  falls back to ScreenCaptureKit, says so, and call audio is missing.
 - A file that was never closed (a crash, a kill, a power loss) misses up to
   about its last 12 seconds.
 - Only the current save folder is searched for interrupted recordings.
@@ -102,7 +106,9 @@ Requires an Apple Silicon Mac on macOS 15 or later.
    → Privacy & Security** and choose **Open Anyway**.
 3. Allow Screen Recording when macOS asks, then open Holdfast again. Turn on
    **Record Microphone** in the recording options (it starts off), and allow
-   the microphone when macOS asks. A meeting recording needs both permissions.
+   the microphone when macOS asks. When the first recording starts, allow
+   System Audio Recording too, so the other side of a call is recorded. A
+   meeting recording needs all three permissions.
 
 ## Build from source
 

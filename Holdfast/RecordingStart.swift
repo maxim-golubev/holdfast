@@ -33,14 +33,24 @@ extension RecorderController {
         let startNow = { [self] in
             startAsked(type: streamType, display: display, windows: windows, applications: applications, fastStart: fastStart, recordMic: micOverride, autoStop: autoStop, area: area)
         }
+        // The system audio permission the same way, before anything starts: its answer decides whether the system
+        // audio comes from a process tap or, without call audio, from the screen capture (`record`)
+        let askSystemAudio = {
+            guard RecordingContext.wantsSystemAudio(audioOnly: streamType == .systemaudio, fastStart: fastStart),
+                  SystemAudioPermission.status() == .notDetermined else { return startNow() }
+            SystemAudioPermission.request { granted in
+                RecLog.write("System audio permission asked for: \(granted.map { $0 ? "allowed" : "not allowed" } ?? "it cannot be asked for")")
+                DispatchQueue.main.async { MainActor.assumeIsolated { startNow() } }
+            }
+        }
         // A microphone that was switched on without the switch (a script command, the setting written by one) has
         // not been asked for yet. Asked now, before anything starts: a refusal is then the "Microphone Not
         // Available" choice, not a recording whose microphone track stays silent.
         guard (micOverride ?? AppSettings.recordMic) && AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined else {
-            return startNow()
+            return askSystemAudio()
         }
         AVCaptureDevice.requestAccess(for: .audio) { _ in
-            DispatchQueue.main.async { MainActor.assumeIsolated { startNow() } }
+            DispatchQueue.main.async { MainActor.assumeIsolated { askSystemAudio() } }
         }
     }
 
@@ -168,7 +178,25 @@ extension RecorderController {
     private nonisolated static func record(_ session: RecordingSession, filter: SCContentFilter, target: CaptureTarget, writer: MovieWriter, microphone: MicrophoneChoice?) async {
         let recording = writer.recording
         let audioOnly = recording.audioOnly
-        let conf = CaptureSource.configuration(for: recording, target: target, filter: filter, microphoneDeviceID: microphone?.captureDeviceID)
+        // Every buffer, the stream's and the tap's, goes to this session
+        let deliver: (CaptureSample) -> Void = { session.received($0) }
+
+        // System audio from a process tap when it can be started, which hears FaceTime and phone calls; from the
+        // stream otherwise, never from both
+        var systemAudio: SystemAudioSource?
+        let route = SystemAudioSelection.choose(wanted: recording.systemAudio, permission: SystemAudioPermission.status()) {
+            let source = SystemAudioSource(factory: .coreAudio, sampleQueue: session.queue, onSample: deliver)
+            try source.start()
+            systemAudio = source
+        }
+        if case .screenCaptureKit(let reason) = route {
+            RecLog.write("System audio: screen capture, without call audio (\(reason))")
+            if let notice = SystemAudioSelection.notice(for: route), SystemAudioSelection.callAudioNotice.take() {
+                UserNotice.showNotification(title: SystemAudioSelection.noticeTitle, body: notice, id: "holdfast.callaudio.\(UUID().uuidString)")
+            }
+        }
+        let conf = CaptureSource.configuration(for: recording, target: target, filter: filter, microphoneDeviceID: microphone?.captureDeviceID,
+                                               capturesAudio: route.streamCapturesAudio)
 
         if !audioOnly && !AppSettings.usesHEVC && !Encoder.encodesInHardware(kCMVideoCodecType_H264, width: Int32(conf.width), height: Int32(conf.height)) {
             let button = showAlertSyncOnMainThread(
@@ -182,8 +210,8 @@ extension RecorderController {
         }
 
         // The stream hands its buffers to this session and reports its end to it, so neither can reach another recording
-        let capture = CaptureSource(filter: filter, configuration: conf, recording: recording, microphone: microphone, queue: session.queue,
-                                    onSample: { session.received($0) },
+        let capture = CaptureSource(filter: filter, configuration: conf, recording: recording, microphone: microphone,
+                                    systemAudio: systemAudio, queue: session.queue, onSample: deliver,
                                     onStop: { [weak session] capture, error in
             let nsError = error as NSError
             let userStopped = nsError.domain == SCStreamErrorDomain && nsError.code == SCStreamError.Code.userStopped.rawValue
@@ -204,7 +232,7 @@ extension RecorderController {
             // Nothing can have stopped this recording yet: a stop that was asked for while the capture was starting
             // is carried out by enterRecording, after everything it undoes has been set up
             session.enterRecording {
-                RecLog.write("Recording started: \(recording.rawURL.lastPathComponent) (\(audioOnly ? "audio only" : "screen"), system audio \(recording.systemAudio ? "on" : "off"), microphone \(recording.recordMic ? "on" : "off"))")
+                RecLog.write("Recording started: \(recording.rawURL.lastPathComponent) (\(audioOnly ? "audio only" : "screen"), system audio \(route.name), microphone \(recording.recordMic ? "on" : "off"))")
                 if !audioOnly { AppDelegate.shared.startRecordingMouseMonitor() }
                 if recording.preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
                 if recording.recordMic { MicDevices.recordingStarted() }

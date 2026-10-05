@@ -27,7 +27,8 @@ enum MicSelection {
     
     static func getMicrophone() -> [AVCaptureDevice] {
         let discoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone], mediaType: .audio, position: .unspecified)
-        return discoverySession.devices.filter({ !$0.localizedName.contains("CADefaultDeviceAggregate") })
+        // Holdfast's own system audio tap is an input device inside this process while a recording runs
+        return discoverySession.devices.filter({ !$0.localizedName.contains("CADefaultDeviceAggregate") && $0.localizedName != SystemAudioTap.deviceName })
     }
     
     /// The chosen microphone: an AVCaptureDevice uniqueID, or "default" to follow the system default input.

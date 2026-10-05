@@ -17,6 +17,8 @@ sources=(
   Holdfast/RecordingRecovery.swift
   Holdfast/RecordingSession.swift
   Holdfast/StatusDisplay.swift
+  Holdfast/SystemAudioSource.swift
+  Holdfast/SystemAudioTap.swift
   Holdfast/Supports/DiskSpace.swift
   Tests/*.swift
 )

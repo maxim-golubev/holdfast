@@ -6,10 +6,19 @@
 import AVFoundation
 import Foundation
 
-/// The app's log, replaced here so that the tests do not write to ~/Library/Logs
+/// The app's log, replaced here so that the tests do not write to ~/Library/Logs. Any thread, like the app's.
 enum RecLog {
-    static var lines = [String]()
-    static func write(_ message: String) { lines.append(message) }
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var kept = [String]()
+    static var lines: [String] {
+        get { lock.lock(); defer { lock.unlock() }; return kept }
+        set { lock.lock(); kept = newValue; lock.unlock() }
+    }
+    static func write(_ message: String) {
+        lock.lock()
+        kept.append(message)
+        lock.unlock()
+    }
 }
 
 struct TestError: Error, CustomStringConvertible {

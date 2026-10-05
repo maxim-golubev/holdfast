@@ -41,6 +41,8 @@
 			<true/>
 		</dict>
 	</array>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Holdfast records the sound your Mac plays, including calls, so both sides of a meeting are in the recording.</string>
 	<key>NSAppleScriptEnabled</key>
 	<true/>
 	<key>OSAScriptingDefinition</key>

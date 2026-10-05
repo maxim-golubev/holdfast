@@ -7,8 +7,9 @@ there because breaking it loses audio. What was measured is in
 [validation.md](validation.md).
 
 Swift and SwiftUI on macOS 15, with an AppKit status item. ScreenCaptureKit
-captures the picture, system audio and the microphone; AVFoundation writes,
-mixes and checks the files. Two packages: KeyboardShortcuts for global
+captures the picture and the microphone, a Core Audio process tap the system
+audio (ScreenCaptureKit's system audio when the tap cannot be used); AVFoundation
+writes, mixes and checks the files. Two packages: KeyboardShortcuts for global
 shortcuts and SwiftLAME for MP3 output. The app makes no network requests.
 
 ## Source map
@@ -26,8 +27,15 @@ Holdfast/
   RecordingContext.swift    The files and the settings a recording keeps until it is saved; AudioFormat's file
                             endings; RecordingError.
   CaptureSource.swift       CaptureTarget, the SCContentFilter and SCStreamConfiguration for it, and the SCStream with
-                            its three outputs, which hand every buffer on as a CaptureSample; MicDevice and
-                            MicrophoneChoice, the microphone a recording asked for and the one it uses.
+                            its three outputs, which hand every buffer on as a CaptureSample, plus the recording's
+                            SystemAudioSource when a tap records the system audio; MicDevice and MicrophoneChoice, the
+                            microphone a recording asked for and the one it uses.
+  SystemAudioTap.swift      SystemAudioTap: one Core Audio process tap in a private aggregate device on the default
+                            output, with its IOProc; TapHardware (the Core Audio calls, CoreAudioTapHardware the real
+                            ones); SystemAudioBuffers (IO buffer to CMSampleBuffer, host time) and SystemAudioConverter
+                            (to ScreenCaptureKit's format).
+  SystemAudioSource.swift   SystemAudioSource: a recording's tap, rebuilt when the output device changes;
+                            SystemAudioSelection (tap or ScreenCaptureKit, the notice); SystemAudioPermission.
   MovieWriter.swift         CaptureSample; the AVAssetWriter and its inputs (or the files of a sound-only recording),
                             the timeline with its pauses, video frames, system audio placement, the fills, finish().
   MicConverter.swift        Microphone buffers of any format to 48 kHz stereo on a continuous timeline;
@@ -68,21 +76,23 @@ Tools/                      build.sh, test.sh, release.sh, app_icon.sh; rt.sh, t
    RecordingContext (file names, settings) ─► MovieWriter ─► session.install
                          │
                          ▼   off the main thread
- record: SCStreamConfiguration, CaptureSource, prepareVideo, startCapture
+ record: system audio from a process tap, or the stream when it cannot be started (SystemAudioSelection),
+         SCStreamConfiguration, CaptureSource, prepareVideo, startCapture
                          │
                          ▼   main thread
  enterRecording: starting → recording (log, sleep assertion, disk watch)
 
  SCStream ── screen ──────┐
-          ── system audio ┼──► sample queue ──► RecordingSession.received ──► MovieWriter.write
-          ── microphone ──┘                        video: writeFrame
+          ── microphone ──┤
+ process tap ─ system audio ┴► sample queue ──► RecordingSession.received ──► MovieWriter.write
+ (or SCStream)                                     video: writeFrame
                                                    system audio: placeSystemAudio
                                                    microphone: MicConverter.convert
                           RecordingMonitor, every 0.5 s on the same queue:
                             fill silent tracks, repeat the last frame, watchdog
 
  RecordingSession.stop ──► recording → stopping: UI torn down
-   await the capture's stop (5 s at most)
+   await the capture's stop (5 s at most): the tap first, then the stream
    on the sample queue: monitor stopped, MovieWriter.finish (pad microphone, mark inputs finished)
    stopping → finalizing: RecordingSaver.save
      finishWriting ─► RecordingMixer.mix to <name>.mixing.mp4 ─► verify ─► rename to <name>.mp4
@@ -132,8 +142,8 @@ resume, so the time it shows and the auto-stop agree with the file.
 
 ## The sample queue
 
-All three stream outputs are delivered on one serial queue,
-`RecorderController.queue`. The writer and the monitor belong to it: nothing
+All three stream outputs, and the process tap's buffers, are delivered on one
+serial queue, `RecorderController.queue`. The writer and the monitor belong to it: nothing
 else appends, so appends are ordered without locks. The session reaches its
 writer only through `queueWriter`, which traps (`dispatchPrecondition`) on any
 other queue, and so do the monitor's entry points.
@@ -153,7 +163,7 @@ other queue, and so do the monitor's entry points.
 
 `CaptureSource` builds the content filter for a screen, an area, applications,
 windows or sound only, and the stream configuration: the picture size, 48 kHz
-stereo system audio, `captureMicrophone` with the chosen device (nil follows the
+stereo system audio when the stream records it, `captureMicrophone` with the chosen device (nil follows the
 system default input), and always an explicit `minimumFrameInterval` (1/fps, or
 1 s for sound only). A frame interval of 0, or an unthrottled stream, breaks
 long recordings.
@@ -168,6 +178,66 @@ keeps delivering, on the same clock as the picture and system audio
 seconds, and ends on the main thread with `enterRecording`. Known limit:
 nothing times the start out, so a `startCapture` that never returns leaves the
 recording in `starting` until the app is force quit.
+
+### System audio
+
+ScreenCaptureKit's system audio leaves out what the system process
+`avconferenced` plays: FaceTime calls and phone calls taken on the Mac. A
+70-minute FaceTime call recorded with it held a notification tone and a
+screenshot sound at full level and none of the call. So `record()` first tries
+a Core Audio process tap (`SystemAudioSelection.choose`); the stream captures
+audio (`capturesAudio`) only when the tap cannot be used, never both, so
+nothing is recorded twice. A sound-only recording uses the same source.
+
+- **The tap.** `SystemAudioTap` creates a private global stereo tap of every
+  process but Holdfast's own (its process object from
+  `kAudioHardwarePropertyTranslatePIDToProcessObject`), left audible
+  (`muteBehavior = .unmuted`), and a private aggregate device whose main
+  sub-device is the default output device, with the tap as its sub-tap, drift
+  compensation on and the tap starting with the device: a tap alone in an
+  aggregate device delivers only zeros. The IOProc copies the tap's buffers
+  (the last ones of the input: the main device's own input streams, if any,
+  come first) into a `CMSampleBuffer` in the tap's format
+  (`kAudioTapPropertyFormat`, interleaved or not) at the aggregate device's
+  rate, stamped with the IO time stamp's host time on the host-time clock, the
+  clock ScreenCaptureKit stamps its buffers with. It does nothing else on the
+  real-time thread.
+- **The same path as the stream.** `SystemAudioSource` queues each buffer on
+  the sample queue, where `SystemAudioConverter` turns it into
+  ScreenCaptureKit's system audio format (48 kHz stereo float, one buffer per
+  channel; a buffer already in it goes on unchanged, others are converted and
+  resampled onto a continuous timeline), and hands it as an `.audio`
+  `CaptureSample` to the same `onSample` as the stream's buffers. The writer
+  and the monitor cannot tell the two sources apart.
+- **Device changes.** Listeners on the default output device, the device list
+  and the tap's own device (its sample rate, and whether it is alive: AirPods
+  switching to their call mode change rate) rebuild the tap 0.5 s after the
+  last change, on the source's own serial queue, logged. A device list change
+  leaves a tap that is still on the default output alone (its own aggregate
+  device coming and going changes the list too). A rebuild stops handing on
+  the old tap's buffers before it tears it down, and on the sample queue a
+  buffer of an earlier tap than one already handed on is dropped, so nothing of
+  the old device follows the new one; the monitor's silence fill covers the
+  moment between. A failed rebuild is retried three times, 2 s apart.
+- **Teardown.** The device is stopped, then the IOProc, the aggregate device
+  and the tap are destroyed, in that order, once: at the stop (the tap before
+  the stream, both before the writer's inputs are finished), when a start
+  fails or the stream ends (`releaseStream`), at quit
+  (`SystemAudioSource.stopAll`) and in `deinit`. Tap and aggregate device are
+  private to the process, and Core Audio destroys them with it, so a crash
+  leaves neither behind.
+- **Permission.** The tap needs "System Audio Recording Only"
+  (`kTCCServiceAudioCapture`; `NSAudioCaptureUsageDescription` in `Info.plist`).
+  macOS has no public call that reads it without asking; `SystemAudioPermission`
+  uses the TCC framework's own `TCCAccessPreflight` and `TCCAccessRequest` when
+  they are there. `start` asks before anything starts when it is not
+  determined, like the microphone. Denied or unanswered, the recording uses
+  ScreenCaptureKit's audio, logs why and posts "Call Audio Not Included" once
+  while the app runs; when the state cannot be read the tap is tried and its
+  failure decides.
+- **Not yet verified on a real call.** Whether the tap hears a FaceTime call is
+  checked with `Tools/tapprobe` (modes `global` and `calls`, the latter only
+  `avconferenced`); that has not been done yet.
 
 `MicDevices` installs CoreAudio listeners at launch. A change of the default
 input, or the chosen device going or coming back, arms a check 0.7 s later that
@@ -355,8 +425,10 @@ can start, since the reply would end it. `applicationWillTerminate` stops the
 same way for up to 30 s in case the app is terminated past that. SIGTERM is
 ignored and handled by a dispatch source that calls `NSApp.terminate` from a
 run-loop block, so `kill` takes the same path; inside a main-queue block the
-wait for the reply would hold up the stop it waits for. `kill -9` cannot be
-handled, which is what fragments and recovery are for.
+wait for the reply would hold up the stop it waits for. A process tap that is
+still running after that wait is torn down last (`SystemAudioSource.stopAll`).
+`kill -9` cannot be handled, which is what fragments and recovery are for; the
+tap and its aggregate device go with the process.
 
 ## The disk guard
 
@@ -395,7 +467,10 @@ is why the seams exist: the session sees its capture and writer through the
 the monitor's `tick(at:)` takes its time as a parameter. The writer, converter,
 mixer and recovery tests write real files with AVFoundation from synthetic
 buffers and read them back; the session tests drive the state machine through a
-fake capture and writer. Settings are read from the argument domain, never
+fake capture and writer. The system audio tests build and tear down
+`SystemAudioTap` against fake Core Audio calls (`TapHardware`), feed its IOProc
+buffer lists made in the test, and drive `SystemAudioSource`'s choice and
+rebuilds with fake taps; no tap is created. Settings are read from the argument domain, never
 written, and the log is kept in memory.
 
 ## Key constants
@@ -415,8 +490,9 @@ written, and the log is kept in memory.
 | Mix check | `RecordingMixer.verify` | length within 1 s; 30 windows; silence below -60 dBFS |
 | Disk | `DiskSpace` | start 2 GB, stop 500 MB, checked every 5 s |
 | Device switch | `MicDevices` | check 0.7 s after a change; 3 retries, 2 s apart |
+| Tap rebuild | `SystemAudioSource` | 0.5 s after the last device change; 3 retries, 2 s apart |
 | Quit wait | `applicationWillTerminate` | 30 s |
-| Track format | `MicConverter.sampleRate`, `CaptureSource` | 48 kHz stereo |
+| Track format | `MicConverter.sampleRate`, `CaptureSource`, `SystemAudioConverter` | 48 kHz stereo |
 
 ## Local data
 

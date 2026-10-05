@@ -6,12 +6,25 @@ in [validation.md](validation.md).
 
 ## Before the first meeting
 
-Holdfast needs two permissions. macOS asks for **Screen Recording** at the
+Holdfast needs three permissions. macOS asks for **Screen Recording** at the
 first launch; allow it under **System Settings → Privacy & Security → Screen &
 System Audio Recording** and open Holdfast again, since macOS applies it only
 to a new launch. A start without it explains this and quits. The **Microphone**
 permission is asked for when **Record Microphone** is first turned on, or at the
 first start that wants the microphone.
+
+The third is **System Audio Recording**. The first time a recording with system
+audio starts, macOS asks whether Holdfast may record the sound the Mac plays
+("Holdfast records the sound your Mac plays, including calls, so both sides of a
+meeting are in the recording."); the recording starts once you answer. Allow
+it: Holdfast then records system audio through a Core Audio process tap, which
+hears FaceTime calls and phone calls taken on the Mac. Screen capture's own
+system audio leaves those out. If you don't allow it, the recording still has
+system audio, from screen capture, and a notification, **Call Audio Not
+Included**, says once while Holdfast runs that the other side of a FaceTime or
+phone call will be missing. To change your answer later, turn Holdfast on under
+**System Settings → Privacy & Security → Screen & System Audio Recording →
+System Audio Recording Only**; it applies from the next recording.
 
 Then check three settings once:
 
@@ -247,12 +260,28 @@ delay 90 * 60
 tell application "Holdfast" to stop recording
 ```
 
+## System audio and calls
+
+System audio is everything the Mac plays except Holdfast itself, taken from a
+Core Audio process tap. You keep hearing it as usual. When the output device
+changes during a recording (headphones plugged in or out, AirPods connecting or
+switching to their call mode), the tap is rebuilt on the new device within
+about a second; the moment in between is recorded as silence, and the log
+says so. A rebuild that fails is tried three more times, two seconds apart;
+after that, **System Audio Is Not Being Recorded** warns you as for any silent
+track.
+
+When the tap cannot be used (no permission, or macOS refuses it), the system
+audio comes from screen capture for that recording, as before, without call
+audio, and the log says why.
+
 ## The log
 
 `~/Library/Logs/Holdfast/recordings.log` (**Settings → Output → Recordings
 Log**) has one line per event, with the time: each recording's start (its file,
-what it records, whether system audio and microphone are on) and its video
-settings; its stop, with the reason when it stopped by itself; where it was
+what it records, whether system audio and microphone are on, and whether system
+audio comes from the process tap, on which output device and in which format, or
+from screen capture and why) and its video settings; every rebuild of the tap; its stop, with the reason when it stopped by itself; where it was
 saved; microphone device switches and format changes; mute and unmute; every
 track warning and its end; every failure that was reported; and at the end of
 each recording with a microphone, a summary of its microphone track: buffers
@@ -262,10 +291,11 @@ After a meeting, that summary says whether anything went missing.
 
 ## Known limits
 
-- FaceTime call audio is not available to any screen recorder through
-  ScreenCaptureKit, so the other side of a FaceTime call is not recorded. Your
-  own microphone is. Calls in other apps and in browsers are captured as system
-  audio.
+- Call audio from FaceTime and from phone calls taken on the Mac is recorded
+  through the process tap; this has not yet been checked on a real FaceTime
+  call. Without the System Audio Recording permission it is missing (screen
+  capture leaves it out); your own microphone is recorded either way. Calls in
+  other apps and in browsers are system audio like any other sound.
 - A file that was never closed misses up to about its last 12 seconds (one
   10-second fragment plus the lag of the slowest track). While paused, nothing
   reaches the disk, so the seconds before a pause are safe only once the

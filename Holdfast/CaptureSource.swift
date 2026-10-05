@@ -41,9 +41,10 @@ struct MicrophoneChoice {
     let active: MicDevice
 }
 
-/// The ScreenCaptureKit side of one recording: what is captured (`filter(for:content:)`), how
-/// (`configuration(for:target:filter:microphoneDeviceID:)`), and the stream with its delegate and outputs. Screen,
-/// system audio and microphone all arrive here and are handed on as `CaptureSample`s on the queue it was given.
+/// The capture of one recording: what ScreenCaptureKit captures (`filter(for:content:)`), how
+/// (`configuration(for:target:filter:microphoneDeviceID:capturesAudio:)`), the stream with its delegate and outputs,
+/// and the process tap that records the system audio when one could be started (`systemAudio`; the stream captures
+/// it otherwise). Screen, system audio and microphone are all handed on as `CaptureSample`s on the queue it was given.
 ///
 /// One is created for every recording, and its threads are these. `RecorderController.record` creates it, adds its
 /// outputs and starts it off the main thread while the session is `starting`. The main thread stops it, releases its
@@ -63,15 +64,20 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     var micActiveDevice: MicDevice?
 
     private var stream: SCStream?
+    /// The system audio when a process tap records it, nil when the stream does (or nothing does)
+    private var systemAudio: SystemAudioSource?
     private let queue: DispatchQueue
     private let onSample: (CaptureSample) -> Void
     private let onStop: (CaptureSource, Error) -> Void
 
-    /// `onSample` gets every buffer of every output, on `queue`. `onStop` is called, on a queue of the stream's,
-    /// when the stream ends without having been asked to.
+    /// `onSample` gets every buffer of every output, on `queue`; `systemAudio` is the running tap, which hands its
+    /// buffers to the same `onSample`. `onStop` is called, on a queue of the stream's, when the stream ends without
+    /// having been asked to.
     init(filter: SCContentFilter, configuration: SCStreamConfiguration, recording: RecordingContext, microphone: MicrophoneChoice?,
-         queue: DispatchQueue, onSample: @escaping (CaptureSample) -> Void, onStop: @escaping (CaptureSource, Error) -> Void) {
+         systemAudio: SystemAudioSource?, queue: DispatchQueue, onSample: @escaping (CaptureSample) -> Void,
+         onStop: @escaping (CaptureSource, Error) -> Void) {
         self.configuration = configuration
+        self.systemAudio = systemAudio
         self.recordsMic = recording.recordMic
         self.micSelection = microphone?.selection ?? "default"
         self.micSelectionName = microphone?.selectionName ?? "default"
@@ -171,8 +177,9 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     }
 
     /// The stream configuration of `recording`: picture size and format, system audio, microphone and frame rate.
-    /// `microphoneDeviceID` is the device to capture, nil for the system default input.
-    static func configuration(for recording: RecordingContext, target: CaptureTarget, filter: SCContentFilter, microphoneDeviceID: String?) -> SCStreamConfiguration {
+    /// `microphoneDeviceID` is the device to capture, nil for the system default input. `capturesAudio` is whether
+    /// the stream records the system audio (`SystemAudioRoute.streamCapturesAudio`): not when a process tap does.
+    static func configuration(for recording: RecordingContext, target: CaptureTarget, filter: SCContentFilter, microphoneDeviceID: String?, capturesAudio: Bool) -> SCStreamConfiguration {
         let audioOnly = recording.audioOnly
         // HDR uses the local display preset; see https://developer.apple.com/videos/play/wwdc2024/10088/?time=191 for the canonical display alternative
         let conf = AppSettings.recordHDR ? SCStreamConfiguration(preset: .captureHDRStreamLocalDisplay) : SCStreamConfiguration()
@@ -197,7 +204,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
             }
         }
 
-        conf.capturesAudio = recording.systemAudio
+        conf.capturesAudio = capturesAudio
         conf.sampleRate = 48000
         conf.channelCount = 2
         // The microphone is captured by ScreenCaptureKit as well. A nil device ID means the system default input.
@@ -237,21 +244,31 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         try await stream.startCapture()
     }
 
-    /// `done` is called, on any thread, when the stream has stopped delivering buffers. The stream is given up here.
+    /// `done` is called, on any thread, when the tap and the stream have stopped delivering buffers. The tap stops
+    /// first, then the stream; both are given up here. The writer's inputs are finished only after `done`.
     func stop(_ done: @escaping (Error?) -> Void) {
-        guard let stream = stream else { return done(nil) }
+        let stream = self.stream
         self.stream = nil
-        stream.stopCapture { error in
-            done(error)
-            // The stream lives until it has stopped
-            withExtendedLifetime(stream) {}
+        let systemAudio = self.systemAudio
+        self.systemAudio = nil
+        func stopStream() {
+            guard let stream = stream else { return done(nil) }
+            stream.stopCapture { error in
+                done(error)
+                // The stream lives until it has stopped
+                withExtendedLifetime(stream) {}
+            }
         }
+        guard let tap = systemAudio else { return stopStream() }
+        tap.stop { stopStream() }
     }
 
     /// Gives up a stream that was never started or has stopped by itself, so the stream and this object, which is
-    /// its delegate and its output, do not keep each other
+    /// its delegate and its output, do not keep each other. The tap is torn down with it: the recording is over.
     func releaseStream() {
         stream = nil
+        systemAudio?.stop()
+        systemAudio = nil
     }
 
     /// Tells the stream about a change made to `configuration`, which is how the microphone device is switched
