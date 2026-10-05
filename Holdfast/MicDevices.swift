@@ -26,7 +26,7 @@ enum MicSelection {
     }
     
     static func getMicrophone() -> [AVCaptureDevice] {
-        let discoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInMicrophone, .microphone], mediaType: .audio, position: .unspecified)
+        let discoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone], mediaType: .audio, position: .unspecified)
         return discoverySession.devices.filter({ !$0.localizedName.contains("CADefaultDeviceAggregate") })
     }
     

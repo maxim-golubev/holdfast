@@ -20,7 +20,7 @@ class RecorderPlayerModel: NSObject, ObservableObject {
     
     func loadVideo(fromUrl: URL) {
         fileUrl = fromUrl
-        asset = AVAsset(url: fromUrl)
+        asset = AVURLAsset(url: fromUrl)
         guard let asset = asset else { return }
         // Loading again must not leave the observers of the item before
         removeObservers()
@@ -53,42 +53,13 @@ class RecorderPlayerModel: NSObject, ObservableObject {
             let checkCanBeginTrimming: () -> Void = {
                 if self.playerView.canBeginTrimming {
                     self.playerView.beginTrimming { result in
-                        if result == .okButton {
-                            guard let fileUrl = self.fileUrl else { return }
-                            let startTime = playerItem.reversePlaybackEndTime
-                            let endTime = playerItem.forwardPlaybackEndTime
-                            let timeRange = CMTimeRangeFromTimeToTime(start: startTime, end: endTime)
-                            guard let asset = self.asset else { return }
-                            let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough)
-                            let dateFormatter = DateFormatter()
-                            let fileEnding = fileUrl.pathExtension.lowercased()
-                            let fileType: AVFileType
-                            switch fileEnding {
-                            case VideoFormat.mov.rawValue: fileType = .mov
-                            case VideoFormat.mp4.rawValue: fileType = .mp4
-                            default:
-                                // An export needs a file type, and only these two are written
-                                UserNotice.showNotification(title: "Clip Not Saved".local, body: String(format: "Only MOV and MP4 files can be trimmed: %@".local, fileUrl.lastPathComponent), id: "holdfast.error.\(UUID().uuidString)")
-                                self.nsWindow?.close()
-                                return
-                            }
-                            dateFormatter.dateFormat = "y-MM-dd HH.mm.ss"
-                            let filePath = fileUrl.deletingPathExtension().path + " (Cropped in ".local + "\(dateFormatter.string(from: Date())))." + fileEnding
-                            exportSession?.outputURL = filePath.url
-                            exportSession?.outputFileType = fileType
-                            exportSession?.timeRange = timeRange
-                            exportSession?.exportAsynchronously {
-                                if let error = exportSession?.error {
-                                    print("Error: \(error.localizedDescription)")
-                                } else {
-                                    print("Trimmed video exported successfully.")
-                                    UserNotice.showNotification(title: "Clip Saved".local, body: String(format: "File saved to: %@".local, filePath), id: "holdfast.completed.\(UUID().uuidString)")
-                                }
-                            }
-                            self.nsWindow?.close()
-                        } else {
-                            self.nsWindow?.close()
-                        }
+                        // Read before the window goes, which takes the player down; the clip is exported after it
+                        // and reported either way
+                        let timeRange = CMTimeRangeFromTimeToTime(start: playerItem.reversePlaybackEndTime, end: playerItem.forwardPlaybackEndTime)
+                        let fileUrl = self.fileUrl, asset = self.asset
+                        self.nsWindow?.close()
+                        guard result == .okButton, let fileUrl, let asset else { return }
+                        RecorderPlayerModel.exportClip(of: asset, from: fileUrl, timeRange: timeRange)
                     }
                 }
             }
@@ -98,6 +69,38 @@ class RecorderPlayerModel: NSObject, ObservableObject {
             if observesStatus, playerItem === self.playerItem {
                 playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
                 observesStatus = false
+            }
+        }
+    }
+    
+    /// Writes the trimmed part next to the recording as "<name> (trimmed <date>).<ext>", untouched (passthrough),
+    /// and says whether it worked. The recording itself is never changed.
+    private static func exportClip(of asset: AVAsset, from fileUrl: URL, timeRange: CMTimeRange) {
+        let fileEnding = fileUrl.pathExtension.lowercased()
+        let fileType: AVFileType
+        switch fileEnding {
+        case VideoFormat.mov.rawValue: fileType = .mov
+        case VideoFormat.mp4.rawValue: fileType = .mp4
+        default:
+            // An export needs a file type, and only these two are written
+            UserNotice.showAlertLater(title: "Clip Not Saved", message: String(format: "Only MOV and MP4 files can be trimmed: %@", fileUrl.lastPathComponent))
+            return
+        }
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            UserNotice.showAlertLater(title: "Clip Not Saved", message: String(format: "%@ cannot be trimmed without re-encoding it.", fileUrl.lastPathComponent))
+            return
+        }
+        exportSession.timeRange = timeRange
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        let output = URL(fileURLWithPath: fileUrl.deletingPathExtension().path + " (trimmed \(dateFormatter.string(from: Date.now))).\(fileEnding)")
+        Task {
+            do {
+                try await exportSession.export(to: output, as: fileType)
+                UserNotice.showNotification(title: "Clip Saved", body: String(format: "File saved to: %@", output.path), id: "holdfast.completed.\(UUID().uuidString)")
+            } catch {
+                try? fd.removeItem(at: output)
+                UserNotice.showAlertLater(title: "Clip Not Saved", message: String(format: "The trimmed clip of %@ could not be written: %@ The recording itself is unchanged.", fileUrl.lastPathComponent, error.localizedDescription))
             }
         }
     }
