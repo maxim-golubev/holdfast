@@ -44,10 +44,12 @@ rt_wait_final() { # waits until no temporary recording/mixing file is left
   for i in {1..${1:-120}}; do sleep 1; ls "$RT_DIR" | grep -q -E '\.(recording|mixing)\.' || return 0; done; echo "rt: still not final"; return 1 }
 rt_tracks() { ls "$RT_DIR" | grep -E "\.(mp4|m4a|mov)$" | while read n; do f="$RT_DIR/$n"; echo "== ${f:t}"; ffprobe -v error -show_entries stream=index,codec_type,codec_name,sample_rate,duration -of compact "$f" 2>&1; done }
 rt_levels() { # rt_levels <file> <audio-track-index>: level per 2 s, -180 = digital silence
-  ffmpeg -hide_banner -loglevel error -y -i "$1" -map 0:a:$2 -vn -ac 1 -ar 8000 -f s16le /tmp/_rt.raw || return 1
+  local raw rc; raw=$(mktemp -t rt_levels) || return 1
+  ffmpeg -hide_banner -loglevel error -y -i "$1" -map 0:a:$2 -vn -ac 1 -ar 8000 -f s16le "$raw" || { rm -f "$raw"; return 1 }
   python3 -c "
-import numpy as np
-x=np.fromfile('/tmp/_rt.raw',dtype=np.int16).astype(np.float32)/32768; w=16000
+import sys, numpy as np
+x=np.fromfile(sys.argv[1],dtype=np.int16).astype(np.float32)/32768; w=16000
 o=[(-180.0 if (r:=np.sqrt((x[i:i+w]**2).mean()))==0 else 20*np.log10(r)) for i in range(0,len(x)-w+1,w)]
-print(' '.join('%.0f'%v for v in o))"
+print(' '.join('%.0f'%v for v in o))" "$raw"
+  rc=$?; rm -f "$raw"; return $rc
 }
