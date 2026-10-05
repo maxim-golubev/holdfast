@@ -192,7 +192,7 @@ func sessionTests() async {
     await test("session: a recording passes through every state in order") {
         let rig = try Rig("session-order")
         expect(rig.controller.state == .idle, "idle before the first start")
-        expect(rig.controller.canStart(), "a start is possible when idle")
+        expect(rig.controller.canStart() && rig.controller.startRefusal == nil, "a start is possible when idle")
         let session = try require(rig.controller.begin(.screen), "an accepted start")
         expect(rig.controller.state == .starting, "starting once the start is accepted")
         expect(rig.controller.streamType == .screen, "the UI is told what is being recorded")
@@ -207,6 +207,8 @@ func sessionTests() async {
         session.startMonitor()
         session.enterRecording()
         expect(rig.controller.state == .recording, "recording once the capture runs")
+        expectEqual(rig.controller.startRefusal, .recording, "no second recording")
+        expect(!rig.controller.canStart() && rig.journal.count("refused") == 0, "and nothing to tell: nothing offers a start then")
         let sample = CaptureSample(kind: .audio, buffer: try audioBuffer(rate: 48000, channels: 2, frames: 480, at: time(1)), pts: time(1))
         rig.queue.sync { session.received(sample) }
         expectEqual(writer.written, 1, "a buffer of the capture reaches the writer")
@@ -221,6 +223,8 @@ func sessionTests() async {
         expectEqual(rig.journal.count("writer.finish"), 0, "the inputs are not finished before the capture has stopped")
         capture.answer()
         expect(await rig.wait { rig.controller.state == .finalizing }, "finalizing once the inputs are finished")
+        expectEqual(rig.controller.startRefusal, .saving, "why, for a script, without telling the user")
+        expectEqual(rig.journal.count("refused"), 0, "which only canStart does")
         expect(!rig.controller.canStart(), "no start while the file is being saved")
         rig.releaseSave()
         expect(await rig.idle(), "idle when the files are final")
@@ -426,8 +430,9 @@ func sessionTests() async {
         var replies = 0
         expect(!rig.controller.canQuit { replies += 1 }, "does not quit while recording")
         expect(await rig.wait { rig.controller.state == .finalizing }, "finalizing")
+        expectEqual(rig.controller.startRefusal, .quitting, "the quit comes first")
         expect(!rig.controller.canStart(), "no start while quitting")
-        expectEqual(rig.journal.count("refused: quitting"), 1, "the user is told why")
+        expectEqual(rig.journal.count("refused: quitting"), 1, "the user is told why, once")
         expect(StatusDisplay(rig.controller.statusInput).detail.contains("quits"), "the status item says the app will quit")
         rig.releaseSave()
         expect(await rig.idle(), "idle")

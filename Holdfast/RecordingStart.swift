@@ -234,6 +234,8 @@ extension RecorderEnvironment {
         app.statusChanged = { _ in StatusItemController.shared.refresh() }
         app.startRefused = { reason in
             switch reason {
+            case .recording:
+                break
             case .saving:
                 UserNotice.showAlertLater(title: "Failed to Record", message: "The previous recording is still being saved. Start the new one when \"Saving\" has gone from the menu bar.")
             case .quitting:

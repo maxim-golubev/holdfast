@@ -9,14 +9,16 @@ import Foundation
 import AppKit
 import ScreenCaptureKit
 
-/// Whether a recording can be started now (`RecorderController.canStart`, as the hotkeys ask). When not, the script gets an
-/// error instead of a start that is refused later without a word. Script commands run on the main thread.
+/// Whether a recording can be started now (`RecorderController.startRefusal`). When not, the script gets an error,
+/// and no alert: the script reports it, and an alert would come up over the app in front. Script commands run on
+/// the main thread.
 private func scriptCanStart(_ command: NSScriptCommand) -> Bool {
-    if withRecorder({ $0.canStart() }) { return true }
+    guard let refusal = withRecorder({ $0.startRefusal }) else { return true }
     command.scriptErrorNumber = errOSAGeneralError
-    command.scriptErrorString = withRecorder { recorder in
-        if recorder.quitRequested { return "Holdfast is quitting." }
-        return recorder.isSaving ? "The previous recording is still being saved." : "A recording is already running."
+    switch refusal {
+    case .recording: command.scriptErrorString = "A recording is already running."
+    case .saving: command.scriptErrorString = "The previous recording is still being saved."
+    case .quitting: command.scriptErrorString = "Holdfast is quitting."
     }
     return false
 }

@@ -12,7 +12,8 @@ struct RecorderEnvironment {
     /// Something the status item shows has changed: the state, the recovery, a request to quit, pause, mute,
     /// warning, microphone level, progress
     var statusChanged: @MainActor (RecorderController) -> Void = { _ in }
-    /// A start was asked for while the previous recording is still being saved, or while the app waits to quit
+    /// A start was asked for while the previous recording is still being saved (`.saving`), or while the app
+    /// waits to quit (`.quitting`)
     var startRefused: @MainActor (StartRefusal) -> Void = { _ in }
     /// A start was refused or did not lead to a recording: what a selector left on screen goes
     var startAbandoned: @MainActor () -> Void = {}
@@ -32,8 +33,11 @@ struct RecorderEnvironment {
     var whenAlertsDismissed: @MainActor (@escaping () -> Void) -> Void = { $0() }
 }
 
-/// Why a start was refused with an alert
+/// Why a recording cannot be started now (`RecorderController.startRefusal`)
 enum StartRefusal {
+    /// One is starting or running. Nothing offers a start then, so `canStart` says nothing.
+    case recording
+    /// The previous recording is still being saved, or the app waits to quit: `canStart` tells the user (`startRefused`)
     case saving, quitting
 }
 
@@ -89,19 +93,21 @@ final class RecorderController {
 
     // MARK: - Start
 
+    /// Why a recording cannot be started now, nil when it can. Says nothing to the user: `canStart` does.
+    var startRefusal: StartRefusal? {
+        if state == .starting || state == .recording { return .recording }
+        // A quit that is waiting would end the new recording when it goes ahead
+        if quitRequested { return .quitting }
+        if state != .idle { return .saving }
+        return nil
+    }
+
     /// Whether a recording can be started now. While the previous one is still being saved, or the app waits to
-    /// quit, the user is told so: a quit that is waiting would end the new recording when it goes ahead.
+    /// quit, the user is told so.
     func canStart() -> Bool {
-        if state == .starting || state == .recording { return false }
-        if quitRequested {
-            environment.startRefused(.quitting)
-            return false
-        }
-        if state != .idle {
-            environment.startRefused(.saving)
-            return false
-        }
-        return true
+        guard let refusal = startRefusal else { return true }
+        if refusal != .recording { environment.startRefused(refusal) }
+        return false
     }
 
     /// idle → starting: the only way into a recording. Nil when one is starting, running or still being saved; a
