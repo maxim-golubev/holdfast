@@ -243,8 +243,8 @@ extension AppDelegate {
         conf.height = 2
         
         if !audioOnly {
-            conf.width = Int(filter.contentRect.width) * (AppSettings.highRes == 2 ? Int(filter.pointPixelScale) : 1)
-            conf.height = Int(filter.contentRect.height) * (AppSettings.highRes == 2 ? Int(filter.pointPixelScale) : 1)
+            conf.width = Int(filter.contentRect.width) * (AppSettings.recordsPixels ? Int(filter.pointPixelScale) : 1)
+            conf.height = Int(filter.contentRect.height) * (AppSettings.recordsPixels ? Int(filter.pointPixelScale) : 1)
             
             conf.showsCursor = AppSettings.showMouse
             if !AppSettings.recordHDR {
@@ -282,8 +282,8 @@ extension AppDelegate {
             if let nsRect = SCContext.screenArea, let display = SCContext.screen {
                 let newY = display.frame.height - nsRect.size.height - nsRect.origin.y
                 conf.sourceRect = CGRect(x: nsRect.origin.x, y: newY, width: nsRect.size.width, height: nsRect.size.height)
-                conf.width = Int(conf.sourceRect.width) * (AppSettings.highRes == 2 ? Int(filter.pointPixelScale) : 1)
-                conf.height = Int(conf.sourceRect.height) * (AppSettings.highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                conf.width = Int(conf.sourceRect.width) * (AppSettings.recordsPixels ? Int(filter.pointPixelScale) : 1)
+                conf.height = Int(conf.sourceRect.height) * (AppSettings.recordsPixels ? Int(filter.pointPixelScale) : 1)
             }
         }
         

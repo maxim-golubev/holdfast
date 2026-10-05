@@ -64,7 +64,7 @@ struct resizeView: View {
             HStack(spacing: 4) {
                 Text("Output Size:")
                 let scale = Int(screen.nsScreen!.backingScaleFactor)
-                Text(" \(highRes == 2 ? areaWidth * scale : areaWidth) x \(highRes == 2 ? areaHeight * scale : areaHeight)")
+                Text(" \(AppSettings.recordsPixels(highRes) ? areaWidth * scale : areaWidth) x \(AppSettings.recordsPixels(highRes) ? areaHeight * scale : areaHeight)")
             }
         }.onAppear{ focusedField = .width }
     }

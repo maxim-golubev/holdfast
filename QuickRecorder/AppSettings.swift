@@ -121,7 +121,7 @@ enum AppSettings {
     @Setting("neverRemindMe", default: []) static var dismissedTips: [String]
 
     // Video. The defaults are chosen for long meetings.
-    /// 2: the display's pixels (Retina), 1: its points
+    /// 2: the display's pixels (Retina), 1: its points. Decide with `recordsPixels`, not by comparing the number.
     @Setting("highRes", default: 2) static var highRes: Int
     /// A script can store any number; `SCContext.captureFrameRate` makes it usable
     @Setting("frameRate", default: 30) static var frameRate: Int
@@ -154,6 +154,12 @@ enum AppSettings {
 
     /// nil until a microphone has been chosen or `SCContext.selectedMicID()` has converted the old "micDevice" selection
     static var storedMicDeviceID: String? { _micDeviceID.isStored ? micDeviceID : nil }
+
+    /// Whether a recording gets the display's pixels rather than its points
+    static var recordsPixels: Bool { recordsPixels(highRes) }
+
+    /// A stored 0 means pixels like 2 does: versions before this type rewrote it to 2 at launch
+    static func recordsPixels(_ highRes: Int) -> Bool { highRes == 2 || highRes == 0 }
 
     static var hiddenApps: [AppInfo] {
         get { (try? JSONDecoder().decode([AppInfo].self, from: hiddenAppsData)) ?? [] }

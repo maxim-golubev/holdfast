@@ -120,4 +120,12 @@ func settingsTests() async {
             expectEqual(AppSettings.encoder, Encoder.preferred, "an unknown encoder")
         }
     }
+
+    await test("Settings: the resolution is pixels unless 1 is stored, a stored 0 included") {
+        withStored([:]) { expect(AppSettings.recordsPixels, "nothing stored") }
+        withStored(["highRes": 2]) { expect(AppSettings.recordsPixels, "2") }
+        withStored(["highRes": 0]) { expect(AppSettings.recordsPixels, "0, which earlier versions rewrote to 2 at launch") }
+        withStored(["highRes": 1]) { expect(!AppSettings.recordsPixels, "1") }
+        withStored(["highRes": 3]) { expect(!AppSettings.recordsPixels, "a number that was never pixels") }
+    }
 }
