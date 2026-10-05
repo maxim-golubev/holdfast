@@ -213,7 +213,7 @@ struct OptionsView: View {
                 SystemAudioToggle()
                 HStack(spacing: 6) {
                     MicToggle().labelStyle(.iconOnly)
-                    MicPicker().labelsHidden().frame(maxWidth: 160)
+                    MicPicker().labelsHidden().frame(maxWidth: 140)
                 }
             }
             .toggleStyle(.checkbox)
@@ -324,7 +324,8 @@ struct SelectorWindow<Content: View, Bar: View>: View {
             bar()
         }
         .padding([.horizontal, .bottom], 20)
-        .frame(width: 780, height: 555)
+        // The window selector's bar with a long microphone name needs 735 pt
+        .frame(width: 800, height: 555)
     }
 }
 

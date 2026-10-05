@@ -88,6 +88,7 @@ struct WinSelector: View {
                     isShowingListOptions = true
                 } label: {
                     Label("List Options", systemImage: "chevron.down")
+                        .fixedSize()
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
