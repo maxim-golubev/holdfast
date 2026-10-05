@@ -13,7 +13,11 @@ sources=(
 )
 mkdir -p build/tests
 binary=build/tests/tests
-if [[ ! -x $binary || -n $(find $sources Tools/test.sh -newer $binary) ]]; then
+# Rebuilt when a source is newer than the binary or the list of sources is not the one it was built from
+# (a test file that was removed or renamed must not keep running from the old binary)
+if [[ ! -x $binary || "$(<$binary.sources)" != "$sources" || -n $(find $sources Tools/test.sh -newer $binary) ]] 2>/dev/null; then
+  rm -f $binary $binary.sources
   swiftc -Onone -suppress-warnings -swift-version 5 -target arm64-apple-macosx15.0 -o $binary $sources || { echo "TESTS FAILED TO BUILD"; exit 1 }
+  print -r -- "$sources" > $binary.sources
 fi
 exec $binary "$@"

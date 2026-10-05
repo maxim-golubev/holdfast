@@ -49,6 +49,10 @@ enum Suite {
 
     static func finish() -> Never {
         try? FileManager.default.removeItem(at: workFolder)
+        if passed + failed.count == 0 {
+            say("NO TESTS MATCHED" + (filter.map { ": no test name contains \"\($0)\"" } ?? ""))
+            exit(1)
+        }
         if failed.isEmpty {
             say("TESTS PASSED: \(passed) tests")
             exit(0)
