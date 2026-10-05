@@ -65,9 +65,12 @@ func recoveryTests() async {
         expect(line("Recording at A (damaged).mp4").contains("cannot be opened"), "damaged: \(lines)")
         expect(line("Recording at B.mp4").contains("complete recording") && line("Recording at B.mp4").contains("mixed now"), "mixed: \(lines)")
         expect(line("Recording at C (unmixed, 2 audio tracks).mp4").contains("failed"), "not mixable: \(lines)")
-        expect(line("Recording at F (recovered).m4a").contains("not finished"), "an audio file that opens: \(lines)")
+        expect(line("Recording at E (damaged).m4a").contains("cannot be opened"), "an audio file that does not open: \(lines)")
+        expect(line("Recording at F (recovered).m4a").contains("not finished (2s); its last seconds may be missing"), "an audio file that opens, with its length: \(lines)")
         expect(line("Recording at G (recovered).qma").contains("sys.m4a cannot be opened"), "a package says which file does not open: \(lines)")
         expect(line("Recording at H (incomplete mix).mp3").contains("MP3"), "an interrupted conversion: \(lines)")
+        expect(line("Recording at D (incomplete mix).mp4").contains("can be deleted"), "an interrupted mix: \(lines)")
+        expect(!lines.joined().contains("could not be renamed"), "every leftover was renamed: \(lines)")
         expect(RecordingFileStore(directory: folder.path).leftovers().isEmpty, "nothing is left to recover at the next launch")
     }
 
