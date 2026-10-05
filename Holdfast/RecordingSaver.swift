@@ -33,6 +33,8 @@ enum RecordingSaver {
             closed = writer.status == .completed
         }
         let failureTitle = earlyReason == nil ? "Failed to Save File" : "Recording Stopped Early"
+        // Not "Stopped Early", which says that what came before the stop was saved
+        let nothingTitle = "Recording Not Saved"
         if session.filesDeleted {
             // The reason says it all: what was written is gone with its name, and there is no file to point to
             UserNotice.reportFailure(title: "Recording Stopped Early", message: earlyReason ?? "")
@@ -45,16 +47,23 @@ enum RecordingSaver {
                 print("Video writing failed with status: \(String(describing: writer?.status)), error: \(String(describing: writer?.error))")
                 var body = earlyReason ?? ""
                 if let error = writer?.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
-                if body.isEmpty { body = writer == nil ? "The recording did not start, nothing was written." : "Unknown error" }
-                if fd.fileExists(atPath: recording.rawURL.path) {
-                    // The file is written in fragments, so it plays up to the last few seconds without having been closed.
-                    // It leaves its temporary name; no mix is attempted on it.
-                    let kept = recording.unmixedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
-                    body += " " + String(format: "The file could not be closed. What was written before that was kept as: %@", kept.path)
-                } else if writer != nil {
-                    body += " " + movedNote(for: recording.rawURL)
+                let fileLeft = fd.fileExists(atPath: recording.rawURL.path)
+                if writer == nil && !fileLeft {
+                    // Stopped, early or by the user, before the first frame: the empty file went with its writer
+                    body += (body.isEmpty ? "" : " ") + "Nothing was recorded, so no file was kept."
+                    UserNotice.reportFailure(title: nothingTitle, message: body)
+                } else {
+                    if body.isEmpty { body = "Unknown error." }
+                    if fileLeft {
+                        // The file is written in fragments, so it plays up to the last few seconds without having been closed.
+                        // It leaves its temporary name; no mix is attempted on it.
+                        let kept = recording.unmixedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
+                        body += " " + String(format: "The file could not be closed. What was written before that was kept as: %@", kept.path)
+                    } else {
+                        body += " " + movedNote(for: recording.rawURL)
+                    }
+                    UserNotice.reportFailure(title: failureTitle, message: body)
                 }
-                UserNotice.reportFailure(title: failureTitle, message: body)
             } else {
                 if recording.mixesAudio {
                     // Where the recording ends up is only known after the mix
@@ -66,8 +75,8 @@ enum RecordingSaver {
         } else if !taken.sessionStarted {
             // No audio arrived, so the files are empty
             try? fd.removeItem(at: recording.rawURL)
-            let body = (earlyReason.map { $0 + " " } ?? "") + "No audio arrived, nothing was recorded."
-            UserNotice.reportFailure(title: failureTitle, message: body)
+            let body = (earlyReason.map { $0 + " " } ?? "") + "No audio arrived, so nothing was recorded and no file was kept."
+            UserNotice.reportFailure(title: nothingTitle, message: body)
         } else {
             // The files are as complete as they will get: they leave their temporary name
             let kept = recording.closedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
