@@ -128,9 +128,9 @@ struct ExcludedApps: View {
     var body: some View {
         Section {
             ForEach(apps, id: \.self) { app in
-                LabeledContent(app.displayName) {
+                LabeledContent(app.name) {
                     Button("Remove") { store(apps.filter { $0 != app }) }
-                        .accessibilityLabel("Remove \(app.displayName)")
+                        .accessibilityLabel("Remove \(app.name)")
                 }
             }
             Button("Add App…") { isShowingFilePicker = true }
@@ -139,8 +139,9 @@ struct ExcludedApps: View {
                         print("No application was chosen for the excluded apps")
                         return
                     }
-                    let app = AppInfo(bundleID: appID, displayName: bundle.fileName)
-                    if !apps.contains(app) { store(apps + [app]) }
+                    // Each app once, whatever name an earlier version stored it under
+                    guard !apps.contains(where: { $0.bundleID == appID }) else { return }
+                    store(apps + [AppInfo(bundleID: appID, displayName: bundle.appName)])
                 }
         } header: {
             Text("Excluded Apps")
@@ -153,10 +154,6 @@ struct ExcludedApps: View {
         apps = list
         AppSettings.hiddenApps = list
     }
-}
-
-extension Bundle {
-    var fileName: String { return self.bundleURL.lastPathComponent }
 }
 
 struct AudioSettings: View {

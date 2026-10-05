@@ -121,7 +121,7 @@ enum RecordingSaver {
             }
             let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept with system audio and microphone as two separate audio tracks in: %@", failure, kept.path)
             UserNotice.reportFailure(title: "Audio Mix Failed", message: body)
-            if recording.showPreview { showPreview(path: kept.path, image: frame) }
+            if recording.showPreview { showPreview(url: kept, image: frame) }
             return
         }
         print("Mixed recording saved to \(final.path)")
@@ -192,7 +192,7 @@ enum RecordingSaver {
             UserNotice.reportFailure(title: "Recording Stopped Early", message: reason + " " + String(format: "The recording up to that point is saved as: %@", url.path))
         }
         if recording.showPreview, let image {
-            showPreview(path: url.path, image: image)
+            showPreview(url: url, image: image)
         } else {
             UserNotice.showNotification(title: "Recording Completed", body: String(format: "File saved to: %@", url.path), id: "holdfast.completed.\(UUID().uuidString)")
         }
@@ -216,7 +216,7 @@ enum RecordingSaver {
     /// Shows the floating preview for a finished recording, in place of the one before. `image` is that recording's
     /// first frame or an icon. Each preview has a window of its own: what an earlier one has scheduled (closing
     /// itself after a few seconds) must not reach a later one.
-    static func showPreview(path: String, image: NSImage?) {
+    static func showPreview(url: URL, image: NSImage?) {
         guard let previewImage = image, let screen = ScreenContent.getScreenWithMouse() else { return }
         for window in NSApp.windows(.preview) { window.close() }
         let window = PreviewWindow(contentRect: NSRect(x: screen.frame.maxX - 280, y: screen.frame.minY + 20, width: 266, height: 156),
@@ -229,7 +229,7 @@ enum RecordingSaver {
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         window.backgroundColor = .clear
-        window.contentView = NSHostingView(rootView: PreviewView(frame: previewImage, filePath: path))
+        window.contentView = NSHostingView(rootView: PreviewView(frame: previewImage, fileURL: url))
         window.orderFront(nil)
     }
 

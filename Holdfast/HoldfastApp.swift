@@ -414,16 +414,12 @@ func showAlertSyncOnMainThread(level: NSAlert.Style = .warning, title: String, m
 }
 
 extension Bundle {
+    /// The name the app shows for itself: its display name, its bundle name, or else its file name without ".app"
     var appName: String {
-        let appName = self.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-                     ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
-                     ?? "Unknown App Name"
-        return appName
+        return object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? bundleURL.deletingPathExtension().lastPathComponent
     }
-}
-
-extension String {
-    var url: URL { return URL(fileURLWithPath: self) }
 }
 
 extension NSImage {

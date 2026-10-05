@@ -9,7 +9,8 @@ import SwiftUI
 
 struct PreviewView: View {
     let frame: NSImage
-    let filePath: String
+    /// The recording
+    let fileURL: URL
     private let sharingDelegate = SharingServicePickerDelegate()
     @State private var isHovered: Bool = false
     @State private var isHovered2: Bool = false
@@ -92,27 +93,27 @@ struct PreviewView: View {
         }
         .contextMenu {
             Button("Show in Finder") {
-                if fd.fileExists(atPath: filePath) {
-                    NSWorkspace.shared.activateFileViewerSelecting([filePath.url])
+                if fd.fileExists(atPath: fileURL.path) {
+                    NSWorkspace.shared.activateFileViewerSelecting([fileURL])
                 }
                 closeWindow()
             }
             Divider()
             Button("Copy") {
-                if fd.fileExists(atPath: filePath) {
+                if fd.fileExists(atPath: fileURL.path) {
                     let pasteboard = NSPasteboard.general
                     pasteboard.clearContents()
-                    pasteboard.writeObjects([filePath.url as NSURL])
+                    pasteboard.writeObjects([fileURL as NSURL])
                 }
                 closeWindow()
             }
-            Button("Share…") { showSharingServicePicker(for: filePath.url) }
+            Button("Share…") { showSharingServicePicker(for: fileURL) }
             Divider()
             // Audio-only recordings have nothing the trimmer can export
-            if !trimAfterRecord && TrimmerModel.canTrim(filePath.url) {
+            if !trimAfterRecord && TrimmerModel.canTrim(fileURL) {
                 Button("Trim") {
-                    if fd.fileExists(atPath: filePath) {
-                        AppDelegate.shared.openTrimmer(filePath.url)
+                    if fd.fileExists(atPath: fileURL.path) {
+                        AppDelegate.shared.openTrimmer(fileURL)
                     }
                     closeWindow()
                 }
@@ -130,8 +131,8 @@ struct PreviewView: View {
     /// A .qma package opens in Holdfast's own player: the system's default for it may be another app (QuickRecorder,
     /// whose type for it LaunchServices may prefer). Everything else opens in its default app.
     private func openRecording() {
-        guard fd.fileExists(atPath: filePath) else { return }
-        let url = filePath.url
+        guard fd.fileExists(atPath: fileURL.path) else { return }
+        let url = fileURL
         if url.pathExtension.lowercased() == RecordingFileStore.packageEnding {
             NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
                 if let error = error {
@@ -146,9 +147,9 @@ struct PreviewView: View {
     
     private func moveToTrash() {
         do {
-            try fd.trashItem(at: filePath.url, resultingItemURL: nil)
+            try fd.trashItem(at: fileURL, resultingItemURL: nil)
         } catch {
-            UserNotice.showAlertLater(title: "Not Moved to Trash", message: "\(filePath) could not be moved to the Trash: \(error.localizedDescription)")
+            UserNotice.showAlertLater(title: "Not Moved to Trash", message: "\(fileURL.path) could not be moved to the Trash: \(error.localizedDescription)")
         }
     }
     

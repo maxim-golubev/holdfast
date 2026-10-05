@@ -178,6 +178,11 @@ enum AppSettings {
 struct AppInfo: Hashable, Codable {
     let bundleID: String
     let displayName: String
+
+    /// What the settings show: earlier versions stored the app's file name ("zoom.us.app"), shown without ".app"
+    var name: String {
+        return displayName.hasSuffix(".app") ? String(displayName.dropLast(4)) : displayName
+    }
 }
 
 /// kbit/s

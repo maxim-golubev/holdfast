@@ -82,6 +82,11 @@ func settingsTests() async {
         }
     }
 
+    await test("Settings: an excluded app is shown by its name, also one stored by its file name") {
+        expectEqual(AppInfo(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams").name, "Microsoft Teams", "a name")
+        expectEqual(AppInfo(bundleID: "us.zoom.xos", displayName: "zoom.us.app").name, "zoom.us", "a file name of an earlier version")
+    }
+
     await test("Settings: stored values are read with their types") {
         let apps = try JSONEncoder().encode([AppInfo(bundleID: "com.example.chat", displayName: "Chat")])
         withStored(["recordMic": true, "remuxAudio": false, "frameRate": 60, "videoQuality": 0.3, "videoFormat": "mov",
