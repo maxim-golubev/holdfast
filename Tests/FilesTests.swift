@@ -167,6 +167,29 @@ func filesTests() async {
         expectEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 2, "files in the folder")
     }
 
+    await test("Staging: a file made from a recording gets its name only when it is complete") {
+        let folder = try Suite.folder("staging")
+        let output = folder.appendingPathComponent("Standup.mp3")
+        let staged = RecordingFileStore.stagingURL(for: output)
+        expectEqual(staged.lastPathComponent, "Standup.mixing.mp3", "written under the mixing marker, real extension last")
+        expectEqual(RecordingFileStore.stagingURL(for: output, ending: "m4a").lastPathComponent, "Standup.mixing.m4a", "with another ending")
+        try RecordingFileStore.checkFree(staging: staged)
+        try Data("new".utf8).write(to: staged)
+        let inTheWay = await expectThrows("a staging name that is taken") { try RecordingFileStore.checkFree(staging: staged) }
+        expect(inTheWay.contains("Standup.mixing.mp3"), "names the file: \(inTheWay)")
+        try RecordingFileStore.publish(staged, as: output, replacing: false)
+        expectEqual(try Data(contentsOf: output), Data("new".utf8), "published")
+        expect(!FileManager.default.fileExists(atPath: staged.path), "and no longer under the staging name")
+        // An earlier export of the same name: replaced only when the user said so in the save panel
+        try Data("newer".utf8).write(to: staged)
+        await expectThrows("a name that is taken") { try RecordingFileStore.publish(staged, as: output, replacing: false) }
+        expectEqual(try Data(contentsOf: output), Data("new".utf8), "the earlier file is left as it is")
+        expectEqual(try Data(contentsOf: staged), Data("newer".utf8), "and so is the new one")
+        try RecordingFileStore.publish(staged, as: output, replacing: true)
+        expectEqual(try Data(contentsOf: output), Data("newer".utf8), "replaced when confirmed")
+        expectEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["Standup.mp3"], "nothing else is left")
+    }
+
     await test("Store: a new recording and a saved frame are named with their prefix in the folder") {
         let store = RecordingFileStore(directory: "/save")
         expectEqual(RecordingFileStore.namePrefix, prefix, "the prefix launch recovery knows the app's files by")

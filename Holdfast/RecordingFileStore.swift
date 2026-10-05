@@ -83,6 +83,30 @@ struct RecordingFileStore {
         return target
     }
 
+    /// Where a file made from a recording (a mix, an MP3) is written before it is complete and checked:
+    /// `<output without extension>.mixing.<ending>`, next to `output`. `ending` defaults to that of `output`.
+    static func stagingURL(for output: URL, ending: String? = nil) -> URL {
+        return temporaryURL(base: output.deletingPathExtension().path, marker: mixMarker, ending: ending ?? output.pathExtension)
+    }
+
+    /// Throws unless `staging` is free: what is there is not this run's, and writing would truncate or extend it.
+    static func checkFree(staging: URL) throws {
+        guard !FileManager.default.fileExists(atPath: staging.path) else {
+            throw RecordingError(String(format: "A file named \"%@\" is in the way. Move or delete it and try again.", staging.lastPathComponent))
+        }
+    }
+
+    /// Gives a complete, checked file its name: `output` appears with all of it or not at all. A file at `output` is
+    /// replaced only when `replacing` (the user chose to in a save panel); otherwise it is left as it is and this throws.
+    static func publish(_ staged: URL, as output: URL, replacing: Bool) throws {
+        let manager = FileManager.default
+        if replacing && manager.fileExists(atPath: output.path) {
+            _ = try manager.replaceItemAt(output, withItemAt: staged)
+        } else {
+            try manager.moveItem(at: staged, to: output)
+        }
+    }
+
     /// Gives a recording that was written under its temporary name the name it is kept under. Nothing is deleted
     /// or replaced: when the name is taken or the rename fails, the recording stays where it is. Returns where it is afterwards.
     static func keep(written: URL, as kept: URL) -> URL {
@@ -154,9 +178,10 @@ struct RecordingFileStore {
         return DiskSpace.Watch(file: file, folder: directory, onLow: onLow, onDeleted: onDeleted)
     }
 
-    /// Before the audio mix: whether a second file as large as `url` fits next to it. True when that cannot be determined.
-    static func hasRoomForCopy(of url: URL) -> Bool {
-        return DiskSpace.hasRoomForCopy(of: url)
+    /// Before the audio mix: whether a second file as large as `url` fits next to it, or in `folder`. True when that
+    /// cannot be determined.
+    static func hasRoomForCopy(of url: URL, in folder: URL? = nil) -> Bool {
+        return DiskSpace.hasRoomForCopy(of: url, in: folder)
     }
 }
 

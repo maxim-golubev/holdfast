@@ -555,9 +555,10 @@ class AudioPlayerManager: ObservableObject {
         guard let packageURL = packageURL else { return }
         stop()
         let format = exportMP3 ? "mp3" : self.fileFormat
-        showSavePanel(defaultFileName: "\(packageURL.deletingPathExtension().appendingPathExtension(format).lastPathComponent)", exportMP3: exportMP3) { url, saveAsMP3 in
+        showSavePanel(defaultFileName: "\(packageURL.deletingPathExtension().appendingPathExtension(format).lastPathComponent)", format: format, exportMP3: exportMP3) { url, saveAsMP3 in
             guard let url = url else { return }
-            self.saveFile(url, saveAsMP3: saveAsMP3) { result in
+            // The panel has asked whether to replace a file of that name
+            self.saveFile(url, saveAsMP3: saveAsMP3, replacing: true) { result in
                 switch result {
                 case .success(let file):
                     UserNotice.showNotification(title: "Recording Exported", body: String(format: "File saved to: %@".local, file.path), id: "holdfast.completed.\(UUID().uuidString)")
@@ -568,19 +569,16 @@ class AudioPlayerManager: ObservableObject {
         }
     }
     
-    /// Mixes the two files at their volumes into `url`, whose extension becomes the package's format, and converts
-    /// that to MP3 when `saveAsMP3`. `completion` gets the file that was written, or why there is none, once, on the
-    /// main thread; a failure leaves no partial file behind. `audioQuality` defaults to the current setting;
-    /// finishing a recording passes the one it was started with. Main thread.
-    func saveFile(_ url: URL, saveAsMP3: Bool = false,
+    /// Mixes the two files at their volumes into `output`, in the package's format, or into an MP3 when
+    /// `saveAsMP3`; `output` has that extension. Everything is written under staging names first
+    /// (`RecordingFileStore.stagingURL`), and `output` appears only with the complete, checked file. A file at
+    /// `output` is replaced only when `replacing` (a name the user confirmed in the save panel). `completion` gets
+    /// `output`, or why there is none, once, on the main thread; a failure leaves no file behind. `audioQuality`
+    /// defaults to the current setting; finishing a recording passes the one it was started with. Main thread.
+    func saveFile(_ output: URL, saveAsMP3: Bool = false, replacing: Bool = false,
                   audioQuality: Int = AppSettings.audioQuality.rawValue,
                   completion: @escaping @MainActor (Result<URL, Error>) -> Void) {
-        var named = url
-        if named.pathExtension == "mp3" { named = named.deletingPathExtension() }
-        if named.pathExtension != fileFormat { named = named.appendingPathExtension(fileFormat) }
-        let mp3 = named.deletingPathExtension().appendingPathExtension("mp3")
-        // What is converted to MP3 is mixed into a hidden file first
-        let mixed = saveAsMP3 ? named.deletingLastPathComponent().appendingPathComponent("." + named.lastPathComponent) : named
+        let mixed = RecordingFileStore.stagingURL(for: output, ending: fileFormat)
         exporting = true
         let finish: (Result<URL, Error>) -> Void = { result in
             DispatchQueue.main.async {
@@ -592,6 +590,22 @@ class AudioPlayerManager: ObservableObject {
                 completion(result)
             }
         }
+        let ending = saveAsMP3 ? "mp3" : fileFormat
+        guard let package = packageURL else {
+            return finish(.failure(RecordingError("The audio files of the recording could not be opened.")))
+        }
+        guard output.pathExtension.lowercased() == ending else {
+            return finish(.failure(RecordingError(String(format: "The name of the exported file must end in .%@.", ending))))
+        }
+        // The mix is about as large as one of the two files, and an MP3 is made from it next to it
+        guard RecordingFileStore.hasRoomForCopy(of: package, in: output.deletingLastPathComponent()) else {
+            return finish(.failure(RecordingError("Not enough free disk space to mix the audio tracks.")))
+        }
+        do {
+            try RecordingFileStore.checkFree(staging: mixed)
+        } catch {
+            return finish(.failure(error))
+        }
         Thread.detachNewThread {
             do {
                 try self.render(to: mixed, audioQuality: audioQuality)
@@ -600,12 +614,15 @@ class AudioPlayerManager: ObservableObject {
                 finish(.failure(error))
                 return
             }
-            guard saveAsMP3 else { finish(.success(mixed)); return }
             Task {
                 do {
-                    try await RecordingSaver.convertToMP3(mixed, to: mp3, bitrate: audioQuality)
-                    try? fd.removeItem(at: mixed)
-                    finish(.success(mp3))
+                    if saveAsMP3 {
+                        try await RecordingSaver.convertToMP3(mixed, to: output, bitrate: audioQuality, replacing: replacing)
+                        try? fd.removeItem(at: mixed)
+                    } else {
+                        try RecordingFileStore.publish(mixed, as: output, replacing: replacing)
+                    }
+                    finish(.success(output))
                 } catch {
                     try? fd.removeItem(at: mixed)
                     finish(.failure(error))
@@ -614,11 +631,15 @@ class AudioPlayerManager: ObservableObject {
         }
     }
 
-    /// Plays both files through the engine offline into `url`. The file is complete and closed when it returns.
+    /// Plays both files through the engine offline into `url`, up to the end of the longer one: the microphone
+    /// file runs on past the system audio by what the stop padded it with. Returns when the file is closed and
+    /// opens with that length (`RecordingMixer.verifyConversion`).
     private func render(to url: URL, audioQuality: Int) throws {
         guard let audioFile1 = audioFile1, let audioFile2 = audioFile2 else {
             throw RecordingError("The audio files of the recording could not be opened.")
         }
+        func seconds(_ file: AVAudioFile) -> Double { Double(file.length) / file.processingFormat.sampleRate }
+        let longer = seconds(audioFile2) > seconds(audioFile1) ? audioFile2 : audioFile1
         playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
         playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
         let audioSettings = MovieWriter.audioSettings(format: fileEncoder, quality: audioQuality, videoFormat: nil)
@@ -637,7 +658,7 @@ class AudioPlayerManager: ObservableObject {
         try engine.start()
         playerNode1.play()
         playerNode2.play()
-        let duration = audioFile1.length
+        let duration = AVAudioFramePosition((seconds(longer) * engine.manualRenderingFormat.sampleRate).rounded())
         guard let buffer = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: engine.manualRenderingMaximumFrameCount) else {
             throw RecordingError("No buffer to mix the audio into.")
         }
@@ -649,6 +670,9 @@ class AudioPlayerManager: ObservableObject {
             }
             try outputFile.write(from: buffer)
         }
+        // Closed here, not when it is released, so that a file that could not be finished fails the check below
+        outputFile.close()
+        try RecordingMixer.verifyConversion(source: longer.url, output: url)
     }
     
     private func updateSysVol() {
@@ -659,9 +683,13 @@ class AudioPlayerManager: ObservableObject {
         playerNode2.volume = micVol
     }
     
-    private func showSavePanel(defaultFileName: String, exportMP3: Bool, completion: @escaping (URL?, Bool) -> Void) {
+    /// `format` is the extension of what is exported. The panel puts it on the name and asks before replacing a file
+    /// of that name, which is then the file that is written.
+    private func showSavePanel(defaultFileName: String, format: String, exportMP3: Bool, completion: @escaping (URL?, Bool) -> Void) {
         panel.isReleasedWhenClosed = true
         panel.nameFieldStringValue = defaultFileName
+        panel.allowedContentTypes = UTType(filenameExtension: format).map { [$0] } ?? []
+        panel.allowsOtherFileTypes = false
         panel.canCreateDirectories = true
         panel.title = "Export Recording".local
         

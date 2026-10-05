@@ -46,11 +46,25 @@ enum DiskSpace {
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
     
-    /// Whether a second file as large as `url` fits next to it with `stopMinimum` to spare. True when that cannot be determined.
-    static func hasRoomForCopy(of url: URL) -> Bool {
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]), let size = values.fileSize,
-              let free = available(at: url.deletingLastPathComponent().path) else { return true }
-        return hasRoom(forCopyOf: Int64(size), free: free)
+    /// Whether a second file as large as `url` (a file or a package) fits in `folder`, next to it unless given, with
+    /// `stopMinimum` to spare. True when that cannot be determined.
+    static func hasRoomForCopy(of url: URL, in folder: URL? = nil) -> Bool {
+        guard let size = size(of: url),
+              let free = available(at: (folder ?? url.deletingLastPathComponent()).path) else { return true }
+        return hasRoom(forCopyOf: size, free: free)
+    }
+
+    /// Bytes in the file at `url`, or in all files inside it when it is a folder (a .qma package). Nil when it is not there.
+    static func size(of url: URL) -> Int64? {
+        let keys: Set<URLResourceKey> = [.fileSizeKey, .isDirectoryKey]
+        guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
+        guard values.isDirectory == true else { return values.fileSize.map { Int64($0) } }
+        guard let files = FileManager.default.enumerator(at: url, includingPropertiesForKeys: Array(keys)) else { return nil }
+        var total: Int64 = 0
+        for case let file as URL in files {
+            total += Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return total
     }
     
     /// A recording's file as it is open, wherever its folder goes: whether it was deleted, and where it is now.

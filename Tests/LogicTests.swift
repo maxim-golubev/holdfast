@@ -233,5 +233,12 @@ func logicTests() async {
         let file = folder.appendingPathComponent("small.mp4")
         try Data(count: 1000).write(to: file)
         expectEqual(DiskSpace.hasRoomForCopy(of: file), DiskSpace.hasRoom(forCopyOf: 1000, free: free), "a small file fits when the volume has room")
+        let package = folder.appendingPathComponent("Recording at X.qma")
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: false)
+        try Data(count: 3000).write(to: package.appendingPathComponent("sys.m4a"))
+        try Data(count: 4000).write(to: package.appendingPathComponent("mic.m4a"))
+        expectEqual(DiskSpace.size(of: package), 7000, "a package is as large as the files in it")
+        expectEqual(DiskSpace.size(of: file), 1000, "a file is as large as itself")
+        expect(DiskSpace.size(of: folder.appendingPathComponent("missing.mp4")) == nil, "a file that is not there has no size")
     }
 }

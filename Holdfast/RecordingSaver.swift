@@ -242,26 +242,29 @@ enum RecordingSaver {
         }
     }
 
-    /// Converts the audio file `source` to MP3 at `bitrate` kbit/s into `output`, replacing what is there (a name
-    /// the caller has chosen: a recording's free name, or one confirmed in the save panel). Returns only when the
-    /// MP3 opens and is as long as `source`; otherwise it throws and leaves no file at `output`. `source` is only read.
-    nonisolated static func convertToMP3(_ source: URL, to output: URL, bitrate: Int) async throws {
-        guard RecordingFileStore.hasRoomForCopy(of: source) else {
+    /// Converts the audio file `source` to MP3 at `bitrate` kbit/s into `output`. The MP3 is written under its
+    /// staging name (`RecordingFileStore.stagingURL`) and gets `output` only once it opens and is as long as
+    /// `source`; otherwise this throws and leaves nothing. A file at `output` is replaced only when `replacing` (a
+    /// name confirmed in the save panel). `source` is only read.
+    nonisolated static func convertToMP3(_ source: URL, to output: URL, bitrate: Int, replacing: Bool = false) async throws {
+        guard RecordingFileStore.hasRoomForCopy(of: source, in: output.deletingLastPathComponent()) else {
             throw RecordingError("Not enough free disk space to convert the recording to MP3.")
         }
+        let staged = RecordingFileStore.stagingURL(for: output)
         // The encoder appends to a file that exists
-        if fd.fileExists(atPath: output.path) { try fd.removeItem(at: output) }
+        try RecordingFileStore.checkFree(staging: staged)
         do {
             let encoder = try SwiftLameEncoder(
                 sourceUrl: source,
                 configuration: .init(sampleRate: .custom(48000), bitrateMode: .constant(Int32(bitrate)), quality: .nearBest),
-                destinationUrl: output
+                destinationUrl: staged
             )
             try await encoder.encode(priority: .userInitiated)
             // The encoder does not report a failed write: a full disk leaves an empty or cut-off file
-            try RecordingMixer.verifyConversion(source: source, output: output)
+            try RecordingMixer.verifyConversion(source: source, output: staged)
+            try RecordingFileStore.publish(staged, as: output, replacing: replacing)
         } catch {
-            try? fd.removeItem(at: output)
+            try? fd.removeItem(at: staged)
             throw error
         }
     }
