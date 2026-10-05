@@ -216,7 +216,7 @@ struct AreaSelector: View {
         closeAllWindow()
         appDelegate.stopGlobalMouseMonitor()
         var window = NSWindow()
-        let area = SCContext.screenArea!
+        let area = ScreenContent.screenArea!
         guard let nsScreen = screen.nsScreen else { return }
         let frame = NSRect(x: Int(area.origin.x + nsScreen.frame.minX - 4),
                            y: Int(area.origin.y + nsScreen.frame.minY - 4),
@@ -232,7 +232,7 @@ struct AreaSelector: View {
         window.contentView = NSHostingView(rootView: DashWindow())
         window.orderFront(self)
         appDelegate.createCountdownPanel(screen: screen) {
-            appDelegate.prepRecord(type: "area", screens: screen, windows: nil, applications: nil, autoStop: autoStop)
+            RecorderController.shared.start(type: "area", screens: screen, windows: nil, applications: nil, autoStop: autoStop)
         }
     }
 }
@@ -273,14 +273,14 @@ class ScreenshotOverlayView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         var selection = NSRect(x: (self.frame.width - size.width) / 2, y: (self.frame.height - size.height) / 2, width: size.width, height: size.height)
-        if !force, let name = self.window?.screen?.localizedName, let saved = SCContext.savedArea(forScreen: name) {
+        if !force, let name = self.window?.screen?.localizedName, let saved = ScreenContent.savedArea(forScreen: name) {
             selection = saved
         }
         selectionRect = selection
         if self.window != nil {
             AppSettings.areaWidth = Int(selection.width)
             AppSettings.areaHeight = Int(selection.height)
-            SCContext.screenArea = selection
+            ScreenContent.screenArea = selection
         }
         updateMaskLayer()
         updateSelectionLayer()
@@ -489,7 +489,7 @@ class ScreenshotOverlayView: NSView {
         dragIng = false
         AppDelegate.shared.isResizing = false
         if let rect = selectionRect {
-            SCContext.screenArea = rect
+            ScreenContent.screenArea = rect
         }
     }
 }

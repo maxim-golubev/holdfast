@@ -15,7 +15,7 @@ struct ContentView: View {
     @State private var xmarkGlowing = false
     @State private var infoGlowing = false
     @State private var micGlowing = false
-    @State private var micList = SCContext.getMicrophone()
+    @State private var micList = MicSelection.getMicrophone()
     @AppStorage(AppSettings.$recordMic) private var recordMic: Bool
     @AppStorage(AppSettings.$showOnDock) private var showOnDock: Bool
     @AppStorage(AppSettings.$showMenubar) private var showMenubar: Bool
@@ -36,10 +36,10 @@ struct ContentView: View {
                     if !fromStatusBar { Spacer() }
                     ZStack(alignment: Alignment(horizontal: .center, vertical: .bottom)) {
                         Button(action: {
-                            if let display = SCContext.getSCDisplayWithMouse() {
+                            if let display = ScreenContent.getSCDisplayWithMouse() {
                                 closeMainWindow()
                                 appDelegate.createCountdownPanel(screen: display) {
-                                    AppDelegate.shared.prepRecord(type: "audio", screens: SCContext.getSCDisplayWithMouse(), windows: nil, applications: nil)
+                                    RecorderController.shared.start(type: "audio", screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil)
                                 }
                             }
                         }, label: {
@@ -61,7 +61,7 @@ struct ContentView: View {
                                     }
                                 }
                                 .buttonStyle(.plain)
-                                .onChange(of: recordMic) { _ in  Task { await SCContext.performMicCheck() }}
+                                .onChange(of: recordMic) { _ in  Task { await MicSelection.performMicCheck() }}
                                 .disabled(micList.isEmpty)
                                 Image(systemName: "mic.fill")
                                     .font(.system(size: 13, weight: .bold))
@@ -102,12 +102,12 @@ struct ContentView: View {
                     Divider().frame(height: 70)
                     Button(action: {
                         closeMainWindow()
-                        SCContext.updateAvailableContent {
+                        ScreenContent.updateAvailableContent {
                             DispatchQueue.main.async {
                                 appDelegate.showAreaSelector(size: NSSize(width: 600, height: 450))
-                                var currentDisplay = SCContext.getSCDisplayWithMouse()
+                                var currentDisplay = ScreenContent.getSCDisplayWithMouse()
                                 mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .rightMouseDown, .leftMouseDown, .otherMouseDown]) { event in
-                                    let display = SCContext.getSCDisplayWithMouse()
+                                    let display = ScreenContent.getSCDisplayWithMouse()
                                     if display != currentDisplay {
                                         currentDisplay = display
                                         closeAllWindow()
@@ -262,7 +262,7 @@ struct CountdownView: View {
 
 extension AppDelegate {
     func showAreaSelector(size: NSSize, noPanel: Bool = false) {
-        guard let scDisplay = SCContext.getSCDisplayWithMouse() else { return }
+        guard let scDisplay = ScreenContent.getSCDisplayWithMouse() else { return }
         guard let screen = scDisplay.nsScreen else { return }
         let screenshotWindow = ScreenshotWindow(contentRect: screen.frame, backing: .buffered, defer: false, size: size, force: noPanel)
         screenshotWindow.title = "Area Selector".local
@@ -320,7 +320,7 @@ extension AppDelegate {
     }
     
     func createNewWindow(view: some View, title: String, identifier: NSUserInterfaceItemIdentifier? = nil, random: Bool = false, only: Bool = true) {
-        guard let screen = SCContext.getScreenWithMouse() else { return }
+        guard let screen = ScreenContent.getScreenWithMouse() else { return }
         if only { closeAllWindow() }
         var seed = 0.0
         if random { seed = CGFloat(Int(arc4random_uniform(401)) - 200) }

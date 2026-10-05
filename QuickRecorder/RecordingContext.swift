@@ -7,12 +7,10 @@ import AVFoundation
 import Foundation
 
 /// Everything about one recording that must not change while it runs or while it is being finished: where it is
-/// written and the settings it was started with. Built once in `prepRecord`. `stopRecording()` and what follows it
-/// (audio mix, preview, notifications) work from their own copy, so changing a setting or starting the next
-/// recording in the meantime cannot redirect them to another file.
+/// written and the settings it was started with. Built once in `RecorderController.start`. The stop and what
+/// follows it (audio mix, preview, notifications) work from this value, so changing a setting in the meantime
+/// cannot redirect them to another file.
 struct RecordingContext {
-    /// Tells this recording from the next one where a stop is requested asynchronously
-    let id = UUID()
     let audioOnly: Bool
     /// Whether this recording has a microphone track, which the "recordMic" setting alone does not decide
     let recordMic: Bool
@@ -64,7 +62,7 @@ struct RecordingContext {
 
     /// The one place the settings of a recording are read from `AppSettings`. What depends on how this recording
     /// was started is handed in: `recordMic` is whether it got a microphone, `saveDirectory` the folder
-    /// `prepRecord` has checked.
+    /// `RecorderController.start` has checked.
     init(audioOnly: Bool, recordMic: Bool, fastStart: Bool, saveDirectory: String) {
         let systemAudio = AppSettings.recordWinSound || fastStart || audioOnly
         let remuxAudio = AppSettings.remuxAudio

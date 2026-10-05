@@ -95,7 +95,7 @@ struct HighlightMask: View {
             }
             .onPressGesture {
                 if let w = WindowHighlighter.shared.getSCWindowWithID(UInt32(windowID)),
-                   let d = SCContext.getSCDisplayWithMouse() {
+                   let d = ScreenContent.getSCDisplayWithMouse() {
                     display = d
                     window = w
                     WindowHighlighter.shared.stopMouseMonitor()
@@ -114,7 +114,7 @@ struct HighlightMask: View {
             var dashWindow = NSWindow()
             guard let screen = display, let nsScreen = display?.nsScreen, var area = window?.frame else { return }
             area = CGRectTransform(cgRect: area)
-            SCContext.screenArea = NSRect(x: area.origin.x - nsScreen.frame.minX, y: area.origin.y - nsScreen.frame.minY, width:area.width, height: area.height)
+            ScreenContent.screenArea = NSRect(x: area.origin.x - nsScreen.frame.minX, y: area.origin.y - nsScreen.frame.minY, width:area.width, height: area.height)
             let frame = NSRect(x: Int(area.origin.x - 3),
                                y: Int(area.origin.y - 3),
                                width: Int(area.width + 6), height: Int(area.height + 6))
@@ -129,12 +129,12 @@ struct HighlightMask: View {
             dashWindow.contentView = NSHostingView(rootView: DashWindow())
             dashWindow.orderFront(self)
             appDelegate.createCountdownPanel(screen: screen) {
-                appDelegate.prepRecord(type: "area", screens: display, windows: nil, applications: nil, autoStop: autoStop)
+                RecorderController.shared.start(type: "area", screens: display, windows: nil, applications: nil, autoStop: autoStop)
             }
         default:
             if let d = display, let w = window {
                 appDelegate.createCountdownPanel(screen: d) {
-                    appDelegate.prepRecord(type: "window" , screens: d, windows: [w], applications: nil, autoStop: autoStop)
+                    RecorderController.shared.start(type: "window" , screens: d, windows: [w], applications: nil, autoStop: autoStop)
                 }
             }
         }
@@ -271,8 +271,8 @@ class WindowHighlighter {
     
     func getSCWindowWithID(_ windowID: UInt32?) -> SCWindow? {
         guard let windowID else { return nil }
-        _ = SCContext.updateAvailableContentSync()
-        let windows = SCContext.getWindows()
+        _ = ScreenContent.updateAvailableContentSync()
+        let windows = ScreenContent.getWindows()
         return windows.first(where: { $0.windowID == windowID })
     }
     

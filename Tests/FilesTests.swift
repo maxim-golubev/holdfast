@@ -236,6 +236,5 @@ func filesTests() async {
         expectEqual(audio.rawURL.pathExtension, "m4a", "MP3 is recorded as AAC")
         expectEqual(audio.finalURL.pathExtension, "mp3", "and converted")
         expectEqual(audio.audioEncoder, "aac", "encoder")
-        expect(mixed.id != silent.id, "every recording has its own id")
     }
 }

@@ -9,23 +9,23 @@ import Foundation
 import AppKit
 import ScreenCaptureKit
 
-/// Whether a recording can be started now (`SCContext.canStart`, as the hotkeys ask). When not, the script gets an
+/// Whether a recording can be started now (`RecorderController.canStart`, as the hotkeys ask). When not, the script gets an
 /// error instead of a start that is refused later without a word. Script commands run on the main thread.
 private func scriptCanStart(_ command: NSScriptCommand) -> Bool {
-    if SCContext.canStart() { return true }
+    if withRecorder({ $0.canStart() }) { return true }
     command.scriptErrorNumber = errOSAGeneralError
-    command.scriptErrorString = SCContext.isSaving ? "The previous recording is still being saved." : "Already recording!"
+    command.scriptErrorString = withRecorder({ $0.isSaving }) ? "The previous recording is still being saved." : "Already recording!"
     return false
 }
 
 class selectScreen: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
-        SCContext.updateAvailableContent {
+        ScreenContent.updateAvailableContent {
             DispatchQueue.main.async {
                 closeAllWindow()
                 if var index = self.evaluatedArguments!["index"] as? Int {
-                    guard let screens = SCContext.availableContent?.displays else { return }
+                    guard let screens = ScreenContent.availableContent?.displays else { return }
                     index -= 1
                     closeAllWindow()
                     if index >= screens.count || index < 0 {
@@ -34,7 +34,7 @@ class selectScreen: NSScriptCommand {
                     } else {
                         let screen = screens[index]
                         AppDelegate.shared.createCountdownPanel(screen: screen) {
-                            AppDelegate.shared.prepRecord(type: "display", screens: screen, windows: nil, applications: nil)
+                            RecorderController.shared.start(type: "display", screens: screen, windows: nil, applications: nil)
                         }
                     }
                 } else {
@@ -50,14 +50,14 @@ class selectScreen: NSScriptCommand {
 class selectArea: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
-        SCContext.updateAvailableContent {
+        ScreenContent.updateAvailableContent {
             DispatchQueue.main.async {
                 closeAllWindow()
                 DispatchQueue.main.async {
                     AppDelegate.shared.showAreaSelector(size: NSSize(width: 600, height: 450))
-                    var currentDisplay = SCContext.getSCDisplayWithMouse()
+                    var currentDisplay = ScreenContent.getSCDisplayWithMouse()
                     mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .rightMouseDown, .leftMouseDown, .otherMouseDown]) { event in
-                        let display = SCContext.getSCDisplayWithMouse()
+                        let display = ScreenContent.getSCDisplayWithMouse()
                         if display != currentDisplay {
                             currentDisplay = display
                             closeAllWindow()
@@ -74,17 +74,17 @@ class selectArea: NSScriptCommand {
 class selectApps: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
-        SCContext.updateAvailableContent {
+        ScreenContent.updateAvailableContent {
             DispatchQueue.main.async {
                 closeAllWindow()
                 if let name = self.evaluatedArguments!["name"] as? String {
-                    guard let app = SCContext.availableContent?.applications.first(where: { $0.applicationName == name }) else {
+                    guard let app = ScreenContent.availableContent?.applications.first(where: { $0.applicationName == name }) else {
                         createAlert(title: "Error".local, message: "No such application!".local, button1: "OK".local).runModal()
                         return
                     }
                     closeAllWindow()
-                    guard let screens = SCContext.availableContent?.displays else { return }
-                    guard let windows = SCContext.availableContent?.windows.filter({
+                    guard let screens = ScreenContent.availableContent?.displays else { return }
+                    guard let windows = ScreenContent.availableContent?.windows.filter({
                         guard let title = $0.title else { return false }
                         return !title.contains("Item-0")
                         && title != "Window"
@@ -106,7 +106,7 @@ class selectApps: NSScriptCommand {
                         createAlert(title: "Error".local, message: "This app exists in multiple screens, please select it manually!".local, button1: "OK".local).runModal()
                     } else {
                         AppDelegate.shared.createCountdownPanel(screen: s.first!) {
-                            AppDelegate.shared.prepRecord(type: "application", screens: s.first!, windows: nil, applications: [app])
+                            RecorderController.shared.start(type: "application", screens: s.first!, windows: nil, applications: [app])
                         }
                     }
                 } else {
@@ -122,15 +122,15 @@ class selectApps: NSScriptCommand {
 class selectWindows: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
-        SCContext.updateAvailableContent {
+        ScreenContent.updateAvailableContent {
             DispatchQueue.main.async {
                 closeAllWindow()
                 if let title = self.evaluatedArguments!["title"] as? String {
                     var windows = [SCWindow]()
-                    guard let w = SCContext.availableContent?.windows.filter({ $0.title == title }) else { return }
+                    guard let w = ScreenContent.availableContent?.windows.filter({ $0.title == title }) else { return }
                     windows = w
                     if let app = self.evaluatedArguments!["app"] as? String {
-                        guard let w = SCContext.availableContent?.windows.filter({ $0.title == title && $0.owningApplication?.applicationName == app }) else { return }
+                        guard let w = ScreenContent.availableContent?.windows.filter({ $0.title == title && $0.owningApplication?.applicationName == app }) else { return }
                         windows = w
                     }
                     closeAllWindow()
@@ -144,7 +144,7 @@ class selectWindows: NSScriptCommand {
                         return
                     }
                     let window = windows.first!
-                    guard let screens = SCContext.availableContent?.displays else { return }
+                    guard let screens = ScreenContent.availableContent?.displays else { return }
                     var s = [SCDisplay]()
                     for screen in screens {
                         if NSIntersectsRect(screen.frame, window.frame) { if !s.contains(screen) { s.append(screen) }}
@@ -153,14 +153,14 @@ class selectWindows: NSScriptCommand {
                         createAlert(title: "Error".local, message: "Unable to find the screen this window belongs to!".local, button1: "OK".local).runModal()
                         return
                     }
-                    if let display = SCContext.getSCDisplayWithMouse() {
+                    if let display = ScreenContent.getSCDisplayWithMouse() {
                         if s.contains(display) {
                             AppDelegate.shared.createCountdownPanel(screen: display) {
-                                AppDelegate.shared.prepRecord(type: "window" , screens: s.first!, windows: [window], applications: nil)
+                                RecorderController.shared.start(type: "window" , screens: s.first!, windows: [window], applications: nil)
                             }
                         } else {
                             AppDelegate.shared.createCountdownPanel(screen: s.first!) {
-                                AppDelegate.shared.prepRecord(type: "window" , screens: s.first!, windows: [window], applications: nil)
+                                RecorderController.shared.start(type: "window" , screens: s.first!, windows: [window], applications: nil)
                             }
                         }
                     }
@@ -177,12 +177,12 @@ class selectWindows: NSScriptCommand {
 class recordAudio: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard scriptCanStart(self) else { return nil }
-        SCContext.updateAvailableContent {
+        ScreenContent.updateAvailableContent {
             DispatchQueue.main.async {
                 // The "mic" argument applies to this recording only; the "recordMic" setting is left alone
                 let mic = self.evaluatedArguments?["mic"] as? Bool
                 closeAllWindow()
-                AppDelegate.shared.prepRecord(type: "audio", screens: SCContext.getSCDisplayWithMouse(), windows: nil, applications: nil, recordMic: mic)
+                RecorderController.shared.start(type: "audio", screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, recordMic: mic)
             }
         }
         return nil
@@ -196,7 +196,7 @@ class stopRecording: NSScriptCommand {
         if !AppDelegate.shared.cancelCountdown() {
             // Same action as the status-bar Stop button. It returns at once; a recording that is still starting is
             // stopped as soon as its capture runs.
-            SCContext.stopRecording()
+            withRecorder { $0.stop() }
         }
         return nil
     }
@@ -205,7 +205,7 @@ class stopRecording: NSScriptCommand {
 class setPreferences: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         // Settings are read while a recording starts and runs. One that is only being saved has its own copy.
-        if SCContext.state == .starting || SCContext.state == .recording {
+        if withRecorder({ $0.state == .starting || $0.state == .recording }) {
             scriptErrorNumber = errOSAGeneralError
             scriptErrorString = "Settings cannot be changed while recording."
             return nil
@@ -225,7 +225,7 @@ class setPreferences: NSScriptCommand {
                 }
             }
         }
-        if let micname = self.evaluatedArguments?["micname"] as? String, !SCContext.selectMic(named: micname) {
+        if let micname = self.evaluatedArguments?["micname"] as? String, !MicSelection.selectMic(named: micname) {
             // The other settings above were applied; the microphone selection stays as it was
             scriptErrorNumber = errOSAGeneralError
             scriptErrorString = "No connected audio input device is named \"\(micname)\". The microphone selection was not changed."

@@ -81,7 +81,7 @@ struct WinSelector: View {
                                                                 .foregroundStyle(.green)
                                                                 .opacity(selected.contains(item.window) ? 1.0 : 0.0)
                                                                 .offset(x: 55, y: 25)
-                                                            Image(nsImage: SCContext.getAppIcon(item.window.owningApplication!)!)
+                                                            Image(nsImage: ScreenContent.getAppIcon(item.window.owningApplication!)!)
                                                                 .resizable()
                                                                 .aspectRatio(contentMode: .fit)
                                                                 .frame(width: 40, height: 40, alignment: .center)
@@ -229,7 +229,7 @@ struct WinSelector: View {
     func startRecording() {
         closeAllWindow()
         appDelegate.createCountdownPanel(screen: display) {
-            appDelegate.prepRecord(type: (selected.count<2 ? "window" : "windows") , screens: display, windows: selected, applications: nil, autoStop: autoStop)
+            RecorderController.shared.start(type: (selected.count<2 ? "window" : "windows") , screens: display, windows: selected, applications: nil, autoStop: autoStop)
         }
     }
 }
@@ -253,7 +253,7 @@ class WindowSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
         if let index = self.streams.firstIndex(of: stream), index + 1 <= self.allWindows.count {
             let currentWindow = self.allWindows[index]
             let thumbnail = WindowThumbnail(image: nsImage, window: currentWindow)
-            guard let displays = SCContext.availableContent?.displays.filter({ NSIntersectsRect(currentWindow.frame, $0.frame) }) else {
+            guard let displays = ScreenContent.availableContent?.displays.filter({ NSIntersectsRect(currentWindow.frame, $0.frame) }) else {
                 self.streams[index].stopCapture()
                 return
             }
@@ -272,12 +272,12 @@ class WindowSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
     }
 
     func setupStreams(filter: Bool = true, capture: Bool = true) {
-        SCContext.updateAvailableContent {
+        ScreenContent.updateAvailableContent {
             Task {
                 do {
                     self.streams.removeAll()
                     DispatchQueue.main.async { self.windowThumbnails.removeAll() }
-                    self.allWindows = SCContext.getWindows().filter({
+                    self.allWindows = ScreenContent.getWindows().filter({
                         !($0.title == "" && $0.owningApplication?.bundleIdentifier == "com.apple.finder")
                         && $0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier
                         && $0.owningApplication?.applicationName != ""
@@ -307,7 +307,7 @@ class WindowSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
                     } else {
                         for w in self.allWindows {
                             let thumbnail = WindowThumbnail(image: NSImage.unknowScreen, window: w)
-                            guard let displays = SCContext.availableContent?.displays.filter({ NSIntersectsRect(w.frame, $0.frame) }) else { break }
+                            guard let displays = ScreenContent.availableContent?.displays.filter({ NSIntersectsRect(w.frame, $0.frame) }) else { break }
                             for d in displays {
                                 DispatchQueue.main.async {
                                     if self.windowThumbnails[d] != nil {

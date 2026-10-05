@@ -3,6 +3,9 @@ import UserNotifications
 import SwiftUI
 import AVKit
 
+/// The videos open in a trimmer window, which opening such a file again does not open a second time. Main thread.
+var trimingList = [URL]()
+
 class RecorderPlayerModel: NSObject, ObservableObject {
     @Published var playerView: AVPlayerView
     var asset: AVAsset?
@@ -163,11 +166,11 @@ struct VideoTrimmerView: View {
         .background(WindowAccessor(onWindowOpen: { window in
             window?.styleMask.insert(.resizable)
             playerViewModel.nsWindow = window
-            SCContext.trimingList.append(videoURL)
+            trimingList.append(videoURL)
         }, onWindowClose: {
             playerViewModel.playerView.player?.replaceCurrentItem(with: nil)
             playerViewModel.cleanup()
-            SCContext.trimingList.removeAll(where: { $0 == videoURL })
+            trimingList.removeAll(where: { $0 == videoURL })
         }))
         //.navigationTitle(videoURL.lastPathComponent)
         //.preferredColorScheme(.dark)

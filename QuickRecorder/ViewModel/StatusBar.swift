@@ -7,6 +7,22 @@
 
 import SwiftUI
 
+/// What the status bar shows about the recorder, as `RecorderEnvironment.app` copies it from `RecorderController`.
+/// Main thread only.
+final class RecordingHealth: ObservableObject {
+    static let shared = RecordingHealth()
+    /// Set while a track is not being recorded: the status bar turns into its warning state and shows this as its tooltip
+    @Published var warning: String?
+    /// Nil without a microphone track. 0: digital silence or nothing at all, 1: quiet, 2: sound.
+    @Published var micLevel: Int?
+    /// True from the moment a recording is stopped until its files are final (`RecorderController.isSaving`)
+    @Published var saving = false
+    /// From 0 to 1 while the audio tracks of a stopped recording are being mixed, nil otherwise
+    @Published var mixProgress: Double?
+    /// From 0 to 1 while a recording left by an earlier run is being mixed at launch, nil otherwise
+    @Published var recoveryProgress: Double?
+}
+
 class PopoverState: ObservableObject {
     static let shared = PopoverState()
     @Published var isShowing: Bool = false
@@ -16,8 +32,7 @@ class PopoverState: ObservableObject {
 struct StatusBarItem: View {
     @State private var isMainMenuShowing = false
     @State private var isHovering = false
-    @State private var recordingLength = SCContext.getRecordingLength()
-    //@State private var isPassed = SCContext.isPaused
+    @State private var recordingLength = RecorderController.shared.recordingLength()
     @StateObject private var popoverState = PopoverState.shared
     @ObservedObject private var health = RecordingHealth.shared
     //@NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -45,7 +60,7 @@ struct StatusBarItem: View {
                     resizeStatusBar()
                     updateFloatingController()
                 }
-            } else if SCContext.streamType != nil {
+            } else if RecorderController.shared.streamType != nil {
                 ZStack {
                     Rectangle()
                         // Orange while a track is not being recorded
@@ -56,7 +71,7 @@ struct StatusBarItem: View {
                         if miniStatusBar {
                             if isHovering {
                                 Button(action: {
-                                    SCContext.stopRecording()
+                                    RecorderController.shared.stop()
                                 }, label: {
                                     ZStack {
                                         Image(systemName: "circle.fill")
@@ -70,7 +85,7 @@ struct StatusBarItem: View {
                                     }
                                 }).buttonStyle(.plain)
                                 Button(action: {
-                                    SCContext.pauseRecording()
+                                    RecorderController.shared.togglePause()
                                 }, label: {
                                     Image(systemName: popoverState.isPaused ? "play.circle.fill" : "pause.circle.fill")
                                         .font(.system(size: 16))
@@ -86,7 +101,7 @@ struct StatusBarItem: View {
                         } else {
                             Group {
                                 Button(action: {
-                                    SCContext.stopRecording()
+                                    RecorderController.shared.stop()
                                 }, label: {
                                     ZStack {
                                         Image(systemName: "circle.fill")
@@ -100,7 +115,7 @@ struct StatusBarItem: View {
                                     }
                                 }).buttonStyle(.plain)
                                 Button(action: {
-                                    SCContext.pauseRecording()
+                                    RecorderController.shared.togglePause()
                                 }, label: {
                                     Image(systemName: popoverState.isPaused ? "play.circle.fill" : "pause.circle.fill")
                                         .font(.system(size: 16))
@@ -128,14 +143,13 @@ struct StatusBarItem: View {
                 .help(health.warning ?? "")
                 .padding([.leading,.trailing], 4)
                 .onReceive(updateTimer) { t in
-                    recordingLength = SCContext.getRecordingLength()
+                    recordingLength = RecorderController.shared.recordingLength()
                     // The timer gets longer at the first hour
                     resizeStatusBar()
-                    let timePassed = Date.now.timeIntervalSince(SCContext.startTime ?? t)
-                    if SCContext.autoStop != 0 && timePassed / 60 >= CGFloat(SCContext.autoStop) { SCContext.stopRecording() }
+                    RecorderController.shared.stopIfDue(at: t)
                     updateFloatingController()
                 }
-            } else if SCContext.showsRecovery {
+            } else if RecorderController.shared.showsRecovery {
                 // A recording left by an earlier run is being mixed. Shown so that the app does not look hung when
                 // quitting waits for it.
                 ZStack {
@@ -177,6 +191,7 @@ struct StatusBarItem: View {
 
 /// Main thread. Gives the status item, and the floating controller when it is shown, the width the pill needs now,
 /// without building them anew.
+@MainActor
 func resizeStatusBar() {
     let width = getStatusBarWidth()
     if let button = statusBarItem.button, let iconView = button.subviews.first, iconView.frame.width != width {
@@ -193,14 +208,16 @@ func resizeStatusBar() {
 
 /// Main thread. While a recording runs or is being saved and the status item cannot be seen (a full-screen app, a
 /// hidden menu bar), the same pill is shown in a floating panel; it goes when the status item is visible again.
+@MainActor
 func updateFloatingController() {
+    let recorder = RecorderController.shared
     guard let visible = statusBarItem.button?.window?.occlusionState.contains(.visible) else { return }
-    if visible || (SCContext.streamType == nil && !SCContext.isSaving) {
+    if visible || (recorder.streamType == nil && !recorder.isSaving) {
         controlPanel.close()
         return
     }
     if controlPanel.isVisible { return }
-    guard let screen = SCContext.getScreenWithMouse() else { return }
+    guard let screen = ScreenContent.getScreenWithMouse() else { return }
     let width = getStatusBarWidth()
     let wX = (screen.frame.width - width) / 2
     let contentView = NSHostingView(rootView: StatusBarItem())
@@ -212,7 +229,8 @@ func updateFloatingController() {
 
 func updateStatusBar() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-        if SCContext.streamType == nil && !SCContext.isSaving && !SCContext.showsRecovery && !AppSettings.showMenubar {
+        let recorder = RecorderController.shared
+        if recorder.streamType == nil && !recorder.isSaving && !recorder.showsRecovery && !AppSettings.showMenubar {
             statusBarItem.isVisible = false
             return
         }

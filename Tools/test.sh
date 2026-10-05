@@ -8,10 +8,14 @@ sources=(
   QuickRecorder/AppSettings.swift
   QuickRecorder/MicConverter.swift
   QuickRecorder/MovieWriter.swift
+  QuickRecorder/RecorderController.swift
   QuickRecorder/RecordingContext.swift
   QuickRecorder/RecordingFileStore.swift
   QuickRecorder/RecordingLogic.swift
   QuickRecorder/RecordingMixer.swift
+  QuickRecorder/RecordingMonitor.swift
+  QuickRecorder/RecordingRecovery.swift
+  QuickRecorder/RecordingSession.swift
   QuickRecorder/Supports/DiskSpace.swift
   Tests/*.swift
 )

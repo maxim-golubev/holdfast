@@ -141,7 +141,7 @@ enum AppSettings {
     @Setting("audioFormat", default: .aac) static var audioFormat: AudioFormat
     @Setting("audioQuality", default: .high) static var audioQuality: AudioQuality
     /// The chosen microphone: an `AVCaptureDevice.uniqueID`, or "default" for the system default input. Read it
-    /// through `SCContext.selectedMicID()`, which converts what earlier versions stored.
+    /// through `MicSelection.selectedMicID()`, which converts what earlier versions stored.
     @Setting("micDeviceID", default: "default") static var micDeviceID: String
     /// The chosen microphone's name, for display while the device is absent. Earlier versions stored the selection here.
     @Setting("micDevice", default: "default") static var micName: String
@@ -149,10 +149,10 @@ enum AppSettings {
     // Area selector
     @Setting("areaWidth", default: 600) static var areaWidth: Int
     @Setting("areaHeight", default: 450) static var areaHeight: Int
-    /// The last area recorded on each screen, by screen name. Use `SCContext.savedArea(forScreen:)` and `saveArea`.
+    /// The last area recorded on each screen, by screen name. Use `ScreenContent.savedArea(forScreen:)` and `saveArea`.
     @Setting("savedArea", default: [:]) static var savedAreas: [String: Any]
 
-    /// nil until a microphone has been chosen or `SCContext.selectedMicID()` has converted the old "micDevice" selection
+    /// nil until a microphone has been chosen or `MicSelection.selectedMicID()` has converted the old "micDevice" selection
     static var storedMicDeviceID: String? { _micDeviceID.isStored ? micDeviceID : nil }
 
     /// Whether a recording gets the display's pixels rather than its points

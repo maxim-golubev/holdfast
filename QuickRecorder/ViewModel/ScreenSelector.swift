@@ -154,7 +154,7 @@ struct ScreenSelector: View {
         closeAllWindow()
         if let screen = selected {
             appDelegate.createCountdownPanel(screen: screen) {
-                appDelegate.prepRecord(type: "display", screens: screen, windows: nil, applications: nil, autoStop: autoStop)
+                RecorderController.shared.start(type: "display", screens: screen, windows: nil, applications: nil, autoStop: autoStop)
             }
         }
     }
@@ -176,7 +176,7 @@ class ScreenSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
         if CMSampleBufferGetImageBuffer(sampleBuffer) == nil { return }
         var nsImage = sampleBuffer.nsImage
         if let index = self.streams.firstIndex(of: stream), index + 1 <= self.allScreens.count {
-            if nsImage == nil { nsImage = SCContext.getWallpaper(self.allScreens[index]) ?? NSImage.unknowScreen }
+            if nsImage == nil { nsImage = ScreenContent.getWallpaper(self.allScreens[index]) ?? NSImage.unknowScreen }
             let currentScreen = self.allScreens[index]
             let thumbnail = ScreenThumbnail(image: nsImage!, screen: currentScreen)
             DispatchQueue.main.async {
@@ -187,14 +187,14 @@ class ScreenSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
     }
 
     func setupStreams() {
-        SCContext.updateAvailableContent {
+        ScreenContent.updateAvailableContent {
             Task {
                 do {
                     self.streams.removeAll()
                     DispatchQueue.main.async { self.screenThumbnails.removeAll() }
-                    guard let screens = SCContext.availableContent?.displays else { return }
+                    guard let screens = ScreenContent.availableContent?.displays else { return }
                     self.allScreens = screens
-                    let qrSelf = SCContext.getSelf()
+                    let qrSelf = ScreenContent.getSelf()
                     let contentFilters = self.allScreens.map { SCContentFilter(display: $0, excludingApplications: qrSelf != nil ? [qrSelf!] : [], exceptingWindows: []) }
                     for (index, contentFilter) in contentFilters.enumerated() {
                         let streamConfiguration = SCStreamConfiguration()

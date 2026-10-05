@@ -26,7 +26,7 @@ struct CaptureSample {
 /// writer's session, the timeline with its pauses, and the converter of the microphone track. One is created for
 /// every recording and thrown away when it is finished or its start is discarded; nothing here outlives a recording.
 ///
-/// Confined to the sample queue (`SCContext.sampleQueue`) from the moment the capture is started. Before that,
+/// Confined to the sample queue (`RecorderController.queue`) from the moment the capture is started. Before that,
 /// `prepareVideo` / `prepareAudio` are called by the one thread that sets the recording up.
 final class MovieWriter {
     /// What the writer tells its owner, on the sample queue

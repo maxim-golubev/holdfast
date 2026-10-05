@@ -6,8 +6,8 @@
 import AVFoundation
 import Foundation
 
-/// Stands in for the system audio track: `SCContext.audioEndPTS`, the sample handler that places and writes a
-/// buffer, and `RecordingMonitor.fillSystemAudio`
+/// Stands in for the system audio track: `MovieWriter.audioEndPTS`, the sample handler that places and writes a
+/// buffer, and `MovieWriter.fillSystemAudio`
 final class SystemAudio {
     var end: CMTime?
     /// False while the "writer" is not ready
@@ -141,7 +141,7 @@ func logicTests() async {
     }
 
     await test("Timeline: a pause is taken out of the timeline, and so is every later one") {
-        // What the sample handler keeps: SCContext.timeOffset and lastPTS
+        // What the writer keeps: timeOffset and lastPTS
         var offset = CMTime.zero
         var last: CMTime?
         func arrive(_ raw: Double, resume: Bool = false) -> CMTime {

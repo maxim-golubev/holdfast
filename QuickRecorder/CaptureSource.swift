@@ -6,7 +6,7 @@
 import AVFoundation
 import ScreenCaptureKit
 
-/// What a recording captures, as `prepRecord` resolved it against the list of screens and windows
+/// What a recording captures, as `RecorderController.start` resolved it against the list of screens and windows
 struct CaptureTarget {
     /// `.windows` turns into `.window` when the filter is built for a single window
     var type: StreamType
@@ -35,7 +35,7 @@ struct MicrophoneChoice {
 /// (`configuration(for:target:filter:microphoneDeviceID:)`), and the stream with its delegate and outputs. Screen,
 /// system audio and microphone all arrive here and are handed on as `CaptureSample`s on the queue it was given.
 /// One is created for every recording. Except for the stream's callbacks it is used on the main thread.
-final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput {
+final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, RecordingCapture {
     /// The configuration the stream was started with, kept to update it when the microphone changes
     let configuration: SCStreamConfiguration
     let recordsMic: Bool
@@ -43,6 +43,10 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput {
     let micSelection: String
     /// The device the microphone is being captured from. `MicDevices` changes it when the devices change.
     var micActiveDeviceID: String?
+    /// A device switch that is waiting to be tried, and how often a switch the stream refused is tried again before
+    /// the next device change. `MicDevices` keeps them here, with the recording they belong to.
+    var micPendingSwitch: DispatchWorkItem?
+    var micRetriesLeft = 0
 
     private var stream: SCStream?
     private let queue: DispatchQueue
@@ -69,8 +73,8 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput {
     /// The content filter for `target`. Throws when what was selected is not there.
     static func filter(for target: inout CaptureTarget, content: SCShareableContent) throws -> SCContentFilter {
         let screen = target.display
-        let qrSelf = SCContext.getSelf()
-        let qrWindows = SCContext.getSelfWindows()
+        let qrSelf = ScreenContent.getSelf()
+        let qrWindows = ScreenContent.getSelfWindows()
         let dockApp = content.applications.first(where: { $0.bundleIdentifier.description == "com.apple.dock" })
         let wallpaper = content.windows.filter({
             guard let title = $0.title else { return false }

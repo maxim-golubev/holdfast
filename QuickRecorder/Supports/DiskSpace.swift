@@ -11,7 +11,6 @@ enum DiskSpace {
     static let startMinimum: Int64 = 2_000_000_000
     static let stopMinimum: Int64 = 500_000_000
     private static let interval: TimeInterval = 5
-    private static var timer: Timer?
     
     /// Bytes available for a recording, counting the space the system frees on demand (purgeable space: local
     /// snapshots, caches), as Finder does. Counting only what is free right now would refuse or stop recordings
@@ -55,22 +54,25 @@ enum DiskSpace {
     }
     
     /// Checks the volume of `path` every 5 seconds and calls `onLow` once, on the main thread, when less than
-    /// `stopMinimum` is free. Replaces an earlier monitor. Main thread only, like `stopMonitoring`.
-    static func startMonitoring(_ path: String, onLow: @escaping (Int64) -> Void) {
-        stopMonitoring()
-        let poll = Timer(timeInterval: interval, repeats: true) { _ in
-            guard let free = available(at: path), mustStop(free: free) else { return }
-            stopMonitoring()
-            onLow(free)
+    /// `stopMinimum` is free, until it is cancelled. Main thread only. A recording has its own.
+    final class Watch {
+        private var timer: Timer?
+
+        init(_ path: String, onLow: @escaping (Int64) -> Void) {
+            let poll = Timer(timeInterval: DiskSpace.interval, repeats: true) { [weak self] _ in
+                guard let free = DiskSpace.available(at: path), DiskSpace.mustStop(free: free) else { return }
+                self?.cancel()
+                onLow(free)
+            }
+            poll.tolerance = 1
+            // .common, because .default does not run while a menu is open
+            RunLoop.main.add(poll, forMode: .common)
+            timer = poll
         }
-        poll.tolerance = 1
-        // .common, because .default does not run while a menu is open
-        RunLoop.main.add(poll, forMode: .common)
-        timer = poll
-    }
-    
-    static func stopMonitoring() {
-        timer?.invalidate()
-        timer = nil
+
+        func cancel() {
+            timer?.invalidate()
+            timer = nil
+        }
     }
 }

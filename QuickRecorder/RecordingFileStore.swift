@@ -134,13 +134,9 @@ struct RecordingFileStore {
     }
 
     /// While a recording runs: `onLow` is called once, on the main thread, with the free space when the volume is
-    /// nearly full (`DiskSpace.stopMinimum`). Main thread, like `stopWatchingFreeSpace`.
-    func watchFreeSpace(onLow: @escaping (Int64) -> Void) {
-        DiskSpace.startMonitoring(directory, onLow: onLow)
-    }
-
-    static func stopWatchingFreeSpace() {
-        DiskSpace.stopMonitoring()
+    /// nearly full (`DiskSpace.stopMinimum`), until the watch that is returned is cancelled. Main thread.
+    func watchFreeSpace(onLow: @escaping (Int64) -> Void) -> DiskSpace.Watch {
+        return DiskSpace.Watch(directory, onLow: onLow)
     }
 
     /// Before the audio mix: whether a second file as large as `url` fits next to it. True when that cannot be determined.

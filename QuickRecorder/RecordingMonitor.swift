@@ -4,32 +4,16 @@
 //
 
 import AVFoundation
-import CoreAudio
-import ScreenCaptureKit
-import SwiftUI
+import Foundation
 
-/// What the status bar shows about the recording in progress. Main thread only.
-final class RecordingHealth: ObservableObject {
-    static let shared = RecordingHealth()
-    /// Set while a track is not being recorded: the status bar turns into its warning state and shows this as its tooltip
-    @Published var warning: String?
-    /// Nil without a microphone track. 0: digital silence or nothing at all, 1: quiet, 2: sound.
-    @Published var micLevel: Int?
-    /// True from the moment a recording is stopped until its files are final (`SCContext.isSaving`)
-    @Published var saving = false
-    /// From 0 to 1 while the audio tracks of a stopped recording are being mixed, nil otherwise
-    @Published var mixProgress: Double?
-    /// From 0 to 1 while a recording left by an earlier run is being mixed at launch, nil otherwise
-    @Published var recoveryProgress: Double?
-}
-
-/// Runs twice a second on `SCContext.sampleQueue` while a recording is capturing, whether or not any buffer arrives.
+/// Runs twice a second on the sample queue while a recording is capturing, whether or not any buffer arrives.
+/// Every `RecordingSession` has its own.
 ///
-/// It has the recording's `MovieWriter` keep every track of the file advancing when its source delivers nothing:
+/// It has the recording's writer keep every track of the file advancing when its source delivers nothing:
 /// silence for the microphone and for system audio, the last frame again for video. A track that stops would hold back the fragments of all the others
 /// and leave a hole that players handle badly. It is also the watchdog that tells the user while a source is not
-/// being recorded. Everything here is only used on the sample queue.
-enum RecordingMonitor {
+/// being recorded. Everything here is only used on the sample queue, and the methods that others call trap elsewhere.
+final class RecordingMonitor {
     private static let interval: Double = 0.5
     /// How long a source may deliver nothing before its track is continued without it. The tracks are filled up to
     /// this far behind the present, so that a buffer which is merely late still fits.
@@ -39,40 +23,55 @@ enum RecordingMonitor {
     /// How long the microphone may deliver nothing but zeros before the user is warned
     static let zeroSeconds: Double = 20
 
-    private static var timer: DispatchSourceTimer?
-    private static var lastTick: UInt64 = 0
+    private let queue: DispatchQueue
+    /// A problem began or is over: title and text of the notification. Called on the sample queue.
+    var notify: (String, String) -> Void = { _, _ in }
+    /// What the status bar shows changed: the warning and the microphone level. Called on the sample queue.
+    var show: (String?, Int?) -> Void = { _, _ in }
+    /// The writer of the recording, while it is being watched
+    private var writer: RecordingWriter?
+    private var timer: DispatchSourceTimer?
+    private var lastTick: UInt64 = 0
     /// When the monitor was started, which is when the capture began to run
-    private static var started: UInt64 = 0
-    private static var startWarning: String?
-    private static var skippedLateTick = false
+    private var started: UInt64 = 0
+    private var startWarning: String?
+    private var skippedLateTick = false
     /// A resumed recording continues at the first buffer that arrives. Only when none has arrived a whole tick later
     /// does the monitor continue it.
-    static var resumeWaited = false
+    private var resumeWaited = false
     /// End of the last microphone audio written, and of the last that was not digital silence
-    private static var micHeard: CMTime?
-    private static var micSound: CMTime?
-    private static var micPeak: Float = 0
+    private var micHeard: CMTime?
+    private var micSound: CMTime?
+    private var micPeak: Float = 0
     /// End of the last system audio that ScreenCaptureKit delivered and that was written
-    private static var audioHeard: CMTime?
-    private static var micWarning: String?
-    private static var audioWarning: String?
-    private static var shownWarning: String?
-    private static var shownLevel: Int?
+    private var audioHeard: CMTime?
+    private var micWarning: String?
+    private var audioWarning: String?
+    private var shownWarning: String?
+    private var shownLevel: Int?
 
-    static func start(for id: UUID) {
+    init(queue: DispatchQueue) {
+        self.queue = queue
+    }
+
+    func start(_ writer: RecordingWriter) {
         stop()
-        guard let writer = SCContext.writer, writer.isCapturing, writer.recording.id == id else { return }
-        let source = DispatchSource.makeTimerSource(flags: .strict, queue: SCContext.sampleQueue)
+        guard writer.isCapturing else { return }
+        self.writer = writer
+        let interval = RecordingMonitor.interval
+        let source = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
         source.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(50))
-        source.setEventHandler { tick(id) }
+        source.setEventHandler { [weak self] in self?.tick() }
         timer = source
         started = DispatchTime.now().uptimeNanoseconds
         source.resume()
     }
 
-    static func stop() {
+    func stop() {
+        dispatchPrecondition(condition: .onQueue(queue))
         timer?.cancel()
         timer = nil
+        writer = nil
         lastTick = 0
         started = 0
         startWarning = nil
@@ -87,25 +86,36 @@ enum RecordingMonitor {
         show(warning: nil, level: nil)
     }
 
-    static func microphoneWritten(upTo end: CMTime, peak: Float) {
+    /// The recording was paused or resumed: after a resume the monitor waits a tick for the first buffer again
+    func pauseToggled() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        resumeWaited = false
+    }
+
+    func microphoneWritten(upTo end: CMTime, peak: Float) {
+        dispatchPrecondition(condition: .onQueue(queue))
         micHeard = end
         if peak > 0 { micSound = end }
         micPeak = max(micPeak, peak)
     }
 
-    static func systemAudioWritten(upTo end: CMTime) {
+    func systemAudioWritten(upTo end: CMTime) {
+        dispatchPrecondition(condition: .onQueue(queue))
         audioHeard = end
     }
 
-    private static func seconds(from start: CMTime, to end: CMTime) -> Double {
+    private func seconds(from start: CMTime, to end: CMTime) -> Double {
         return CMTimeGetSeconds(CMTimeSubtract(end, start))
     }
 
-    private static func tick(_ id: UUID) {
+    private func tick() {
+        let interval = RecordingMonitor.interval
+        let silentSeconds = RecordingMonitor.silentSeconds
+        let zeroSeconds = RecordingMonitor.zeroSeconds
         let uptime = DispatchTime.now().uptimeNanoseconds
         let sinceLastTick = lastTick == 0 ? 0 : Double(uptime &- lastTick) / 1_000_000_000
         lastTick = uptime
-        guard let writer = SCContext.writer, writer.isCapturing, !writer.isPaused, writer.recording.id == id else { return }
+        guard let writer = writer, writer.isCapturing, !writer.isPaused else { return }
         let recording = writer.recording
         let startTitle = "Nothing is being recorded yet".local
         guard let sessionStart = writer.sessionStart else {
@@ -147,7 +157,7 @@ enum RecordingMonitor {
         // That is the timestamp a buffer arriving now would carry, whatever clock the stream uses.
         let raw = CMTimeAdd(anchor.raw, CMTime(value: CMTimeValue(uptime - anchor.uptime), timescale: 1_000_000_000))
         let now = writer.timelineTime(raw)
-        let target = CMTimeSubtract(now, CMTime(seconds: gapSeconds, preferredTimescale: 600))
+        let target = CMTimeSubtract(now, CMTime(seconds: RecordingMonitor.gapSeconds, preferredTimescale: 600))
 
         writer.fillMicrophone(upTo: target)
         let hasSystemAudio = writer.hasSystemAudio
@@ -185,112 +195,20 @@ enum RecordingMonitor {
     }
 
     /// One notification when a problem starts and one when it is over
-    private static func report(_ problem: String?, was previous: String?, title: String, backTitle: String, backBody: String) {
+    private func report(_ problem: String?, was previous: String?, title: String, backTitle: String, backBody: String) {
         if let problem = problem, previous == nil {
             RecLog.write("\(title): \(problem)")
-            SCContext.showNotification(title: title, body: problem, id: "quickrecorder.watchdog.\(UUID().uuidString)")
+            notify(title, problem)
         } else if problem == nil, previous != nil {
             RecLog.write(backTitle)
-            SCContext.showNotification(title: backTitle, body: backBody, id: "quickrecorder.watchdog.\(UUID().uuidString)")
+            notify(backTitle, backBody)
         }
     }
 
-    private static func show(warning: String?, level: Int?) {
+    private func show(warning: String?, level: Int?) {
         guard warning != shownWarning || level != shownLevel else { return }
         shownWarning = warning
         shownLevel = level
-        DispatchQueue.main.async {
-            RecordingHealth.shared.warning = warning
-            RecordingHealth.shared.micLevel = level
-        }
-    }
-}
-
-/// Follows the audio input devices while a recording has a microphone track: when the system default input changes
-/// (recording the default microphone) or the chosen device disappears or comes back, the stream is told to capture
-/// from the device that should be used now. Main thread only.
-enum MicDevices {
-    private static var watching = false
-    private static var pending: DispatchWorkItem?
-    /// How often a switch the stream refused is tried again before the next device change
-    private static var retriesLeft = 0
-
-    /// UID of the system default input device, which is what `AVCaptureDevice.uniqueID` holds for audio devices
-    static func defaultInputUID() -> String? {
-        let fallback = AVCaptureDevice.default(for: .audio)?.uniqueID
-        var device = AudioDeviceID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
-              device != AudioDeviceID(kAudioObjectUnknown) else { return fallback }
-        var uid: Unmanaged<CFString>?
-        size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        address.mSelector = kAudioDevicePropertyDeviceUID
-        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &uid) == noErr, let found = uid else { return fallback }
-        return found.takeRetainedValue() as String
-    }
-
-    /// Installs the listeners once. They stay for the life of the app and do nothing while no microphone is being recorded.
-    static func watch() {
-        guard !watching else { return }
-        watching = true
-        for selector in [kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDevices] {
-            var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            let status = AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { _, _ in
-                // A device change comes as a burst of notifications, and the device list lags a little behind them
-                retriesLeft = 3
-                schedule(after: 0.7, announce: true)
-            }
-            if status != noErr { print("Cannot watch the audio devices (selector \(selector)): \(status)") }
-        }
-    }
-
-    private static func schedule(after delay: Double, announce: Bool) {
-        pending?.cancel()
-        let work = DispatchWorkItem { followDevices(announce: announce) }
-        pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private static func followDevices(announce: Bool) {
-        guard let capture = SCContext.capture, capture.recordsMic else { return }
-        let conf = capture.configuration
-        let devices = SCContext.getMicrophone()
-        let selection = capture.micSelection
-        let selectedIsPresent = selection != "default" && devices.contains(where: { $0.uniqueID == selection })
-        guard let wanted = selectedIsPresent ? selection : defaultInputUID() else { return }
-        let previous = capture.micActiveDeviceID
-        guard wanted != previous else { return }
-        func name(_ id: String?) -> String {
-            guard let id = id else { return "none" }
-            return devices.first(where: { $0.uniqueID == id })?.localizedName ?? id
-        }
-        let wantedName = name(wanted)
-        RecLog.write("Microphone switch: from \"\(name(previous))\" to \"\(wantedName)\" (\(selection == "default" ? "the default input changed" : (selectedIsPresent ? "the chosen microphone is back" : "the chosen microphone is gone")))")
-        // A default input that is not among the capture devices is left to the system to pick
-        let previousCaptureID = conf.microphoneCaptureDeviceID
-        conf.microphoneCaptureDeviceID = devices.contains(where: { $0.uniqueID == wanted }) ? wanted : nil
-        capture.micActiveDeviceID = wanted
-        if announce && selection != "default" && !selectedIsPresent {
-            let body = String(format: "\"%@\" is not connected any more. Recording continues with the default microphone \"%@\".".local, SCContext.selectedMicName(), wantedName)
-            SCContext.showNotification(title: "Microphone Unavailable".local, body: body, id: "quickrecorder.microphone.\(UUID().uuidString)")
-        }
-        capture.applyConfiguration { error in
-            guard let error = error else {
-                RecLog.write("Microphone switch: now capturing \"\(wantedName)\"")
-                return
-            }
-            RecLog.write("Microphone switch to \"\(wantedName)\" failed: \(error.localizedDescription)")
-            DispatchQueue.main.async {
-                // Back to what the stream is still capturing, then a few more tries; after those, at the next device change
-                guard SCContext.capture === capture, capture.micActiveDeviceID == wanted else { return }
-                capture.micActiveDeviceID = previous
-                conf.microphoneCaptureDeviceID = previousCaptureID
-                if retriesLeft > 0 {
-                    retriesLeft -= 1
-                    schedule(after: 2, announce: false)
-                }
-            }
-        }
+        show(warning, level)
     }
 }

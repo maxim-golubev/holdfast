@@ -626,21 +626,21 @@ class AudioPlayerManager: ObservableObject {
                         Task {
                             defer { completion?() }
                             do {
-                                try await SCContext.m4a2mp3(inputUrl: oldURL, outputUrl: newURl, bitrate: audioQuality)
+                                try await RecordingSaver.m4a2mp3(inputUrl: oldURL, outputUrl: newURl, bitrate: audioQuality)
                                 try? fd.removeItem(at: oldURL)
                                 // Only now is there a file to report
-                                SCContext.showNotification(title: title, body: savedBody, id: id)
+                                UserNotice.showNotification(title: title, body: savedBody, id: id)
                             } catch {
-                                SCContext.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
+                                UserNotice.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
                                 return
                             }
                         }
                     }
                 }
                 
-                if !saveAsMP3 { SCContext.showNotification(title: title, body: body, id: id) }
+                if !saveAsMP3 { UserNotice.showNotification(title: title, body: body, id: id) }
             } catch {
-                SCContext.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
+                UserNotice.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
             }
             DispatchQueue.main.async { self.exporting = false }
         }

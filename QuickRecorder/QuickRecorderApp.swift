@@ -35,13 +35,11 @@ struct QuickRecorderApp: App {
     
     var body: some Scene {
         DocumentGroup(newDocument: qmaPackageHandle()) { file in
-            //if SCContext.capture == nil {
-                if let fileURL = file.fileURL {
-                    qmaPlayerView(document: file.$document, fileURL: fileURL)
-                        .frame(minWidth: 400, minHeight: 100, maxHeight: 100)
-                        .focusable(false)
-                }
-            //}
+            if let fileURL = file.fileURL {
+                qmaPlayerView(document: file.$document, fileURL: fileURL)
+                    .frame(minWidth: 400, minHeight: 100, maxHeight: 100)
+                    .focusable(false)
+            }
         }
         .windowResizability(.contentSize)
         .commands {
@@ -80,7 +78,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     /// The delegate SwiftUI created for `@NSApplicationDelegateAdaptor`, which is the one the app's events go to. `NSApp.delegate` is a SwiftUI object that forwards to it, so it is noted when it is created.
     private static var created: AppDelegate?
     static var shared: AppDelegate { created ?? AppDelegate() }
-    private var quitWhenIdle = false
     
     override init() {
         super.init()
@@ -99,7 +96,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     func mousePointerReLocation(event: NSEvent) {
         if event.type == .scrollWheel { return }
-        if !AppSettings.highlightMouse || hideMousePointer || SCContext.capture == nil || SCContext.streamType == .window {
+        if !AppSettings.highlightMouse || hideMousePointer || withRecorder({ !$0.hasStream || $0.streamType == .window }) {
             mousePointer.orderOut(nil)
             return
         }
@@ -120,7 +117,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     func screenMagnifierReLocation(event: NSEvent) {
-        if !SCContext.isMagnifierEnabled || hideScreenMagnifier { screenMagnifier.orderOut(nil); return }
+        if !withRecorder({ $0.isMagnifierEnabled }) || hideScreenMagnifier { screenMagnifier.orderOut(nil); return }
         // Captures are asynchronous: run one at a time and keep only the latest event that arrived meanwhile
         if isMagnifierCapturing { pendingMagnifierEvent = event; return }
         isMagnifierCapturing = true
@@ -129,7 +126,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let rect = NSRect(x: mouseLocation.x - 67, y: mouseLocation.y - 58, width: 134, height: 116)
         NSImage.createScreenShot(of: rect) { [self] image in
             isMagnifierCapturing = false
-            if let image, SCContext.isMagnifierEnabled, !hideScreenMagnifier {
+            if let image, withRecorder({ $0.isMagnifierEnabled }), !hideScreenMagnifier {
                 screenMagnifier.contentView = NSHostingView(rootView: ScreenMagnifier(screenShot: image, event: event))
                 screenMagnifier.setFrameOrigin(origin)
                 screenMagnifier.orderFront(nil)
@@ -158,7 +155,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     /// three changes.
     func updateRecordingMouseMonitor() {
         let highlight = tracksMouseForRecording && AppSettings.highlightMouse
-        let magnifier = tracksMouseForRecording && SCContext.isMagnifierEnabled
+        let magnifier = tracksMouseForRecording && withRecorder({ $0.isMagnifierEnabled })
         if highlight || magnifier {
             if recordingMouseMonitor == nil {
                 recordingMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .mouseMoved, .rightMouseUp, .rightMouseDown, .rightMouseDragged, .leftMouseUp,  .leftMouseDown, .leftMouseDragged, .otherMouseUp, .otherMouseDown, .otherMouseDragged]) { [weak self] event in
@@ -187,50 +184,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if SCContext.state == .idle && !SCContext.isRecovering { return .terminateNow }
-        // A recording is starting, running or still being saved. Quitting now would leave a file that was not closed,
-        // or one under its temporary name with unmixed audio, so the recording is stopped (a no-op when it already
-        // is) and the app quits when its files are final.
+        // While a recording is starting, running or still being saved, quitting would leave a file that was not
+        // closed, or one under its temporary name with unmixed audio. The recorder stops it (a no-op when it already
+        // is) and replies when its files are final. The same goes for a recording of an earlier run that is being
+        // mixed, and the report of a failure is seen first: the notification alone may be off or silenced.
         // Meanwhile the main run loop keeps running.
-        SCContext.stopRecording()
-        if !quitWhenIdle {
-            quitWhenIdle = true
-            // The pill says "Recovering…" while a recording of an earlier run keeps the app from quitting
-            SCContext.quitRequested = true
-            updateStatusBar()
-            // Also for a recording of an earlier run that is being mixed: killing that would leave it unmixed again.
-            // And not before the report of a failure has been seen: the notification alone may be off or silenced.
-            SCContext.whenIdle {
-                SCContext.whenRecovered {
-                    SCContext.whenAlertsDismissed { NSApp.reply(toApplicationShouldTerminate: true) }
-                }
-            }
-        }
-        return .terminateLater
+        let now = withRecorder { $0.canQuit(orReply: { NSApp.reply(toApplicationShouldTerminate: true) }) }
+        return now ? .terminateNow : .terminateLater
     }
     
     func applicationWillTerminate(_ aNotification: Notification) {
         // applicationShouldTerminate has waited for the recording, so there is nothing left to do here. Should the
         // app ever be terminated past it, the recording is stopped the same way and given a moment to be saved:
         // the run loop is run, not blocked, because saving continues on the main thread.
-        guard SCContext.state != .idle else { return }
-        SCContext.stopRecording()
+        guard withRecorder({ $0.state != .idle }) else { return }
+        withRecorder { $0.stop() }
         let deadline = Date.now.addingTimeInterval(30)
-        while SCContext.state != .idle && Date.now < deadline {
+        while withRecorder({ $0.state != .idle }) && Date.now < deadline {
             RunLoop.current.run(mode: .default, before: Date.now.addingTimeInterval(0.1))
         }
     }
     
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            if SCContext.trimingList.contains(url) { continue }
+            if trimingList.contains(url) { continue }
             createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, random: true, only: false)
             closeMainWindow()
         }
     }
     
     func applicationWillFinishLaunching(_ notification: Notification) {
-        scPerm = SCContext.updateAvailableContentSync() != nil
+        scPerm = ScreenContent.updateAvailableContentSync() != nil
         
         let process = NSWorkspace.shared.runningApplications.filter({ $0.bundleIdentifier == Bundle.main.bundleIdentifier })
         if process.count > 1 {
@@ -287,41 +271,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         KeyboardShortcuts.onKeyDown(for: .showPanel) {
             _ = self.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
-            if SCContext.capture == nil { NSApp.activate(ignoringOtherApps: true) }
+            if withRecorder({ !$0.hasStream }) { NSApp.activate(ignoringOtherApps: true) }
         }
-        KeyboardShortcuts.onKeyDown(for: .saveFrame) { if SCContext.capture != nil { SCContext.saveFrame = true }}
+        KeyboardShortcuts.onKeyDown(for: .saveFrame) { withRecorder { if $0.hasStream { $0.session?.savePicture() } } }
         KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { [self] in
-            if SCContext.capture != nil {
-                SCContext.isMagnifierEnabled.toggle()
-                updateRecordingMouseMonitor()
-            }
+            guard withRecorder({ $0.hasStream }) else { return }
+            withRecorder { $0.session?.isMagnifierEnabled.toggle() }
+            updateRecordingMouseMonitor()
         }
         // During a countdown there is no recording yet: the pending start is cancelled, as its Cancel button does
-        KeyboardShortcuts.onKeyDown(for: .stop) { [self] in if !cancelCountdown() { SCContext.stopRecording() } }
-        KeyboardShortcuts.onKeyDown(for: .pauseResume) { if SCContext.capture != nil { SCContext.pauseRecording() }}
-        KeyboardShortcuts.onKeyDown(for: .startWithAudio) {[self] in
-            guard SCContext.canStart() else { return }
-            closeAllWindow()
-            prepRecord(type: "audio", screens: SCContext.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
+        KeyboardShortcuts.onKeyDown(for: .stop) { [self] in if !cancelCountdown() { withRecorder { $0.stop() } } }
+        KeyboardShortcuts.onKeyDown(for: .pauseResume) { withRecorder { if $0.hasStream { $0.togglePause() } } }
+        KeyboardShortcuts.onKeyDown(for: .startWithAudio) {
+            withRecorder { recorder in
+                guard recorder.canStart() else { return }
+                closeAllWindow()
+                recorder.start(type: "audio", screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
+            }
         }
-        KeyboardShortcuts.onKeyDown(for: .startWithScreen) {[self] in
-            guard SCContext.canStart() else { return }
-            closeAllWindow()
-            prepRecord(type: "display", screens: SCContext.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
+        KeyboardShortcuts.onKeyDown(for: .startWithScreen) {
+            withRecorder { recorder in
+                guard recorder.canStart() else { return }
+                closeAllWindow()
+                recorder.start(type: "display", screens: ScreenContent.getSCDisplayWithMouse(), windows: nil, applications: nil, fastStart: true)
+            }
         }
         KeyboardShortcuts.onKeyDown(for: .startWithArea) {[self] in
-            guard SCContext.canStart() else { return }
+            guard withRecorder({ $0.canStart() }) else { return }
             closeAllWindow()
             showAreaSelector(size: NSSize(width: 600, height: 450))
         }
-        KeyboardShortcuts.onKeyDown(for: .startWithWindow) { [self] in
-            guard SCContext.canStart() else { return }
-            closeAllWindow()
-            let frontmostApp = NSWorkspace.shared.frontmostApplication
-            if let pid = frontmostApp?.processIdentifier {
-                guard let scWindow = SCContext.getWindows().first(where: { $0.owningApplication?.processID == pid && $0.title != "" && $0.isOnScreen }) else { return }
-                prepRecord(type: "window", screens: SCContext.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)
-                return
+        KeyboardShortcuts.onKeyDown(for: .startWithWindow) {
+            withRecorder { recorder in
+                guard recorder.canStart() else { return }
+                closeAllWindow()
+                let frontmostApp = NSWorkspace.shared.frontmostApplication
+                if let pid = frontmostApp?.processIdentifier {
+                    guard let scWindow = ScreenContent.getWindows().first(where: { $0.owningApplication?.processID == pid && $0.title != "" && $0.isOnScreen }) else { return }
+                    recorder.start(type: "window", screens: ScreenContent.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)
+                }
             }
         }
         updateStatusBar()
@@ -329,12 +317,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
-        SCContext.recoverLeftovers()
+        withRecorder { $0.recovery.start(in: AppSettings.saveDirectory) }
         if AppSettings.showOnDock { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if SCContext.capture == nil {
+        if withRecorder({ !$0.hasStream }) {
             let w1 = NSApp.windows.filter({ !$0.title.contains("Item-0") && !$0.title.isEmpty && $0.isVisible })
             let w2 = w1.filter({ !$0.title.contains(".qma") })
             if (!w1.isEmpty && w2.isEmpty) || w1.isEmpty {
@@ -387,6 +375,11 @@ func closeMainWindow() {
     for w in NSApp.windows(.mainPanel) { w.close() }
 }
 
+/// Main thread. The dashed frame around the recorded area, which a selector puts up before it asks for the start.
+func closeAreaOverlay() {
+    for w in NSApp.windows(.areaOverlay) { w.close() }
+}
+
 /// Closes every window that has a title, except the status item's, the audio documents' and the one with the
 /// identifier `except`. Windows that must survive this (the preview, alerts) have no title.
 func closeAllWindow(except: NSUserInterfaceItemIdentifier? = nil) {
@@ -408,15 +401,17 @@ func findNSSplitVIew(view: NSView?) -> NSSplitView? {
     return nil
 }
 
+@MainActor
 func getStatusBarWidth() -> CGFloat {
+    let recorder = RecorderController.shared
     // "Saving…" or "Finishing… 100%" while a stopped recording is being closed and post-processed
-    if SCContext.isSaving { return 124.0 }
+    if recorder.isSaving { return 124.0 }
     // "Recovering… 100%" while a recording of an earlier run is being mixed
-    if SCContext.streamType == nil { return SCContext.showsRecovery ? 136.0 : 36.0 }
+    if recorder.streamType == nil { return recorder.showsRecovery ? 136.0 : 36.0 }
     let width = AppSettings.miniStatusBar ? 68.0 : 114.0
     // The widths above are made for a timer that reads "07:05". From the first hour on it reads "1:07:05",
     // and every character more needs its own room (15 pt monospaced digits are about 9 pt wide).
-    let extraCharacters = max(0, SCContext.getRecordingLength().count - 5)
+    let extraCharacters = max(0, recorder.recordingLength().count - 5)
     return width + (Double(extraCharacters) * 9.5).rounded(.up)
 }
 
@@ -457,7 +452,7 @@ func showAlertSyncOnMainThread(level: NSAlert.Style = .warning, title: String, m
     let semaphore = DispatchSemaphore(value: 0)
     
     // A run loop block: an alert inside a main queue block would hold up everything queued behind it while it is open
-    SCContext.onMainRunLoop {
+    UserNotice.onMainRunLoop {
         let alert = createAlert(level: level, title: title, message: message, button1: button1, button2: button2, width: width)
         response = alert.runModal()
         semaphore.signal()
@@ -505,7 +500,7 @@ extension NSImage {
     /// The completion handler runs on the main queue.
     static func createScreenShot(of rect: NSRect, completion: @escaping (NSImage?) -> Void) {
         let center = NSPoint(x: rect.midX, y: rect.midY)
-        guard let content = SCContext.availableContent,
+        guard let content = ScreenContent.availableContent,
               let screen = NSScreen.screens.first(where: { NSMouseInRect(center, $0.frame, false) }),
               let display = content.displays.first(where: { $0.displayID == screen.displayID }) else {
             completion(nil)
@@ -575,5 +570,3 @@ extension utsname {
         sMachine == "arm64"
     }
 }
-
-enum StreamType: Int { case screen, window, windows, application, screenarea, systemaudio }

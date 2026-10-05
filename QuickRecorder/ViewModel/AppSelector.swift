@@ -44,7 +44,7 @@ struct AppSelector: View {
                                                 }, label: {
                                                     ZStack {
                                                         VStack {
-                                                            Image(nsImage: SCContext.getAppIcon(item)!)
+                                                            Image(nsImage: ScreenContent.getAppIcon(item)!)
                                                             let appName = item.applicationName
                                                             let appID = item.bundleIdentifier
                                                             Text(appName != "" ? appName : appID)
@@ -158,7 +158,7 @@ struct AppSelector: View {
     func startRecording() {
         closeAllWindow()
         appDelegate.createCountdownPanel(screen: display) {
-            appDelegate.prepRecord(type: "application", screens: display, windows: nil, applications: selected, autoStop: autoStop)
+            RecorderController.shared.start(type: "application", screens: display, windows: nil, applications: selected, autoStop: autoStop)
         }
     }
 }
@@ -172,11 +172,11 @@ class AppSelectorViewModel: ObservableObject {
     }
     
     func updateAppList() {
-        SCContext.updateAvailableContent {
-            guard let screens = SCContext.availableContent?.displays else { return }
+        ScreenContent.updateAvailableContent {
+            guard let screens = ScreenContent.availableContent?.displays else { return }
             for screen in screens {
                 var apps = [SCRunningApplication]()
-                let windows = SCContext.getWindows().filter({ NSIntersectsRect(screen.frame, $0.frame) })
+                let windows = ScreenContent.getWindows().filter({ NSIntersectsRect(screen.frame, $0.frame) })
                 for app in windows.map({ $0.owningApplication }) { if !apps.contains(app!) { apps.append(app!) }}
                 if AppSettings.hideSelf { apps = apps.filter({$0.bundleIdentifier != Bundle.main.bundleIdentifier}) }
                 DispatchQueue.main.async { self.allApps[screen] = apps }
@@ -186,16 +186,16 @@ class AppSelectorViewModel: ObservableObject {
     }
     
     /*func updateAppList() {
-        SCContext.updateAvailableContent{
+        ScreenContent.updateAvailableContent{
             DispatchQueue.main.async {
-                self.allApps = SCContext.getApps().filter({ $0.bundleIdentifier != Bundle.main.bundleIdentifier })
+                self.allApps = ScreenContent.getApps().filter({ $0.bundleIdentifier != Bundle.main.bundleIdentifier })
             }
         }
     }*/
 }
 
 struct OptionsView: View {
-    @State private var micList = SCContext.getMicrophone()
+    @State private var micList = MicSelection.getMicrophone()
     
     @AppStorage(AppSettings.$frameRate)      private var frameRate: Int
     @AppStorage(AppSettings.$videoQuality)   private var videoQuality: Double
@@ -294,7 +294,7 @@ struct OptionsView: View {
                         .fixedSize()
                         .toggleStyle(.checkbox)
                         .onChange(of: recordMic) { _ in
-                            Task { await SCContext.performMicCheck() }
+                            Task { await MicSelection.performMicCheck() }
                         }
                         .disabled(micList.isEmpty)
                         MicPicker(micList: micList)
@@ -327,7 +327,7 @@ struct MicPicker: View {
                 Text(String(format: "%@ (unavailable)".local, micName == "default" ? micDeviceID : micName)).tag(micDeviceID)
             }
         }
-        .onAppear { micDeviceID = SCContext.selectedMicID() }
+        .onAppear { micDeviceID = MicSelection.selectedMicID() }
         .onChange(of: micDeviceID) { id in
             // The name is stored next to the ID so that the device can still be named while it is absent
             if id == "default" {
