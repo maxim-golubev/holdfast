@@ -19,7 +19,7 @@ enum MicSelection {
                                                        message: "Holdfast needs permission to record your microphone. Allow it in System Settings, then switch Record Microphone on again.",
                                                        button1: "Open System Settings",
                                                        button2: "Cancel")
-            if alert.runModal() == .alertFirstButtonReturn {
+            if alert.runInFront() == .alertFirstButtonReturn {
                 UserNotice.openPrivacySettings("Privacy_Microphone")
             }
         }

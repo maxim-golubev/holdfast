@@ -248,7 +248,7 @@ struct OutputSettings: View {
             }
             Section("After a Recording") {
                 Toggle(isOn: $showPreview) {
-                    RowLabel("Show a Preview", "A small floating picture of the recording for a few seconds. Click it to open the file.")
+                    RowLabel("Show a Preview", "A small floating picture of the recording for a few seconds, with its file name and folder. Click the picture to open the file; Done closes the preview and keeps the recording.")
                 }
                 Toggle("Open the Video Trimmer", isOn: $trimAfterRecord)
             }
@@ -321,6 +321,7 @@ struct ShortcutSettings: View {
 struct GeneralSettings: View {
     @AppStorage(AppSettings.$showOnDock)  private var showOnDock: Bool
     @AppStorage(AppSettings.$showMenubar) private var showMenubar: Bool
+    @AppStorage(AppSettings.$openPanelAtLaunch) private var openPanelAtLaunch: Bool
     @AppStorage(AppSettings.$countdown)   private var countdown: Int
     @AppStorage(AppSettings.$notifications) private var notifications: Notifications
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -328,11 +329,19 @@ struct GeneralSettings: View {
     var body: some View {
         Form {
             Section("Presence") {
-                Toggle("Show in the Dock", isOn: $showOnDock)
                 Toggle(isOn: $showMenubar) {
-                    RowLabel("Show in the Menu Bar", "During a recording the menu bar item is always there, with the time and Stop Recording.")
+                    RowLabel("Show in the Menu Bar", "Its menu starts a recording and opens the main panel. During a recording the item is always there, with the time and Stop Recording.")
                 }
-                Toggle("Launch at Login", isOn: Binding(get: { launchAtLogin }, set: { setLaunchAtLogin($0) }))
+                Toggle(isOn: $showOnDock) {
+                    RowLabel("Show in the Dock", "Off (the default): Holdfast has no Dock icon and lives in the menu bar. Its windows still come to the front when they open.")
+                }
+                Toggle(isOn: $openPanelAtLaunch) {
+                    RowLabel("Open the Panel When Holdfast Opens", "Off: Holdfast opens in the menu bar only. The panel still opens from the menu bar item, the Open Main Panel shortcut, or by opening Holdfast again. With neither a menu bar item nor a Dock icon it always opens.")
+                }
+                .help("Whether the main panel appears in the middle of the screen when you open Holdfast")
+                Toggle(isOn: Binding(get: { launchAtLogin }, set: { setLaunchAtLogin($0) })) {
+                    RowLabel("Launch at Login", "At login Holdfast waits in the menu bar; the panel does not open.")
+                }
             }
             Section("Start") {
                 LabeledContent {
@@ -397,7 +406,7 @@ struct GeneralSettings: View {
             // register() throws for it says the same in fewer words, so this is the one message.
             let answer = createAlert(level: .informational, title: "Launch at Login Needs Your Approval",
                                      message: "Holdfast is switched off in System Settings → General → Login Items. Switch it on there to have it open at login.",
-                                     button1: "Open Login Items", button2: "Cancel").runModal()
+                                     button1: "Open Login Items", button2: "Cancel").runInFront()
             if answer == .alertFirstButtonReturn { SMAppService.openSystemSettingsLoginItems() }
         } else if let failure {
             UserNotice.showAlertLater(title: enabled ? "Launch at Login Not Turned On" : "Launch at Login Not Turned Off", message: failure.localizedDescription)

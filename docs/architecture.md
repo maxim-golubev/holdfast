@@ -514,6 +514,18 @@ silently.
 
 ## The status item
 
+Holdfast is a menu bar app (`LSUIElement`): the item is always there by
+default, the Dock icon only when "Show in the Dock" asks for it, and the main
+panel opens at launch only with "Open the Panel When Holdfast Opens", or when
+there is neither an item nor an icon (`AppSettings.opensPanelAtLaunch`).
+`AppSettings.migrate` made installations from before this a menu bar app once
+(`settingsVersion` 1). Opening the app again while it runs (Finder,
+Spotlight, the Dock icon) shows the panel, or brings forward the window that is
+open. As the app is usually not active, everything that opens a window or an
+alert activates it first (`createNewWindow`, `openTrimmer`, `openSettings`,
+`NSAlert.runInFront`); the floating panels and the preview are shown without
+it.
+
 `StatusDisplay` is a pure table from the recorder's state to a symbol, a title
 and a sentence, tested without a menu bar. Every state has its own symbol, not
 only a colour. The `StatusItemController` is a plain `NSStatusItem` with a menu:

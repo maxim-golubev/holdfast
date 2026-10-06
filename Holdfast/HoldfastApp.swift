@@ -223,12 +223,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         terminate.setEventHandler { UserNotice.onMainRunLoop { NSApp.terminate(nil) } }
         terminate.resume()
         terminateSignal = terminate
+        // Before anything reads the Dock and menu bar settings
+        AppSettings.migrate()
         ScreenContent.updateAvailableContentSync()
         
         let process = NSWorkspace.shared.runningApplications.filter({ $0.bundleIdentifier == Bundle.main.bundleIdentifier })
         if process.count > 1 {
             UserNotice.onMainRunLoop {
-                _ = createAlert(title: "Holdfast Is Already Running", message: "Another copy of Holdfast is already open. This copy quits.", button1: "Quit").runModal()
+                _ = createAlert(title: "Holdfast Is Already Running", message: "Another copy of Holdfast is already open. This copy quits.", button1: "Quit").runInFront()
                 NSApp.terminate(nil)
             }
         }
@@ -237,6 +239,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         _ = Encoder.preferred
         // Before any recording: a device change while the first one starts must reach it
         MicDevices.watch()
+        // A menu bar app (`LSUIElement`) unless the Dock icon is asked for
         if AppSettings.showOnDock { NSApp.setActivationPolicy(.regular) }
         
         UNUserNotificationCenter.current().delegate = self
@@ -319,12 +322,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
         withRecorder { $0.recovery.start(in: AppSettings.saveDirectory) }
-        // Opened by the user, the app shows its panel, with or without a Dock icon: without one, and without the menu
-        // bar item, nothing else would show that it launched. Started at login, it waits until it is wanted.
+        // Holdfast starts in the menu bar. Opened by the user, it shows its panel only when "Open the Panel When
+        // Holdfast Opens" says so, or when it has neither a menu bar item nor a Dock icon: nothing else would show
+        // that it launched (`AppSettings.opensPanelAtLaunch`). Started at login, it waits until it is wanted.
         let launch = NSAppleEventManager.shared().currentAppleEvent
         let atLogin = launch?.eventID == kAEOpenApplication
             && launch?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
-        if !atLogin { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }
+        if !atLogin && AppSettings.opensPanelAtLaunch { openMainPanel() }
     }
     
     /// A start that works from the list of screens and windows without a selector having fetched it: the list is
@@ -350,12 +354,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// A click on the Dock icon: the main panel, unless another window of the app is open (audio players aside), a
-    /// recording has its stream or a countdown runs
+    /// Holdfast opened again while it runs (from Finder, Spotlight, Launchpad) or a click on its Dock icon: the main
+    /// panel, unless another window of the app is open (audio players aside), which comes to the front instead, a
+    /// recording has its stream or a countdown runs. The app is activated either way: without a Dock icon nothing
+    /// else brings its windows forward.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard withRecorder({ !$0.hasStream }), !countdownPanel.isVisible else { return false }
         let open = NSApp.windows.filter { $0.isVisible && $0.title != "Item-0" && !$0.title.isEmpty && !$0.title.lowercased().contains(".qma") }
         if open.isEmpty { showMainPanel() }
+        NSApp.activate(ignoringOtherApps: true)
         return false
     }
     
@@ -385,7 +392,7 @@ func closeAllWindow() {
 func tips(_ message: String, id: String) {
     let never = AppSettings.dismissedTips
     if never.contains(id) { return }
-    let alert = createAlert(title: Bundle.main.appName + " Tips", message: message, button1: "OK", button2: "Don't Remind Me Again").runModal()
+    let alert = createAlert(title: Bundle.main.appName + " Tips", message: message, button1: "OK", button2: "Don't Remind Me Again").runInFront()
     if alert == .alertSecondButtonReturn { AppSettings.dismissedTips = never + [id] }
 }
 
@@ -402,7 +409,7 @@ func createAlert(level: NSAlert.Style = .warning, title: String, message: String
 func showAlertSyncOnMainThread(level: NSAlert.Style = .warning, title: String, message: String, button1: String, button2: String = "") -> NSApplication.ModalResponse {
     // Waiting for the main queue on the main thread would never return
     if Thread.isMainThread {
-        return createAlert(level: level, title: title, message: message, button1: button1, button2: button2).runModal()
+        return createAlert(level: level, title: title, message: message, button1: button1, button2: button2).runInFront()
     }
     var response: NSApplication.ModalResponse = .abort
     let semaphore = DispatchSemaphore(value: 0)
@@ -410,12 +417,21 @@ func showAlertSyncOnMainThread(level: NSAlert.Style = .warning, title: String, m
     // A run loop block: an alert inside a main queue block would hold up everything queued behind it while it is open
     UserNotice.onMainRunLoop {
         let alert = createAlert(level: level, title: title, message: message, button1: button1, button2: button2)
-        response = alert.runModal()
+        response = alert.runInFront()
         semaphore.signal()
     }
     
     semaphore.wait()
     return response
+}
+
+extension NSAlert {
+    /// `runModal` with the app activated first. Holdfast has no Dock icon unless it is asked for, so it is usually not
+    /// the active app: its alert would open behind the app in front, unseen, and hold everything up meanwhile.
+    func runInFront() -> NSApplication.ModalResponse {
+        NSApp.activate(ignoringOtherApps: true)
+        return runModal()
+    }
 }
 
 extension Bundle {

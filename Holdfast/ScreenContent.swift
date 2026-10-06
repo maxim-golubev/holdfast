@@ -140,7 +140,7 @@ enum ScreenContent {
                                     message: "Holdfast needs permission to record the screen, even to record audio only. Allow it in System Settings, then open Holdfast again. Holdfast quits now.",
                                     button1: "Open System Settings",
                                     button2: "Quit")
-            if alert.runModal() == .alertFirstButtonReturn {
+            if alert.runInFront() == .alertFirstButtonReturn {
                 UserNotice.openPrivacySettings("Privacy_ScreenCapture")
             }
             NSApp.terminate(nil)

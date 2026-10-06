@@ -112,9 +112,8 @@ extension RecorderController {
         if let problem = problem {
             // A recording that was asked to have the microphone never starts without it unnoticed: a microphone
             // that turns up later cannot be added to it. Cancel is the default button.
-            NSApp.activate(ignoringOtherApps: true)
             let message = problem + " " + "A recording started now has no microphone track, and one cannot be added while it runs. Cancel, connect the microphone and start again, or record without it."
-            let answer = createAlert(level: .critical, title: "Microphone Not Available", message: message, button1: "Cancel", button2: "Record Without Microphone").runModal()
+            let answer = createAlert(level: .critical, title: "Microphone Not Available", message: message, button1: "Cancel", button2: "Record Without Microphone").runInFront()
             if answer != .alertSecondButtonReturn {
                 session.abandonStart()
                 return

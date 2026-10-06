@@ -330,6 +330,9 @@ extension AppDelegate {
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
+        // Without a Dock icon the app is often not active (the trimmer after a recording, a script command): the
+        // window must come to the front and take the keyboard
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(self)
         window.orderFrontRegardless()
         return window
@@ -342,6 +345,7 @@ extension AppDelegate {
         let file = url.standardizedFileURL
         if let open = NSApp.windows(.trimmer).first(where: { ($0.isVisible || $0.isMiniaturized) && $0.representedURL?.standardizedFileURL == file }) {
             if open.isMiniaturized { open.deminiaturize(self) }
+            NSApp.activate(ignoringOtherApps: true)
             open.makeKeyAndOrderFront(self)
             open.orderFrontRegardless()
             return

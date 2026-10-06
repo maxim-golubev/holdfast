@@ -95,9 +95,14 @@ extension AppStorage {
 enum AppSettings {
     static let store = UserDefaults.standard
 
-    // General
-    @Setting("showOnDock", default: true) static var showOnDock: Bool
-    @Setting("showMenubar", default: false) static var showMenubar: Bool
+    // General. Holdfast is a menu bar app: the item is always there, there is no Dock icon, and the main panel does
+    // not open by itself when the app launches (`opensPanelAtLaunch`).
+    @Setting("showOnDock", default: false) static var showOnDock: Bool
+    @Setting("showMenubar", default: true) static var showMenubar: Bool
+    /// "Open the Panel When Holdfast Opens"
+    @Setting("openPanelAtLaunch", default: false) static var openPanelAtLaunch: Bool
+    /// The last of the one-time changes to stored settings (`migrate`) that this installation has had
+    @Setting("settingsVersion", default: 0) private static var settingsVersion: Int
     /// Seconds counted down before a recording starts, 0 for none
     @Setting("countdown", default: 0) static var countdown: Int
     @Setting("preventSleep", default: true) static var preventSleep: Bool
@@ -155,6 +160,19 @@ enum AppSettings {
     @Setting("areaHeight", default: 450) static var areaHeight: Int
     /// The last area recorded on each screen, by screen name. Use `ScreenContent.savedArea(forScreen:)` and `saveArea`.
     @Setting("savedArea", default: [:]) static var savedAreas: [String: Any]
+
+    /// Once per installation, at launch, before any setting is read: version 1 makes an installation that had the
+    /// Dock icon (the earlier default) a menu bar app like a new one. The two settings can be changed back afterwards.
+    static func migrate() {
+        guard settingsVersion < 1 else { return }
+        showMenubar = true
+        showOnDock = false
+        settingsVersion = 1
+    }
+
+    /// Whether the main panel opens when Holdfast is opened (not at login): when the setting says so, and always when
+    /// Holdfast has neither a menu bar item nor a Dock icon, since nothing else would show that it opened
+    static var opensPanelAtLaunch: Bool { openPanelAtLaunch || (!showMenubar && !showOnDock) }
 
     /// nil until a microphone has been chosen or `MicSelection.selectedMicID()` has converted the old "micDevice" selection
     static var storedMicDeviceID: String? { _micDeviceID.isStored ? micDeviceID : nil }

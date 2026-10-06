@@ -16,11 +16,12 @@
   <a href="docs/validation.md">What was measured</a>
 </p>
 
-Start a recording from the panel, the menu bar, or a shortcut. Holdfast records
-the screen, the sound the Mac plays, and your microphone. When you stop, it
-mixes the two sound sources into one audio track, so the whole meeting plays in
-any player, and keeps the recording as written, with the two tracks separate,
-next to it.
+Holdfast lives in the menu bar: no Dock icon, and no window when it opens.
+Start a recording from its menu, its panel, or a shortcut. Holdfast records the
+screen, the sound the Mac plays, and your microphone. When you stop, it mixes
+the two sound sources into one audio track, so the whole meeting plays in any
+player, and keeps the recording as written, with the two tracks separate, next
+to it.
 
 - **Nothing goes silent:** the microphone keeps recording when the meeting app
   takes it, and follows AirPods as they come and go. In a six-minute test with
@@ -78,7 +79,7 @@ Most of the work went into five problems:
 
 One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
-final file. 141 tests run in under half a minute without the app, a screen, or
+final file. 142 tests run in under half a minute without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 
@@ -105,9 +106,10 @@ Requires an Apple Silicon Mac on macOS 15 or later.
 2. Open it. The app is signed with the developer's certificate but not
    notarized by Apple, so macOS blocks the first launch: open **System Settings
    → Privacy & Security** and choose **Open Anyway**.
-3. Allow Screen Recording when macOS asks, then open Holdfast again. Turn on
-   **Record Microphone** in the recording options (it starts off), and allow
-   the microphone when macOS asks. When the first recording starts, allow
+3. Allow Screen Recording when macOS asks, then open Holdfast again. It
+   appears in the menu bar, not in the Dock. Choose **Open Main Panel** from
+   its menu, turn on **Record Microphone** (it starts off), and allow the
+   microphone when macOS asks. When the first recording starts, allow
    System Audio Recording too, so the other side of a call is recorded. A
    meeting recording needs all three permissions.
 

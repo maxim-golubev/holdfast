@@ -27,8 +27,7 @@ enum UserNotice {
         alertsWaiting += 1
         alertLock.unlock()
         onMainRunLoop {
-            NSApp.activate(ignoringOtherApps: true)
-            _ = createAlert(level: .critical, title: title, message: message, button1: "OK").runModal()
+            _ = createAlert(level: .critical, title: title, message: message, button1: "OK").runInFront()
             alertLock.lock()
             alertsWaiting -= 1
             let handlers = alertsWaiting == 0 ? alertHandlers : []

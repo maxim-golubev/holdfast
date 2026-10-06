@@ -21,8 +21,10 @@ func settingsTests() async {
             expectEqual(key.name, name, "key", line: line)
             expectEqual(key.fallback, fallback, "default of \(name)", line: line)
         }
-        check(AppSettings.$showOnDock, "showOnDock", true)
-        check(AppSettings.$showMenubar, "showMenubar", false)
+        // A menu bar app since the menu bar defaults (settingsVersion 1, `AppSettings.migrate`)
+        check(AppSettings.$showOnDock, "showOnDock", false)
+        check(AppSettings.$showMenubar, "showMenubar", true)
+        check(AppSettings.$openPanelAtLaunch, "openPanelAtLaunch", false)
         check(AppSettings.$countdown, "countdown", 0)
         check(AppSettings.$preventSleep, "preventSleep", true)
         check(AppSettings.$showPreview, "showPreview", true)
@@ -134,6 +136,14 @@ func settingsTests() async {
         withStored(["highRes": 0]) { expect(AppSettings.recordsPixels, "0, which earlier versions rewrote to 2 at launch") }
         withStored(["highRes": 1]) { expect(!AppSettings.recordsPixels, "1") }
         withStored(["highRes": 3]) { expect(!AppSettings.recordsPixels, "a number that was never pixels") }
+    }
+
+    await test("Settings: the main panel opens at launch only when asked to or when nothing else shows the app") {
+        withStored([:]) { expect(!AppSettings.opensPanelAtLaunch, "nothing stored: menu bar item, no panel") }
+        withStored(["openPanelAtLaunch": true]) { expect(AppSettings.opensPanelAtLaunch, "the setting on") }
+        withStored(["showMenubar": false]) { expect(AppSettings.opensPanelAtLaunch, "no menu bar item and no Dock icon") }
+        withStored(["showMenubar": false, "showOnDock": true]) { expect(!AppSettings.opensPanelAtLaunch, "the Dock icon shows it") }
+        withStored(["showMenubar": true, "showOnDock": true]) { expect(!AppSettings.opensPanelAtLaunch, "both shown") }
     }
 
     await test("Settings: the frame rate of a recording is always between 1 and 240") {

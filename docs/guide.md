@@ -6,6 +6,13 @@ in [validation.md](validation.md).
 
 ## Before the first meeting
 
+Holdfast is a menu bar app: it has an item in the menu bar, no Dock icon, and
+opens no window when it starts. Click the item for its menu; **Open Main
+Panel** there shows the panel with what to record and the recording options.
+**Settings → General** can add the Dock icon back, open the panel whenever
+Holdfast opens, or hide the menu bar item between recordings (see
+[Settings that matter for meetings](#settings-that-matter-for-meetings)).
+
 Holdfast needs three permissions. macOS asks for **Screen Recording** at the
 first launch; allow it under **System Settings → Privacy & Security → Screen &
 System Audio Recording** and open Holdfast again, since macOS applies it only
@@ -36,8 +43,10 @@ Then check three settings once:
 
 ## Starting a recording
 
-- **The panel.** Opening Holdfast, or clicking its Dock icon, shows the main
-  panel with five tiles: **System Audio**, **Screen**, **Screen Area**,
+- **The panel.** **Open Main Panel** in the menu bar item's menu, the **Open
+  Main Panel** shortcut, or opening Holdfast again while it runs (from Finder,
+  Spotlight, or the Dock icon if you turned it on) shows the main panel with
+  five tiles: **System Audio**, **Screen**, **Screen Area**,
   **Application** and **Window**. For a meeting, choose **Screen**, click the
   screen the meeting is on, and press **Start**. The bar under the screens
   repeats the options that matter (resolution, frame rate, quality, HDR,
@@ -47,9 +56,9 @@ Then check three settings once:
   audio of an **Application** or **Window** recording is every app's sound, not
   only that app's: call audio is played by macOS itself, not by the call's app
   (see [System audio and calls](#system-audio-and-calls)).
-- **The menu bar.** With **Settings → General → Show in the Menu Bar** on, the
-  menu bar item is there all the time, and its menu has **Open Main Panel** and
-  the same five starts. The Dock icon's menu is the same menu.
+- **The menu bar.** The menu bar item's menu has **Open Main Panel** and the
+  same five starts. With **Show in the Dock** on, the Dock icon's menu is the
+  same menu.
 - **Shortcuts.** None are set until you choose them under **Settings →
   Shortcuts**. **Record Current Screen** (the screen with the pointer), **Record
   Topmost Window** and **Record System Audio** start at once, without a
@@ -73,7 +82,8 @@ and a notification names both.
 
 ## What the menu bar item shows
 
-During a recording the menu bar item is always there, whatever the setting.
+During a recording the menu bar item is always there, even with **Show in the
+Menu Bar** off.
 Each state has its own symbol, never only a colour:
 
 | Symbol | Next to it | State |
@@ -143,12 +153,17 @@ macOS refuses is tried again three times, two seconds apart.
 recording`, or the timer all stop the same way. The item says **Saving** while
 the file is closed and its audio mixed; for a long meeting the mix takes a while,
 with its percentage in the menu. Then a preview of the recording appears at the
-bottom right of the screen for a few seconds (click it to open the file). With
+bottom right of the screen for a few seconds: its first frame (click it to open
+the file), its file name, and where it was saved (**Saved to Desktop**). The
+folder button shows it in Finder. **Done** only closes the preview; the
+recording is kept. Nothing on the preview removes the recording: **Move to
+Trash…** is only in its context menu (Control-click), and asks first, naming
+the file. Hold the pointer on the preview to keep it open. With
 **Settings → Output → Show a Preview** off, the item simply goes back to idle;
 with **Notifications** set to **Problems and Finished Recordings** a quiet
 **Recording Completed** notification (no sound) says where the file is.
 
-Quitting during a recording (from the Dock, at logout, or with `kill`) stops it
+Quitting during a recording (from the Dock icon, at logout, or with `kill`) stops it
 and quits only once the final file is there. So does quitting while a recording
 from an earlier run is being recovered or an export is being written.
 
@@ -222,8 +237,11 @@ on, a mixed audio file next to it.
   recordings; one launched after the start cannot be left out.
 - **Output:** **Save Folder**, **Show a Preview**, and **Recordings Log**, which
   opens the log.
-- **General:** **Show in the Menu Bar**, **Launch at Login** (the panel does not
-  open at login), **Countdown Before a Recording**, and **Notifications**:
+- **General:** **Show in the Menu Bar** (on), **Show in the Dock** (off),
+  **Open the Panel When Holdfast Opens** (off: Holdfast opens in the menu bar
+  only; with neither a menu bar item nor a Dock icon the panel always opens),
+  **Launch at Login** (the panel does not open at login), **Countdown Before a
+  Recording**, and **Notifications**:
   - **Problems Only** (the default): a track problem that has lasted 15
     seconds and its end, a failure, a microphone that is not connected, call
     audio not included.

@@ -222,7 +222,11 @@ enum RecordingSaver {
     static func showPreview(url: URL, image: NSImage?) {
         guard let previewImage = image, let screen = ScreenContent.getScreenWithMouse() else { return }
         for window in NSApp.windows(.preview) { window.close() }
-        let window = PreviewWindow(contentRect: NSRect(x: screen.frame.maxX - 280, y: screen.frame.minY + 20, width: 266, height: 156),
+        // As large as the view asks for (the picture, the file name, where it was saved and Done), at the bottom right
+        let content = NSHostingView(rootView: PreviewView(frame: previewImage, fileURL: url))
+        let fitting = content.fittingSize
+        let size = fitting.width > 0 && fitting.height > 0 ? fitting : NSSize(width: 272, height: 210)
+        let window = PreviewWindow(contentRect: NSRect(x: screen.frame.maxX - size.width - 14, y: screen.frame.minY + 20, width: size.width, height: size.height),
                                    styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
         window.identifier = .preview
         window.level = .statusBar
@@ -232,7 +236,7 @@ enum RecordingSaver {
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         window.backgroundColor = .clear
-        window.contentView = NSHostingView(rootView: PreviewView(frame: previewImage, fileURL: url))
+        window.contentView = content
         window.orderFront(nil)
     }
 
