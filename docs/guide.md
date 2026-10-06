@@ -298,7 +298,10 @@ audio comes from the process tap, on which output device and in which format, or
 from screen capture and why) and its video settings; every rebuild of the tap; its stop, with the reason when it stopped by itself; where it was
 saved; microphone device switches and format changes; microphone audio that
 came in late (a backlog dropped, or a microphone clock found to lag and recorded
-that much late); mute and unmute; every
+that much late); system audio or microphone buffers whose timestamps were
+too far from when they arrived to be believed, which are recorded at their
+arrival time instead, and anything left out for lying in the future; mute and
+unmute; every
 track warning and its end; every failure that was reported; and at the end of
 each recording with a microphone, a summary of its microphone track: buffers
 received, written, dropped, failed and all zero, seconds of audio, seconds of

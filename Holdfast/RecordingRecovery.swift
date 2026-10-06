@@ -171,7 +171,7 @@ final class RecordingRecovery {
         } else {
             do {
                 try await RecordingMixer.mix(source: raw, output: mixURL, fileType: ending.lowercased() == "mov" ? .mov : .mp4, audioSettings: audioSettings, progress: progress)
-                try await RecordingMixer.verify(source: raw, output: mixURL)
+                try await RecordingMixer.verify(source: raw, output: mixURL, unfinished: !complete)
                 try FileManager.default.moveItem(at: mixURL, to: final)
             } catch {
                 print("Failed to mix the leftover \(raw.lastPathComponent): \(error)")

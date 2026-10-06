@@ -39,6 +39,9 @@ final class TestRecording {
     var sessions = 0
     var microphoneEnd: CMTime?
     var systemAudioEnd: CMTime?
+    /// The present on the host clock, in seconds after `base`, as the writer reads it. Far ahead unless a test
+    /// says otherwise, so only the tests about the present see it.
+    var present = 1_000_000.0
 
     init(folder: String, audioOnly: Bool = false, microphone: Bool = true, settings: [String: Any] = [:]) throws {
         let directory = try Suite.folder(folder).path
@@ -48,6 +51,7 @@ final class TestRecording {
         writer.events.sessionStarted = { [unowned self] in self.sessions += 1 }
         writer.events.microphoneWritten = { [unowned self] end, _ in self.microphoneEnd = end }
         writer.events.systemAudioWritten = { [unowned self] end in self.systemAudioEnd = end }
+        writer.presentClock = { [weak self] in self.map { $0.at($0.present) } ?? .invalid }
     }
 
     func at(_ seconds: Double) -> CMTime { time(TestRecording.base + seconds) }
@@ -56,14 +60,17 @@ final class TestRecording {
         writer.write(CaptureSample(kind: .screen(complete: complete), buffer: try videoFrame(at: at(seconds), shade: Int(seconds * 50)), pts: at(seconds)))
     }
 
-    /// A tenth of a second of system audio as ScreenCaptureKit delivers it
-    func systemAudio(_ seconds: Double) throws {
-        writer.write(CaptureSample(kind: .audio, buffer: try audioBuffer(rate: 48000, channels: 2, frames: 4800, at: at(seconds), amplitude: 0.2), pts: at(seconds)))
+    /// A tenth of a second of system audio as ScreenCaptureKit delivers it, stamped `seconds`, that arrived at
+    /// `arrival` (not known when nil)
+    func systemAudio(_ seconds: Double, arrival: Double? = nil) throws {
+        writer.write(CaptureSample(kind: .audio, buffer: try audioBuffer(rate: 48000, channels: 2, frames: 4800, at: at(seconds), amplitude: 0.2),
+                                   pts: at(seconds), arrival: arrival.map { at($0) } ?? .invalid))
     }
 
     /// A tenth of a second from a microphone in the format of a headset in a call
-    func microphone(_ seconds: Double) throws {
-        writer.write(CaptureSample(kind: .microphone, buffer: try audioBuffer(rate: 24000, frames: 2400, at: at(seconds), amplitude: 0.3), pts: at(seconds)))
+    func microphone(_ seconds: Double, arrival: Double? = nil) throws {
+        writer.write(CaptureSample(kind: .microphone, buffer: try audioBuffer(rate: 24000, frames: 2400, at: at(seconds), amplitude: 0.3),
+                                   pts: at(seconds), arrival: arrival.map { at($0) } ?? .invalid))
     }
 
     /// Everything the capture delivers from `start` up to `end`, a tenth of a second at a time and a little

@@ -35,8 +35,9 @@ enum TestMovie {
     }
 
     /// Writes a movie the way a recording is laid out: H.264 video (10 frames a second, 320 x 240) and one AAC
-    /// track per entry of `audio`, in that order, each a 440 Hz tone as loud as its closure says.
-    static func write(to url: URL, seconds: Double, audio: [Loudness]) async throws {
+    /// track per entry of `audio`, in that order, each a 440 Hz tone as loud as its closure says. The audio is
+    /// `audioSeconds` long when given, else as long as the video.
+    static func write(to url: URL, seconds: Double, audioSeconds: Double? = nil, audio: [Loudness]) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let video = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 240
@@ -82,7 +83,7 @@ enum TestMovie {
             }
             for (index, loudness) in audio.enumerated() {
                 let input = tracks[index]
-                let total = Int(seconds * 48000)
+                let total = Int((audioSeconds ?? seconds) * 48000)
                 var position = 0
                 group.addTask {
                     await feed(input) {

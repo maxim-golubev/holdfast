@@ -119,6 +119,8 @@ final class SimulatedRecording {
         recording = RecordingContext(audioOnly: false, recordMic: true, fastStart: false, saveDirectory: folder.path)
         guard let converter = MicConverter() else { throw SoakError("no microphone converter") }
         writer = MovieWriter(recording: recording, micConverter: converter)
+        // The present the writer checks the buffers' times against is the simulated one
+        writer.presentClock = { Plan.stamp(RecLog.now) }
         clockWriter = SimulatedClockWriter(writer)
         monitor = RecordingMonitor(queue: queue)
     }

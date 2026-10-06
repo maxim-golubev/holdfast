@@ -220,7 +220,8 @@ play later.
   ScreenCaptureKit's system audio format (48 kHz stereo float, one buffer per
   channel; a buffer already in it goes on unchanged, others are converted and
   resampled onto a continuous timeline), and hands it as an `.audio`
-  `CaptureSample` to the same `onSample` as the stream's buffers. The writer
+  `CaptureSample` to the same `onSample` as the stream's buffers, with the
+  host time at which the IOProc handed it on as its arrival time. The writer
   and the monitor cannot tell the two sources apart.
 - **Device changes.** Listeners on the default output device, the device list
   and the tap's own device (its sample rate, and whether it is alive: AirPods
@@ -286,6 +287,30 @@ alike: the first time placed after a resume sets `timeOffset` so the
 recording continues where it left off, and the offset never shrinks. `lastPTS`
 is the latest end of anything on the timeline, fills included.
 
+**Never past the present.** In a 20-minute FaceTime call the process tap
+handed on one buffer, as the call ended, stamped about 1100 s in the future.
+The writer believed it: `lastPTS` jumped to that time and stayed there (it only
+ever grows), the system audio track was filled with silence towards it until
+its input stopped taking more (16 s), every real system audio buffer after it
+lay before that end and was dropped (hence "System Audio Is Not Being Recorded"
+5 s later), and the stop padded the microphone to `lastPTS`: 1100 s of silence,
+38 minutes of audio for 20 of picture, which the mix check of the day let
+through. Now every buffer carries its arrival time on the host clock
+(`CaptureSource` stamps the stream's, `SystemAudioSource` the tap's on the IO
+thread), and the writer reads the present from `presentClock` (the host clock;
+the tests and the simulation give their own):
+- A system audio or microphone buffer stamped more than 1 s after its arrival,
+  or more than 30 s before it (`ArrivalCheck`), is given its arrival time less
+  its length instead; the first of a run and its end are logged, the total at
+  the stop. A backlog of seconds is left to the microphone converter.
+- A buffer that still ends more than 1 s after the present (a frame, or audio
+  whose arrival is not known) is left out, logged once and counted at the stop.
+- `lastPTS` takes no end more than 1 s after the present, and the monitor's
+  fills and frame repeats are cut off there too.
+- The stop pads the microphone only to the end of the video's last frame
+  (`videoEnd`, repeated frames included), or for a sound-only recording to
+  `lastPTS` but not after the present (`stopEnd`).
+
 **Fragments.** The movie is written with `movieFragmentInterval` = 10 s, so a
 file that is never closed still opens, missing up to about the last 12 s (one
 fragment plus the slowest track's lag). The writer flushes a fragment only when
@@ -347,8 +372,9 @@ is rebuilt when the input format changes, and each change is logged.
   seconds of silence, format changes, loudest peak) for the log line written
   when the recording finishes.
 
-At the stop, `finish()` pads the microphone track to the recording's length:
-a recording with a microphone always has a full-length microphone track. A
+At the stop, `finish()` pads the microphone track to the end of the video
+(`stopEnd`, see "Never past the present"): a recording with a microphone
+always has a full-length microphone track, and never a longer one. A
 muted microphone is the same mechanism: its buffers are left out, the monitor's
 fill writes the silence, and the unmute is an anchor.
 
@@ -399,7 +425,10 @@ and the result is checked), then:
   Anything but `completed` is a failure, and a watchdog cancels when no sample
   has moved for 60 s.
 - **The check.** `verify` runs before any rename: one video and one audio
-  track, the same duration to within 1 s, no track more than 1 s short, and in
+  track, audio no more than 2 s longer or shorter than the video (for a
+  leftover that was never closed, up to 12 s shorter: its tracks end where
+  their last fragments did), the same duration to within 1 s, no track more
+  than 1 s short, and in
   up to 30 one-second windows where the microphone has sound (above -60 dBFS)
   and system audio is below a quarter of it, the mix must reach a quarter of
   the microphone's level; it fails when half or more do not.
@@ -523,7 +552,8 @@ written, and the log is kept in memory.
 | Watchdog | `RecordingMonitor` | 5 s without audio, 20 s of zeros, 5 s without a first frame |
 | Capture stop wait | `RecordingSession.stopCapture` | 5 s |
 | Mix stall limit | `RecordingMixer.stallLimit` | 60 s |
-| Mix check | `RecordingMixer.verify` | length within 1 s; 30 windows; silence below -60 dBFS |
+| Mix check | `RecordingMixer.verify` | audio within 2 s of the video (12 s shorter for a leftover never closed); length within 1 s; 30 windows; silence below -60 dBFS |
+| Timestamp check | `ArrivalCheck` | audio stamped over 1 s after or 30 s before its arrival gets its arrival time; nothing ends over 1 s after the present |
 | Disk | `DiskSpace` | start 2 GB, stop 500 MB, checked every 5 s |
 | Device switch | `MicDevices` | check 0.7 s after a change; 3 retries, 2 s apart |
 | Tap rebuild | `SystemAudioSource` | 0.5 s after the last device change; 3 retries, 2 s apart |

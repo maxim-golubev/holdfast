@@ -719,7 +719,8 @@ func systemAudioTests() async {
         let run = try TestRecording(folder: "tap-writer", audioOnly: true, microphone: false)
         try run.writer.prepareAudio()
         run.writer.startCapturing()
-        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue) { run.writer.write($0) }
+        // Each buffer arrives a little after the last one of the two seconds is stamped
+        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, clock: { run.at(2.05) }) { run.writer.write($0) }
         try source.start()
         let tap = try require(fakes.taps.first, "a tap")
         // Two seconds from an output device at 44.1 kHz, interleaved, as a tap may deliver them

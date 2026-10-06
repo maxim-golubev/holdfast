@@ -313,9 +313,17 @@ enum RecordingMixer {
 
     // MARK: - Verification
 
-    /// Throws unless `output` is a complete mix of `source`: one video and one audio track, as long as the source
-    /// to within a second, and with the microphone audible where only the microphone had sound.
-    static func verify(source: URL, output: URL) async throws {
+    /// How much longer or shorter than its video the audio of a mixed recording may be
+    static let maxAudioVideoDifference: Double = 2
+    /// How much shorter than its video the audio of a recording that was never closed may be: its tracks end
+    /// where the last fragment of each reached the disk, and audio lags the picture by up to a fragment
+    static var unfinishedAudioShortfall: Double { CMTimeGetSeconds(MovieWriter.fragmentInterval) + maxAudioVideoDifference }
+
+    /// Throws unless `output` is a complete mix of `source`: one video and one audio track, whose lengths differ
+    /// by `maxAudioVideoDifference` at most (the audio of an `unfinished` recording, one never closed, may be up
+    /// to `unfinishedAudioShortfall` shorter), as long as the source to within a second, and with the microphone
+    /// audible where only the microphone had sound.
+    static func verify(source: URL, output: URL, unfinished: Bool = false) async throws {
         guard FileManager.default.fileExists(atPath: output.path) else { throw RecordingError("The mixed recording was not written.") }
         let raw = AVURLAsset(url: source)
         let mixed = AVURLAsset(url: output)
@@ -328,6 +336,13 @@ enum RecordingMixer {
         let mixedSeconds = CMTimeGetSeconds(try await mixed.load(.duration))
         let videoSeconds = CMTimeGetSeconds(try await video[0].load(.timeRange).duration)
         let audioSeconds = CMTimeGetSeconds(try await mixedAudio.load(.timeRange).duration)
+        // A microphone padded with silence far beyond the picture once passed every check below: a 20-minute call
+        // came out with 38 minutes of audio
+        let shortfall = unfinished ? unfinishedAudioShortfall : maxAudioVideoDifference
+        guard videoSeconds.isFinite, audioSeconds.isFinite, audioSeconds - videoSeconds <= maxAudioVideoDifference,
+              videoSeconds - audioSeconds <= shortfall else {
+            throw RecordingError(String(format: "The audio of the mixed recording is %.1f s long and its video %.1f s.", audioSeconds, videoSeconds))
+        }
         guard rawSeconds.isFinite, mixedSeconds.isFinite, abs(rawSeconds - mixedSeconds) <= 1 else {
             throw RecordingError(String(format: "The mixed recording is %.1f s long, the recording %.1f s.", mixedSeconds, rawSeconds))
         }

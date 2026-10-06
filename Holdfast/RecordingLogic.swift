@@ -27,11 +27,50 @@ enum Timeline {
         return offset > current ? offset : current
     }
 
-    /// The latest end time of anything on the timeline: `end` when it is valid and later than `last`, else `last`
-    static func latestEnd(_ end: CMTime?, after last: CMTime?) -> CMTime? {
+    /// The latest end time of anything on the timeline: `end` when it is valid and later than `last`, else `last`.
+    /// An end after `limit` (the present plus a second, when known) is left out: nothing recorded ends in the future,
+    /// and one such end would otherwise stay the recording's length for good.
+    static func latestEnd(_ end: CMTime?, after last: CMTime?, limit: CMTime? = nil) -> CMTime? {
         guard let end = end, end.isValid else { return last }
+        if let limit = limit, limit.isValid, end > limit { return last }
         if let last = last, end <= last { return last }
         return end
+    }
+}
+
+/// Whether a buffer's own timestamp can be believed, judged against when it reached the app on the host clock that
+/// timestamps are on. Audio is never stamped after it arrived, and a backlog is seconds old, not minutes: a buffer
+/// stamped later than `ahead` after its arrival, or earlier than `behind` before it, carries a time from another
+/// clock or none at all (a process tap's buffer was once stamped 1100 s in the future as a call ended) and is given
+/// its arrival time instead.
+enum ArrivalCheck {
+    /// Seconds a buffer may be stamped after its arrival
+    static let ahead: Double = 1
+    /// Seconds a buffer may be stamped before its arrival
+    static let behind: Double = 30
+
+    enum Verdict: Equatable {
+        case trusted
+        /// Stamped this many seconds after it arrived
+        case ahead(Double)
+        /// Stamped this many seconds before it arrived
+        case behind(Double)
+    }
+
+    /// What a buffer starting at `pts` that arrived at `arrival` is worth. Trusted when the arrival is not known.
+    static func verdict(pts: CMTime, arrival: CMTime) -> Verdict {
+        guard pts.isValid, arrival.isValid else { return .trusted }
+        let offset = CMTimeGetSeconds(CMTimeSubtract(pts, arrival))
+        guard offset.isFinite else { return .trusted }
+        if offset > ahead { return .ahead(offset) }
+        if -offset > behind { return .behind(-offset) }
+        return .trusted
+    }
+
+    /// The start given to a buffer of `duration` whose timestamp is not trusted: it ends when it arrived
+    static func restamped(arrival: CMTime, duration: CMTime) -> CMTime {
+        guard duration.isValid, duration > .zero else { return arrival }
+        return CMTimeSubtract(arrival, duration)
     }
 }
 

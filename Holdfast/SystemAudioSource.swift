@@ -170,6 +170,10 @@ final class SystemAudioSource {
     private let onSample: (CaptureSample) -> Void
     private let settleDelay: Double
     private let retryDelay: Double
+    /// The host clock, read on the IO thread when a buffer is handed on: its arrival time, against which the writer
+    /// checks the buffer's own time (`ArrivalCheck`). The tests give their own.
+    private let clock: () -> CMTime
+    static let hostClock: () -> CMTime = { CMClockMakeHostTimeFromSystemUnits(mach_absolute_time()) }
     /// The generation of the tap whose buffers are handed on; 0 while none is
     private let delivering = Atomic<Int>(0)
 
@@ -198,11 +202,13 @@ final class SystemAudioSource {
     private(set) var buffersDropped = 0
 
     init(factory: Factory, sampleQueue: DispatchQueue, settleDelay: Double = SystemAudioSource.settleDelay,
-         retryDelay: Double = SystemAudioSource.retryDelay, onSample: @escaping (CaptureSample) -> Void) {
+         retryDelay: Double = SystemAudioSource.retryDelay, clock: @escaping () -> CMTime = SystemAudioSource.hostClock,
+         onSample: @escaping (CaptureSample) -> Void) {
         self.factory = factory
         self.sampleQueue = sampleQueue
         self.settleDelay = settleDelay
         self.retryDelay = retryDelay
+        self.clock = clock
         self.onSample = onSample
         converter = SystemAudioConverter()
     }
@@ -341,15 +347,17 @@ final class SystemAudioSource {
 
     // MARK: - IO thread
 
-    /// From the IOProc of the tap of `generation`: queues the buffer unless that tap has been replaced or stopped
+    /// From the IOProc of the tap of `generation`: queues the buffer, with the time it arrived, unless that tap has
+    /// been replaced or stopped
     private func deliver(_ buffer: CMSampleBuffer, generation: Int) {
         guard delivering.load(ordering: .acquiring) == generation else { return }
-        sampleQueue.async { [weak self] in self?.handOn(buffer, generation: generation) }
+        let arrival = clock()
+        sampleQueue.async { [weak self] in self?.handOn(buffer, generation: generation, arrival: arrival) }
     }
 
     // MARK: - Sample queue
 
-    private func handOn(_ buffer: CMSampleBuffer, generation: Int) {
+    private func handOn(_ buffer: CMSampleBuffer, generation: Int, arrival: CMTime) {
         guard generation >= latestGeneration, let converter = converter else {
             buffersDropped += 1
             return
@@ -361,7 +369,7 @@ final class SystemAudioSource {
         }
         guard let converted = converter.convert(buffer) else { return }
         buffersHandedOn += 1
-        onSample(CaptureSample(kind: .audio, buffer: converted, pts: converted.presentationTimeStamp))
+        onSample(CaptureSample(kind: .audio, buffer: converted, pts: converted.presentationTimeStamp, arrival: arrival))
     }
 }
 

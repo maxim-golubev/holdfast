@@ -20,8 +20,9 @@ struct CaptureSample {
     let buffer: CMSampleBuffer
     /// When the buffer starts on the stream's clock
     let pts: CMTime
-    /// When the buffer reached the app, on the host clock its timestamps are on; invalid when not known. The
-    /// microphone's converter tells a backlog from a clock that lags by it.
+    /// When the buffer reached the app, on the host clock its timestamps are on; invalid when not known. An audio
+    /// buffer stamped far from it is given this time instead (`ArrivalCheck`), and the microphone's converter tells
+    /// a backlog from a clock that lags by it.
     let arrival: CMTime
 
     init(kind: Kind, buffer: CMSampleBuffer, pts: CMTime, arrival: CMTime = .invalid) {
@@ -102,6 +103,19 @@ final class MovieWriter {
     private var lastVideoFrame: CMSampleBuffer?
     /// Whether `lastVideoFrame` owns its pixels instead of holding a surface of the stream
     private var lastVideoFrameIsCopy = false
+    /// End of the last video frame appended, a repeated one included (its time, when it has no duration). The tracks
+    /// are brought to it at the stop.
+    private(set) var videoEnd: CMTime?
+    /// The present on the host clock the buffers' timestamps are on. Nothing on the timeline ends more than
+    /// `ArrivalCheck.ahead` after it. The tests and the simulation give a clock of their own; one that returns an
+    /// invalid time turns the checks against the present off.
+    var presentClock: () -> CMTime = { CMClockGetHostTimeClock().time }
+    /// Audio buffers given their arrival time because their own could not be believed, per source, for the log
+    private var systemRestamps = Restamps(name: "System audio")
+    private var microphoneRestamps = Restamps(name: "Microphone")
+    /// Buffers left out because they end beyond the present, and ends the timeline did not take for that reason
+    private var futureBuffers = 0
+    private var futureEnds = 0
     /// Small picture of the recording's first frame for the preview. An image, not the frame: a frame as delivered
     /// holds one of the stream's surfaces, and a full-size copy would sit in memory for the whole recording.
     private var firstFrame: NSImage?
@@ -341,9 +355,94 @@ final class MovieWriter {
         return CMTimeSubtract(raw, timeOffset)
     }
 
-    /// Keeps `lastPTS` at the latest end time of anything on the timeline
+    /// Keeps `lastPTS` at the latest end time of anything on the timeline, which is never more than
+    /// `ArrivalCheck.ahead` after the present: the stop brought the microphone track to that time once, and an end
+    /// in the future made a 20-minute call's microphone 38 minutes long
     private func noteEnd(_ end: CMTime?) {
-        lastPTS = Timeline.latestEnd(end, after: lastPTS)
+        let latest = Timeline.latestEnd(end, after: lastPTS, limit: timelineLimit())
+        if latest == lastPTS, let end = end, end.isValid, lastPTS.map({ end > $0 }) ?? true {
+            futureEnds += 1
+            if futureEnds == 1 {
+                RecLog.write(String(format: "An end %.2f s after the present was left out of the recording's length", CMTimeGetSeconds(CMTimeSubtract(end, presentOnTimeline() ?? end))))
+            }
+        }
+        lastPTS = latest
+    }
+
+    /// The present on the writer's timeline, nil when the clock gives none. While a resume has not been put on the
+    /// timeline yet the pause is not taken out, so it is later than the true one, never earlier.
+    private func presentOnTimeline() -> CMTime? {
+        let present = presentClock()
+        guard present.isValid else { return nil }
+        return CMTimeSubtract(present, timeOffset)
+    }
+
+    /// The latest time anything on the timeline may end: the present plus `ArrivalCheck.ahead`
+    private func timelineLimit() -> CMTime? {
+        return presentOnTimeline().map { CMTimeAdd($0, CMTime(seconds: ArrivalCheck.ahead, preferredTimescale: 1_000_000_000)) }
+    }
+
+    /// `time`, or the latest time anything may end when it is later: what the monitor asks to fill comes from the
+    /// buffers' times, and silence or a frame in the future would stay in the file
+    private func notAfterLimit(_ time: CMTime) -> CMTime {
+        guard let limit = timelineLimit(), time > limit else { return time }
+        return limit
+    }
+
+    /// Buffers of one audio source given their arrival time instead of their own (`ArrivalCheck`). The first of a
+    /// run is logged, and the end of the run, for the first runs; the total at the stop.
+    private struct Restamps {
+        static let loggedRuns = 10
+        let name: String
+        var run = 0
+        var runs = 0
+        var total = 0
+
+        /// The start of a buffer that starts at `pts`, lasts `duration` and arrived at `arrival`
+        mutating func start(_ pts: CMTime, duration: CMTime, arrival: CMTime) -> CMTime {
+            let how: String
+            switch ArrivalCheck.verdict(pts: pts, arrival: arrival) {
+            case .trusted:
+                if run > 0, runs <= Restamps.loggedRuns {
+                    RecLog.write("\(name): timestamps can be believed again, after \(Restamps.buffers(run)) at \(run == 1 ? "its" : "their") arrival time")
+                }
+                run = 0
+                return pts
+            case .ahead(let seconds): how = String(format: "%.2f s after", seconds)
+            case .behind(let seconds): how = String(format: "%.2f s before", seconds)
+            }
+            if run == 0 {
+                runs += 1
+                if runs <= Restamps.loggedRuns {
+                    RecLog.write("\(name): a buffer is stamped \(how) it arrived, which cannot be its time; it is recorded at its arrival time, as is every buffer after it until their timestamps can be believed again")
+                }
+            }
+            run += 1
+            total += 1
+            return ArrivalCheck.restamped(arrival: arrival, duration: duration)
+        }
+
+        var summary: String? {
+            guard total > 0 else { return nil }
+            return "\(name): \(Restamps.buffers(total)) at \(total == 1 ? "its" : "their") arrival time in \(runs) \(runs == 1 ? "run" : "runs"), \(total == 1 ? "its" : "their") own timestamp being off"
+        }
+
+        /// "1 buffer recorded", "3 buffers recorded"
+        static func buffers(_ count: Int) -> String { "\(count) \(count == 1 ? "buffer" : "buffers") recorded" }
+    }
+
+    /// False for a buffer that ends more than `ArrivalCheck.ahead` after the present, which is left out: it would
+    /// make the recording that long. Logged the first time; the stop logs how many.
+    private func endsByPresent(_ rawEnd: CMTime, kind: String) -> Bool {
+        let present = presentClock()
+        guard present.isValid else { return true }
+        let beyond = CMTimeGetSeconds(CMTimeSubtract(rawEnd, present))
+        guard beyond > ArrivalCheck.ahead else { return true }
+        futureBuffers += 1
+        if futureBuffers == 1 {
+            RecLog.write(String(format: "A %@ buffer ending %.2f s after the present was left out", kind, beyond))
+        }
+        return false
     }
 
     /// Starts the writer's session at `pts`: at the first complete video frame, or at the first system audio
@@ -377,13 +476,26 @@ final class MovieWriter {
     func write(_ sample: CaptureSample) {
         let sampleBuffer = sample.buffer
         guard isCapturing, !isPaused, sampleBuffer.isValid else { return }
-        let rawPTS = sample.pts
+        var rawPTS = sample.pts
         let duration = sampleBuffer.duration
         guard rawPTS.isValid else { return }
         guard checkWriter() else { return }
-        let rawEnd = duration.isValid && duration.value > 0 ? CMTimeAdd(rawPTS, duration) : rawPTS
         var isMicrophone = false
-        if case .microphone = sample.kind { isMicrophone = true }
+        let kind: String
+        switch sample.kind {
+        case .screen:
+            kind = "video"
+        case .audio:
+            kind = "system audio"
+            rawPTS = systemRestamps.start(rawPTS, duration: duration, arrival: sample.arrival)
+        case .microphone:
+            kind = "microphone"
+            isMicrophone = true
+            rawPTS = microphoneRestamps.start(rawPTS, duration: duration, arrival: sample.arrival)
+        }
+        let rawEnd = duration.isValid && duration.value > 0 ? CMTimeAdd(rawPTS, duration) : rawPTS
+        // A frame, or audio whose arrival is not known, stamped in the future
+        guard endsByPresent(rawEnd, kind: kind) else { return }
         if !isMicrophone || clockAnchor == nil {
             clockAnchor = (rawEnd, DispatchTime.now().uptimeNanoseconds)
         }
@@ -399,7 +511,7 @@ final class MovieWriter {
             if recording.audioOnly {
                 writeAudioToFile(sampleBuffer, from: pts, to: endPTS)
             } else {
-                writeAudioToTrack(sampleBuffer, rawPTS: rawPTS, from: pts, to: endPTS)
+                writeAudioToTrack(sampleBuffer, from: pts, to: endPTS)
             }
         case .microphone:
             guard sessionStart != nil, !isMicrophoneMuted, let micInput = micInput, let converter = micConverter else { return }
@@ -435,6 +547,8 @@ final class MovieWriter {
             if videoPTS == nil { firstFrame = MovieWriter.thumbnail(of: frame) }
             if append(frame, to: videoInput) {
                 videoPTS = framePTS
+                let duration = frame.duration
+                noteVideoEnd(duration.isValid && duration > .zero ? CMTimeAdd(framePTS, duration) : framePTS)
                 noteEnd(framePTS)
                 lastVideoFrame = frame
                 lastVideoFrameIsCopy = false
@@ -461,13 +575,14 @@ final class MovieWriter {
         }
     }
 
-    private func writeAudioToTrack(_ sampleBuffer: CMSampleBuffer, rawPTS: CMTime, from pts: CMTime, to endPTS: CMTime) {
+    private func writeAudioToTrack(_ sampleBuffer: CMSampleBuffer, from pts: CMTime, to endPTS: CMTime) {
         guard sessionStart != nil, let audioInput = audioInput else { return }
         audioFormatDescription = sampleBuffer.formatDescription
         // The writer plays audio buffers back to back whatever their timestamps say. The buffer goes at the end
         // of what was written, and only once that end is where the buffer belongs.
         guard let start = placeSystemAudio(from: pts, to: endPTS) else { return }
-        guard let buffer = MovieWriter.retime(sampleBuffer, by: CMTimeSubtract(rawPTS, start)) else { return }
+        // From the buffer's own timestamp, which is not `pts` when it was given its arrival time
+        guard let buffer = MovieWriter.retime(sampleBuffer, by: CMTimeSubtract(sampleBuffer.presentationTimeStamp, start)) else { return }
         if append(buffer, to: audioInput) {
             let end = CMTimeAdd(start, CMTimeSubtract(endPTS, pts))
             audioEndPTS = end
@@ -490,8 +605,16 @@ final class MovieWriter {
 
     // MARK: - Tracks whose source delivers nothing
 
-    /// Appends silence to the microphone track up to `time`, once at least half a second is missing
+    /// Keeps `videoEnd` at the latest end of a frame written
+    private func noteVideoEnd(_ end: CMTime) {
+        if let known = videoEnd, known >= end { return }
+        videoEnd = end
+    }
+
+    /// Appends silence to the microphone track up to `time`, once at least half a second is missing; never beyond
+    /// a second after the present
     func fillMicrophone(upTo time: CMTime) {
+        let time = notAfterLimit(time)
         guard let converter = micConverter, let micInput = micInput else { return }
         converter.fill(upTo: time, atLeast: Int64(MicConverter.sampleRate / 2)) { append($0, to: micInput) }
         noteEnd(converter.end)
@@ -499,8 +622,9 @@ final class MovieWriter {
 
     /// Appends silence to the system audio from where it ends up to `time`: to the audio track of a video recording,
     /// or to the system audio file of an audio-only recording, which has no timestamps and would otherwise come out
-    /// shorter than the microphone file next to it.
+    /// shorter than the microphone file next to it. Never beyond a second after the present.
     func fillSystemAudio(upTo time: CMTime) {
+        let time = notAfterLimit(time)
         guard let from = audioEndPTS ?? sessionStart else { return }
         let file = audioFile
         let input = audioInput
@@ -544,6 +668,7 @@ final class MovieWriter {
     /// ScreenCaptureKit delivers no frames while the picture does not change (a static slide, a locked or sleeping
     /// display). The last frame is then written again once a second, so the video track keeps up with the audio.
     func repeatVideoFrame(at now: CMTime) {
+        let now = notAfterLimit(now)
         guard let videoInput = videoInput, let last = videoPTS, lastVideoFrame != nil else { return }
         guard CMTimeGetSeconds(CMTimeSubtract(now, last)) > MovieWriter.videoStallSeconds else { return }
         // The frame is going to be used for a while: give its surface back to the stream
@@ -555,6 +680,7 @@ final class MovieWriter {
         guard let again = try? CMSampleBuffer(copying: repeated, withNewTiming: [timing]) else { return }
         if append(again, to: videoInput) {
             videoPTS = time
+            noteVideoEnd(time)
             noteEnd(time)
         }
     }
@@ -571,7 +697,7 @@ final class MovieWriter {
         let writer = self.writer
         if recording.recordMic, let input = micInput {
             // Bring the microphone track to the length of the recording, whatever the microphone delivered
-            if sessionStarted, let end = lastPTS, writer?.status == .writing {
+            if sessionStarted, let end = stopEnd(), writer?.status == .writing {
                 micConverter?.fill(upTo: end) { buffer in
                     var waited = 0
                     while !input.isReadyForMoreMediaData && waited < 200 {
@@ -584,6 +710,10 @@ final class MovieWriter {
             input.markAsFinished()
         }
         if let converter = micConverter { RecLog.write(converter.summary) }
+        for line in [systemRestamps.summary, microphoneRestamps.summary] { if let line = line { RecLog.write(line) } }
+        if futureBuffers > 0 || futureEnds > 0 {
+            RecLog.write("Left out for lying beyond the present: \(futureBuffers) buffers, \(futureEnds) ends")
+        }
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
         audioFile = nil // close audio file
@@ -600,6 +730,16 @@ final class MovieWriter {
         firstFrame = nil
         lastVideoFrame = nil
         return Finished(writer: sessionStarted ? writer : nil, frame: frame, sessionStarted: sessionStarted)
+    }
+
+    /// Where the tracks end when the recording stops: at the end of the video's last frame; without video (or
+    /// before a frame was written), at the latest end on the timeline, but not after the present. Never later: what
+    /// a buffer stamped in the future made the timeline's end must not become silence in the file.
+    func stopEnd() -> CMTime? {
+        if !recording.audioOnly, let video = videoEnd { return video }
+        guard let last = lastPTS else { return nil }
+        if let present = presentOnTimeline(), present < last { return present }
+        return last
     }
 
     // MARK: - Frames

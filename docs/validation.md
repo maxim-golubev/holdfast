@@ -95,7 +95,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 127 tests in under half a minute, without the app, a screen
+`Tools/test.sh` runs 138 tests in under half a minute, without the app, a screen
 or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
@@ -112,6 +112,7 @@ synthetic buffers and read them back.
 | Settings | 7 | Keys, defaults and stored types of earlier installations |
 | Status item | 7 | Every state's symbol, title and sentence, the timer text, the item's width, the call-audio warning |
 | Package | 1 | `.qma` info files of earlier versions |
+| Timestamps and length | 11 | The timeline never past the present: a tap buffer stamped 1100 s in the future near the end of a call recorded at its arrival time (through the writer and through the tap's source), audio stamped 40 s before its arrival, a frame or audio of unknown arrival in the future left out, fills and repeats cut off a second after the present, the stop's padding up to the video's end (sound only: the present), a mix whose audio is over 2 s longer or shorter than its video rejected and the recording kept unmixed |
 | System audio tap | 17 | Build and teardown order against fake Core Audio calls, cleanup after each failed step, the IOProc's stream usage (only the tap's stream), the IOProc's copy (interleaved, non-interleaved, behind other input streams, turned-off streams, malformed lists), nothing handed on once the output device changes its rate, host-time stamps, conversion and resampling to 48 kHz stereo, the choice between tap and screen capture with its notice and warning, rebuilds on device changes with nothing of the old device after the new, retries, no endless rebuild from the tap's own aggregate device, a sound-only file written from the tap's buffers |
 
 ## Not yet checked on the real machine
