@@ -35,8 +35,9 @@ enum RecordingSaver {
             // The reason says it all: what was written is gone with its name, and there is no file to point to
             UserNotice.reportFailure(title: "Recording Stopped Early", message: earlyReason ?? "")
         } else if !taken.sessionStarted && cancelled {
-            // Stopped before the first frame or the first audio arrived. Nothing was lost, so nothing is reported as failed.
-            UserNotice.showNotification(title: "Recording Cancelled", body: "The recording was stopped before anything was recorded.", id: "holdfast.cancelled.\(UUID().uuidString)")
+            // Stopped before the first frame or the first audio arrived. Nothing was lost, so nothing is reported as
+            // failed, and the user who stopped it needs no notification to know.
+            RecLog.write("Recording cancelled: it was stopped before anything was recorded")
         } else if !taken.sessionStarted {
             // Stopped, early or by the user, before the first frame (or the first system audio of an audio-only recording)
             let nothing = recording.audioOnly ? "No audio arrived, so nothing was recorded and no file was kept." : "Nothing was recorded, so no file was kept."
@@ -137,11 +138,10 @@ enum RecordingSaver {
                 leftover = RecordingFileStore.keep(written: raw, as: unmixedURL)
             }
         }
-        if let leftover = leftover {
-            let body = String(format: "The recording was mixed and saved, but its unmixed copy is still at: %@", leftover.path)
-            UserNotice.showNotification(title: "Recording Completed", body: body, id: "holdfast.completed.\(UUID().uuidString)")
-        }
-        present(final, image: frame, recording: recording, earlyReason: earlyReason)
+        // Said in the one notification of the saved recording, when there is one, and in the log
+        let note = leftover.map { String(format: "Its unmixed copy could not be renamed or removed and is still at: %@", $0.path) }
+        if let note { RecLog.write(note) }
+        present(final, image: frame, recording: recording, earlyReason: earlyReason, note: note)
     }
 
     /// What follows an audio-only recording once its files are closed and `file` (the audio file or the package) has
@@ -178,10 +178,11 @@ enum RecordingSaver {
         }
     }
 
-    /// Tells the user where the finished recording is: why it ended early if it did, then its preview, or a
-    /// notification when previews are off, then the trimmer of a video when it opens after every recording. A file
-    /// that is not there is reported instead: the writer kept writing through its open file wherever the save folder went.
-    private static func present(_ url: URL, image: NSImage?, recording: RecordingContext, earlyReason: String?) {
+    /// Tells the user where the finished recording is: why it ended early if it did, then its preview, or else one
+    /// quiet notification when the "Notifications" setting includes finished recordings (with `note` after the
+    /// path), then the trimmer of a video when it opens after every recording. A file that is not there is reported
+    /// instead: the writer kept writing through its open file wherever the save folder went.
+    private static func present(_ url: URL, image: NSImage?, recording: RecordingContext, earlyReason: String?, note: String? = nil) {
         guard fd.fileExists(atPath: url.path) else {
             let reason = earlyReason.map { $0 + " " } ?? ""
             UserNotice.reportFailure(title: earlyReason == nil ? "Recording Not Found" : "Recording Stopped Early", message: reason + movedNote(for: url))
@@ -193,8 +194,10 @@ enum RecordingSaver {
         }
         if recording.showPreview, let image {
             showPreview(url: url, image: image)
-        } else {
-            UserNotice.showNotification(title: "Recording Completed", body: String(format: "File saved to: %@", url.path), id: "holdfast.completed.\(UUID().uuidString)")
+        } else if earlyReason == nil {
+            // After an early stop the report above has said where the recording is
+            let body = String(format: "File saved to: %@", url.path) + (note.map { " " + $0 } ?? "")
+            UserNotice.showNotification(.finished, title: "Recording Completed", body: body, id: "holdfast.completed.\(UUID().uuidString)")
         }
         if recording.trimAfterRecord && !recording.audioOnly {
             AppDelegate.shared.openTrimmer(url)

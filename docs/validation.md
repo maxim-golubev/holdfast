@@ -95,7 +95,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 138 tests in under half a minute, without the app, a screen
+`Tools/test.sh` runs 141 tests in under half a minute, without the app, a screen
 or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.

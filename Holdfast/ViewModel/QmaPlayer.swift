@@ -570,7 +570,7 @@ class AudioPlayerManager: ObservableObject {
             Task { @MainActor in
                 do {
                     try await RecordingSaver.mixPackage(packageURL, info: info, to: output, saveAsMP3: saveAsMP3, replacing: true, audioQuality: AppSettings.audioQuality.rawValue)
-                    UserNotice.showNotification(title: "Recording Exported", body: String(format: "File saved to: %@", output.path), id: "holdfast.completed.\(UUID().uuidString)")
+                    UserNotice.showNotification(.finished, title: "Recording Exported", body: String(format: "File saved to: %@", output.path), id: "holdfast.completed.\(UUID().uuidString)")
                 } catch {
                     UserNotice.reportFailure(title: "Export Failed", message: error.localizedDescription)
                 }

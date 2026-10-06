@@ -272,7 +272,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         KeyboardShortcuts.onKeyDown(for: .saveFrame) {
             withRecorder { recorder in
                 guard recorder.hasStream, let session = recorder.session, !session.savePicture() else { return }
-                UserNotice.showNotification(title: "No Frame to Save", body: "This recording has only audio, so there is no picture to save.", id: "holdfast.frame.\(UUID().uuidString)")
+                UserNotice.showNotification(.problem, title: "No Frame to Save", body: "This recording has only audio, so there is no picture to save.", id: "holdfast.frame.\(UUID().uuidString)")
             }
         }
         KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { [self] in

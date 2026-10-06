@@ -170,7 +170,7 @@ extension RecorderController {
             return (MicrophoneChoice(converter: converter, selection: selected, selectionName: selectedName, captureDeviceID: selected, active: device(selected)), nil)
         }
         let body = String(format: "\"%@\" is not connected. Recording with the default microphone \"%@\" instead.", selectedName, defaultDevice.name)
-        UserNotice.showNotification(title: "Microphone Unavailable", body: body, id: "holdfast.microphone.\(UUID().uuidString)")
+        UserNotice.showNotification(.problem, title: "Microphone Unavailable", body: body, id: "holdfast.microphone.\(UUID().uuidString)")
         return (MicrophoneChoice(converter: converter, selection: selected, selectionName: selectedName, captureDeviceID: nil, active: defaultDevice), nil)
     }
 
@@ -192,9 +192,6 @@ extension RecorderController {
         }
         if case .screenCaptureKit(let reason, _) = route {
             RecLog.write("System audio: screen capture, without call audio (\(reason))")
-            if let notice = SystemAudioSelection.notice(for: route), SystemAudioSelection.notifies(route, once: SystemAudioSelection.callAudioNotice) {
-                UserNotice.showNotification(title: SystemAudioSelection.noticeTitle, body: notice, id: "holdfast.callaudio.\(UUID().uuidString)")
-            }
         }
         // A tap that failed is also shown where the track warnings are, for the whole recording
         if let warning = SystemAudioSelection.warning(for: route) { await session.showNotice(warning) }
@@ -236,6 +233,10 @@ extension RecorderController {
             // is carried out by enterRecording, after everything it undoes has been set up
             session.enterRecording {
                 RecLog.write("Recording started: \(recording.rawURL.lastPathComponent) (\(audioOnly ? "audio only" : "screen"), system audio \(route.name), microphone \(recording.recordMic ? "on" : "off"))")
+                // Only for a recording that runs without the tap, once while the app runs
+                if let notice = SystemAudioSelection.notice(for: route), SystemAudioSelection.notifies(route, once: SystemAudioSelection.callAudioNotice) {
+                    UserNotice.showNotification(.problem, title: SystemAudioSelection.noticeTitle, body: notice, id: "holdfast.callaudio.\(UUID().uuidString)")
+                }
                 if !audioOnly { AppDelegate.shared.startRecordingMouseMonitor() }
                 if recording.preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
                 if recording.recordMic { MicDevices.recordingStarted() }
@@ -284,7 +285,7 @@ extension RecorderEnvironment {
             await RecordingSaver.save(session, recording: recording, taken: taken, earlyReason: earlyReason, cancelled: cancelled)
         }
         app.notify = { title, body in
-            UserNotice.showNotification(title: title, body: body, id: "holdfast.watchdog.\(UUID().uuidString)")
+            UserNotice.showNotification(.problem, title: title, body: body, id: "holdfast.watchdog.\(UUID().uuidString)")
         }
         app.savePicture = { frame, directory in savePicture(of: frame, in: directory ?? AppSettings.saveDirectory) }
         app.report = { title, message in UserNotice.reportFailure(title: title, message: message) }
@@ -326,7 +327,7 @@ extension RecorderEnvironment {
             try png.write(to: url, options: .withoutOverwriting)
         } catch {
             print("Failed to save a frame: \(error)")
-            UserNotice.showNotification(title: "Frame Not Saved", body: String(format: "The frame could not be saved as %@: %@", url.path, error.localizedDescription), id: "holdfast.frame.\(UUID().uuidString)")
+            UserNotice.showNotification(.problem, title: "Frame Not Saved", body: String(format: "The frame could not be saved as %@: %@", url.path, error.localizedDescription), id: "holdfast.frame.\(UUID().uuidString)")
         }
     }
 }

@@ -21,8 +21,8 @@ it: Holdfast then records system audio through a Core Audio process tap, which
 hears FaceTime calls and phone calls taken on the Mac. Screen capture's own
 system audio leaves those out. If you don't allow it, the recording still has
 system audio, from screen capture, and a notification, **Call Audio Not
-Included**, says once while Holdfast runs that the other side of a FaceTime or
-phone call will be missing. To change your answer later, turn Holdfast on under
+Included**, says once while Holdfast runs, when such a recording has started,
+that the other side of a FaceTime or phone call will be missing. To change your answer later, turn Holdfast on under
 **System Settings → Privacy & Security → Screen & System Audio Recording →
 System Audio Recording Only**; it applies from the next recording.
 
@@ -103,7 +103,8 @@ while recording.
 ## The microphone warning and mute
 
 Holdfast watches its tracks while it records. Any of these turns the item into
-the orange triangle, posts a notification, and writes a line in the log:
+the orange triangle, with the problem in the menu's status line, and writes a
+line in the log:
 
 - **Microphone Is Not Being Recorded:** no audio from the microphone for 5
   seconds, or nothing but digital silence for 20 seconds.
@@ -113,13 +114,17 @@ the orange triangle, posts a notification, and writes a line in the log:
   audio before it is not in it.
 
 The recording goes on, with silence in place of the missing audio, so the
-tracks stay in step. While the warning is up, it is also shown in a small panel
-at the top right of the screen with the pointer, over every app and every
-Space, a full-screen meeting included: the meeting hides the menu bar, and
-macOS holds back notifications while the screen is shared. The panel is not
-captured in the recording. Its close button hides it until the warning
-changes. When the audio is back, a second notification says so and the warning
-clears.
+tracks stay in step. A short problem stays in the menu bar: a call app taking
+the microphone for a few seconds, for example, turns the item orange until the
+audio is back, and nothing else. A problem that has lasted 15 seconds (counted
+from when the audio stopped, so 10 seconds after the item turned orange; at
+once for 20 seconds of digital silence) also posts one notification and is
+shown in a small panel at the top right of the screen with the pointer, over
+every app and every Space, a full-screen meeting included: the meeting hides
+the menu bar, and macOS holds back notifications while the screen is shared.
+The panel is not captured in the recording. Its close button hides it until the
+warning changes. When the audio is back, the warning clears, and a second
+notification says so if the first one was posted.
 
 **Mute Microphone** (menu, shortcut, or `mute microphone`) records silence in
 place of the microphone until you unmute; the track stays as long as the
@@ -138,9 +143,10 @@ macOS refuses is tried again three times, two seconds apart.
 recording`, or the timer all stop the same way. The item says **Saving** while
 the file is closed and its audio mixed; for a long meeting the mix takes a while,
 with its percentage in the menu. Then a preview of the recording appears at the
-bottom right of the screen for a few seconds (click it to open the file), or,
-with **Settings → Output → Show a Preview** off, a **Recording Completed**
-notification.
+bottom right of the screen for a few seconds (click it to open the file). With
+**Settings → Output → Show a Preview** off, the item simply goes back to idle;
+with **Notifications** set to **Problems and Finished Recordings** a quiet
+**Recording Completed** notification (no sound) says where the file is.
 
 Quitting during a recording (from the Dock, at logout, or with `kill`) stops it
 and quits only once the final file is there. So does quitting while a recording
@@ -152,9 +158,9 @@ written, its file or folder was deleted, or the capture ended. What was recorded
 up to then is kept, unless its file was deleted. A recording is not started
 with less than 2 GB free.
 
-A stop within 3 seconds of the start that recorded nothing is reported as
-**Recording Cancelled**; any other stop before the first picture is **Recording
-Not Saved**, and no empty file is left.
+A stop within 3 seconds of the start that recorded nothing is a cancelled start:
+no file, no message, a line in the log. Any other stop before the first picture
+is **Recording Not Saved**, and no empty file is left.
 
 ## Files
 
@@ -217,7 +223,19 @@ on, a mixed audio file next to it.
 - **Output:** **Save Folder**, **Show a Preview**, and **Recordings Log**, which
   opens the log.
 - **General:** **Show in the Menu Bar**, **Launch at Login** (the panel does not
-  open at login), **Countdown Before a Recording**.
+  open at login), **Countdown Before a Recording**, and **Notifications**:
+  - **Problems Only** (the default): a track problem that has lasted 15
+    seconds and its end, a failure, a microphone that is not connected, call
+    audio not included.
+  - **Problems and Finished Recordings**: also one quiet notification when a
+    recording is saved and no preview shows it, and when a clip or an export
+    is saved.
+  - **None**: no notifications. Problems still turn the menu bar item orange
+    and, after 15 seconds, show the panel on screen; failures still show an
+    alert.
+
+  Routine events (permission answers, the start, tap rebuilds, device
+  switches) are only in the log.
 
 ## AppleScript
 
@@ -276,12 +294,12 @@ track, and the tap is tried again when the output device changes.
 
 When the tap cannot be used (no permission, or macOS refuses it), the system
 audio comes from screen capture for that recording, as before, without call
-audio, and the log says why. Without the permission, the **Call Audio Not
-Included** notification comes once while Holdfast runs. When the tap fails
-although it is allowed, every such recording posts that notification and
-shows **Call audio is not being recorded** as its warning for as long as it
-runs: in the menu bar and on screen, like a track warning, so you see it
-during the meeting even while sharing your screen.
+audio, and the log says why. The **Call Audio Not Included** notification
+comes once while Holdfast runs, for the first recording that started that way.
+When the tap fails although it is allowed, the recording also shows **Call
+audio is not being recorded** as its warning for as long as it runs: in the
+menu bar and on screen, so you see it during the meeting even while sharing
+your screen.
 
 The tap records everything the Mac plays, whatever the recording shows: an
 **Application** or **Window** recording has the sound of every app, its

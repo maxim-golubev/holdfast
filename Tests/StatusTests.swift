@@ -72,7 +72,10 @@ func statusTests() async {
         expectEqual(display.line, "System audio is not being recorded — microphone muted", "the warning is the status line, and the mute is not forgotten")
         expectEqual(display.detail, display.line, "and the tooltip")
         expectEqual(display.title, "1:07:05", "with the time")
-        expectEqual(display.banner, "System audio is not being recorded.", "and is shown on screen over every app")
+        expectEqual(display.banner, nil, "not on screen while it is short")
+        input.onScreen = "System audio is not being recorded"
+        display = StatusDisplay(input)
+        expectEqual(display.banner, "System audio is not being recorded.", "one that has lasted is shown on screen over every app")
         input.isMicrophoneMuted = false
         expectEqual(StatusDisplay(input).line, "System audio is not being recorded", "the warning alone")
 
@@ -98,8 +101,11 @@ func statusTests() async {
         input.warning = "Microphone is not being recorded"
         display = StatusDisplay(input)
         expectEqual(display.line, "Microphone is not being recorded", "a track warning comes first")
-        expectEqual(display.banner, "Microphone is not being recorded.", "also on screen")
+        expectEqual(display.banner, "Call audio is not being recorded.", "on screen only once it has lasted")
+        input.onScreen = input.warning
+        expectEqual(StatusDisplay(input).banner, "Microphone is not being recorded.", "then it is shown there instead")
         input.warning = nil
+        input.onScreen = nil
         input.isMicrophoneMuted = true
         expectEqual(StatusDisplay(input).line, "Call audio is not being recorded — microphone muted", "the mute is not forgotten")
         input.isPaused = true

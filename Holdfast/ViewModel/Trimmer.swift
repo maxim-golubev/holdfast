@@ -112,7 +112,7 @@ class TrimmerModel: NSObject, ObservableObject {
         Task { @MainActor in
             do {
                 try await exportSession.export(to: output, as: fileType)
-                UserNotice.showNotification(title: "Clip Saved", body: String(format: "File saved to: %@", output.path), id: "holdfast.completed.\(UUID().uuidString)")
+                UserNotice.showNotification(.finished, title: "Clip Saved", body: String(format: "File saved to: %@", output.path), id: "holdfast.completed.\(UUID().uuidString)")
             } catch {
                 try? fd.removeItem(at: output)
                 UserNotice.showAlertLater(title: "Clip Not Saved", message: String(format: "The trimmed clip of %@ could not be written: %@ The recording itself is unchanged.", fileUrl.lastPathComponent, error.localizedDescription))

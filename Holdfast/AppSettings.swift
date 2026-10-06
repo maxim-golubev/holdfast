@@ -103,6 +103,9 @@ enum AppSettings {
     @Setting("preventSleep", default: true) static var preventSleep: Bool
     @Setting("showPreview", default: true) static var showPreview: Bool
     @Setting("trimAfterRecord", default: false) static var trimAfterRecord: Bool
+    /// Which notifications are posted (`Notifications.posts`). Problems are shown in the menu bar, and on screen once
+    /// they have lasted a while, whatever this says.
+    @Setting("notifications", default: .problems) static var notifications: Notifications
     /// The folder recordings are written to
     @Setting("saveDirectory", default: NSSearchPathForDirectoriesInDomains(.desktopDirectory, .userDomainMask, true).first ?? (NSHomeDirectory() + "/Desktop"))
     static var saveDirectory: String
@@ -182,6 +185,41 @@ struct AppInfo: Hashable, Codable {
     /// What the settings show: earlier versions stored the app's file name ("zoom.us.app"), shown without ".app"
     var name: String {
         return displayName.hasSuffix(".app") ? String(displayName.dropLast(4)) : displayName
+    }
+}
+
+/// Which notifications Holdfast posts: the "Notifications" setting
+enum Notifications: String, CaseIterable {
+    /// A problem that lasts (`RecordingMonitor.announceSeconds`), a failure, a microphone that is not there
+    case problems
+    /// Those, and a quiet one when a recording or an export is saved and no preview shows it
+    case problemsAndFinished
+    /// None at all ("None"). Problems are still shown in the menu bar and on screen, and failures in an alert.
+    case off
+
+    /// What a notification is about
+    enum Kind {
+        /// Something the user has to know or act on
+        case problem
+        /// A recording or an export was saved: posted without a sound
+        case finished
+    }
+
+    func posts(_ kind: Kind) -> Bool {
+        switch self {
+        case .problems: return kind == .problem
+        case .problemsAndFinished: return true
+        case .off: return false
+        }
+    }
+
+    /// In the settings
+    var title: String {
+        switch self {
+        case .problems: return "Problems Only"
+        case .problemsAndFinished: return "Problems and Finished Recordings"
+        case .off: return "None"
+        }
     }
 }
 

@@ -160,7 +160,7 @@ enum MicDevices {
         if announce && selection != "default" && !selectedIsPresent {
             // The microphone this recording was started with, whatever the setting says now
             let body = String(format: "\"%@\" is not connected any more. Recording continues with the default microphone \"%@\".", capture.micSelectionName, wantedName)
-            UserNotice.showNotification(title: "Microphone Unavailable", body: body, id: "holdfast.microphone.\(UUID().uuidString)")
+            UserNotice.showNotification(.problem, title: "Microphone Unavailable", body: body, id: "holdfast.microphone.\(UUID().uuidString)")
         }
         capture.applyConfiguration { error in
             guard let error = error else {

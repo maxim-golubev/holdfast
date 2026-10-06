@@ -27,6 +27,7 @@ func settingsTests() async {
         check(AppSettings.$preventSleep, "preventSleep", true)
         check(AppSettings.$showPreview, "showPreview", true)
         check(AppSettings.$trimAfterRecord, "trimAfterRecord", false)
+        check(AppSettings.$notifications, "notifications", .problems)
         check(AppSettings.$hideSelf, "hideSelf", true)
         check(AppSettings.$includeMenuBar, "includeMenuBar", true)
         check(AppSettings.$hideCCenter, "hideCCenter", false)
@@ -59,6 +60,7 @@ func settingsTests() async {
         expectEqual([AudioFormat.aac, .alac, .flac, .opus, .mp3].map(\.rawValue), ["aac", "alac", "flac", "opus", "mp3"], "audio formats")
         expectEqual([VideoFormat.mov, .mp4].map(\.rawValue), ["mov", "mp4"], "video formats")
         expectEqual([Encoder.h264, .h265].map(\.rawValue), ["h264", "h265"], "encoders")
+        expectEqual(Notifications.allCases.map(\.rawValue), ["problems", "problemsAndFinished", "off"], "notification choices")
     }
 
     await test("Settings: nothing stored reads as the default") {
@@ -72,6 +74,7 @@ func settingsTests() async {
             expectEqual(AppSettings.audioFormat, .aac, "audioFormat")
             expectEqual(AppSettings.audioQuality, .high, "audioQuality")
             expectEqual(AppSettings.encoder, Encoder.preferred, "encoder")
+            expectEqual(AppSettings.notifications, .problems, "notifications: problems only")
             expectEqual(AppSettings.saveDirectory, AppSettings.$saveDirectory.fallback, "saveDirectory")
             expectEqual(AppSettings.micName, "default", "micName")
             expectEqual(AppSettings.micDeviceID, "default", "micDeviceID")

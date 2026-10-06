@@ -68,16 +68,17 @@ Most of the work went into five problems:
   audio track, the same length to within a second, and the microphone audible
   in the mix wherever it was alone in the recording. On any failure the
   two-track recording is what you get, with a report saying where it is.
-- **A dead track must be seen during the meeting.** No microphone audio for 5
-  seconds, only digital zeros for 20, or no system audio for 5 turns the menu
-  bar item into a warning, shows it in a small panel over every app (a
+- **A dead track must be seen during the meeting, a hiccup must not interrupt
+  it.** No microphone audio for 5 seconds, only digital zeros for 20, or no
+  system audio for 5 turns the menu bar item into a warning. Once the problem
+  has lasted 15 seconds it is also shown in a small panel over every app (a
   full-screen meeting hides the menu bar, and macOS holds back notifications
-  while the screen is shared), and posts a notification; another when the
-  audio is back.
+  while the screen is shared) and posted as one notification; another when the
+  audio is back. Routine events go to the log only.
 
 One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
-final file. 138 tests run in under half a minute without the app, a screen, or
+final file. 141 tests run in under half a minute without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 

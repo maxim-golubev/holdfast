@@ -322,6 +322,7 @@ struct GeneralSettings: View {
     @AppStorage(AppSettings.$showOnDock)  private var showOnDock: Bool
     @AppStorage(AppSettings.$showMenubar) private var showMenubar: Bool
     @AppStorage(AppSettings.$countdown)   private var countdown: Int
+    @AppStorage(AppSettings.$notifications) private var notifications: Notifications
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -342,6 +343,14 @@ struct GeneralSettings: View {
                 } label: {
                     RowLabel("Countdown Before a Recording", "Seconds counted down on screen after Start. A recording started directly by a shortcut begins at once.")
                 }
+            }
+            Section("Notifications") {
+                Picker(selection: $notifications) {
+                    ForEach(Notifications.allCases, id: \.self) { Text($0.title).tag($0) }
+                } label: {
+                    RowLabel("Notifications", "A problem during a recording is notified once it has lasted 15 seconds, and then also shown on screen over every app; a shorter one only turns the menu bar item orange. Finished recordings are notified quietly, and only when no preview shows them. With None, problems are still shown in the menu bar and on screen.")
+                }
+                .help("Which notifications Holdfast posts")
             }
             Section("About") {
                 if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {

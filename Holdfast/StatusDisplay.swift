@@ -29,6 +29,8 @@ struct StatusDisplay: Equatable {
         /// `RecordingSession.Health.micSilent`
         var micSilent: Bool?
         var warning: String?
+        /// `RecordingSession.Health.onScreen`: the part of `warning` that is also shown on screen
+        var onScreen: String?
         /// `RecordingSession.Health.notice`: shown like a warning while no warning is up
         var notice: String?
         var mixProgress: Double?
@@ -49,8 +51,9 @@ struct StatusDisplay: Equatable {
     let line: String
     /// The tooltip: the line, or more about it
     let detail: String
-    /// The warning of a running recording, also shown on screen over every app while it is up (`WarningPanel`): a
-    /// full-screen meeting hides the menu bar, and notifications may not show while the display is captured
+    /// The warning of a running recording that has lasted (`RecordingMonitor.announceSeconds`), or else its notice,
+    /// shown on screen over every app while it is up (`WarningPanel`): a full-screen meeting hides the menu bar, and
+    /// notifications may not show while the display is captured. A shorter problem is only the status item's.
     private(set) var banner: String?
 
     init(_ input: Input) {
@@ -78,7 +81,7 @@ struct StatusDisplay: Equatable {
             } else if let warning = input.warning ?? input.notice {
                 kind = .warning
                 line = input.isMicrophoneMuted ? warning + " — " + microphone : warning
-                banner = warning + "."
+                banner = (input.onScreen ?? input.notice).map { $0 + "." }
             } else {
                 kind = input.isMicrophoneMuted ? .muted : .recording
                 line = "Recording" + " — " + microphone
@@ -178,7 +181,7 @@ extension RecorderController {
     /// What the status item shows of the recorder now
     var statusInput: StatusDisplay.Input {
         return StatusDisplay.Input(state: state, isPaused: isPaused, hasMicrophone: session?.hasMicrophone ?? false,
-                                   isMicrophoneMuted: isMicrophoneMuted, micSilent: health.micSilent, warning: health.warning, notice: health.notice,
+                                   isMicrophoneMuted: isMicrophoneMuted, micSilent: health.micSilent, warning: health.warning, onScreen: health.onScreen, notice: health.notice,
                                    mixProgress: health.mixProgress, isRecovering: recovery.isRunning,
                                    recoveryProgress: recovery.progress, isExporting: exportsRunning > 0, isQuitting: quitRequested,
                                    length: recordingLength())

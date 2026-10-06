@@ -69,8 +69,10 @@ extension MovieWriter: RecordingWriter {}
 final class RecordingSession: @unchecked Sendable {
     /// What the status bar shows about the recording besides its state
     struct Health: Equatable {
-        /// Set while a track is not being recorded
+        /// Set while a track is not being recorded: the status item shows it
         var warning: String?
+        /// The part of `warning` that has lasted `RecordingMonitor.announceSeconds`: also shown on screen
+        var onScreen: String?
         /// A warning that stays for the whole recording (its system audio comes without call audio), shown when
         /// `warning` is not
         var notice: String?
@@ -158,11 +160,12 @@ final class RecordingSession: @unchecked Sendable {
         self.statusChanged = statusChanged
         monitor = RecordingMonitor(queue: queue)
         monitor.notify = environment.notify
-        monitor.show = { [weak self] warning, silent in
+        monitor.show = { [weak self] display in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                self.health.warning = warning
-                self.health.micSilent = silent
+                self.health.warning = display.warning
+                self.health.onScreen = display.onScreen
+                self.health.micSilent = display.micSilent
                 self.statusChanged(self)
             }
         }

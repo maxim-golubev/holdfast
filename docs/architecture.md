@@ -53,7 +53,7 @@ Holdfast/
   StatusDisplay.swift       Pure table from the recorder's state to the status item's symbol, title and sentence.
   AppSettings.swift         Every setting, one line each, the only code that touches UserDefaults.
   ScreenContent.swift       Screens, windows and applications from ScreenCaptureKit, and the permission.
-  UserNotice.swift          Alerts and notifications; reportFailure.
+  UserNotice.swift          Alerts and notifications (posted only as the Notifications setting allows); reportFailure.
   HoldfastApp.swift         AppDelegate: launch, shortcuts, quitting, SIGTERM.
   Supports/                 RecLog (the recordings log), DiskSpace, SleepPreventer, the AppleScript commands and
                             their dictionary, window identifiers, the window picker's highlight.
@@ -253,13 +253,15 @@ play later.
   uses the TCC framework's own `TCCAccessPreflight` and `TCCAccessRequest` when
   they are there. `start` asks before anything starts when it is not
   determined, like the microphone. Denied or unanswered, the recording uses
-  ScreenCaptureKit's audio, logs why and posts "Call Audio Not Included" once
-  while the app runs; when the state cannot be read the tap is tried and its
-  failure decides. A tap that fails although allowed posts the notice for
-  every recording it happens to, and the recording shows "Call audio is not
-  being recorded" as its warning for as long as it runs (`Health.notice`,
-  under any track warning: status line and warning panel), since banners are
-  held back while the screen is shared.
+  ScreenCaptureKit's audio and logs why; when the state cannot be read the tap
+  is tried and its failure decides. "Call Audio Not Included" is posted once
+  while the app runs (`SystemAudioSelection.notifies`, `callAudioNotice`), from
+  `enterRecording`, so only for a recording that actually started without the
+  tap, whether the tap failed or was not allowed. A tap that fails although
+  allowed also makes the recording show "Call audio is not being recorded" as
+  its warning for as long as it runs (`Health.notice`, under any track warning:
+  status line and warning panel), since banners are held back while the screen
+  is shared.
 - **Not yet verified on a real call.** Whether the tap hears a FaceTime call is
   checked with `Tools/tapprobe` (modes `global` and `calls`, the latter only
   `avconferenced`); that has not been done yet.
@@ -395,10 +397,15 @@ up may be queued behind it, yet a timer that is always late must still fill and
 warn. After a resume it waits one tick for the first buffer.
 
 It is also the watchdog. No microphone audio written for 5 s, only exact zeros
-for 20 s, or no system audio for 5 s posts one notification, sets the
-session's warning (the status item and `WarningPanel` show it), and writes a
-log line; when audio is back, a second notification and the warning clears. A
-muted microphone raises no warning. It hears through the writer's
+for 20 s, or no system audio for 5 s (no first frame 5 s after the start) sets
+the session's warning, which the status item shows, and writes a log line.
+Only a problem that has lasted `announceSeconds` (15 s, counted from the last
+audio written, or from the start) is notified, once, and put in
+`Health.onScreen`, which `WarningPanel` shows; when audio is back the warning
+clears, and the "back" notification is posted only for a problem that was
+notified (the log has both either way). A call app that takes the microphone
+for a few seconds is therefore an orange item and nothing more. A muted
+microphone raises no warning. It hears through the writer's
 `microphoneWritten` and `systemAudioWritten` events, so it reports what reached
 the file, not what was delivered.
 
@@ -517,9 +524,11 @@ on an item that just replaced another. The record symbol is drawn by the item
 itself, on the pixel grid; every symbol beside a title is centred on the
 middle of the timer digits.
 
-While a warning is up, `WarningPanel` shows it at the top right of the screen
-with the pointer: on every Space, at status bar level, never key, and excluded
-from screen capture (`sharingType = .none`), so it is not in the recording.
+While a warning that has lasted 15 s is up (`StatusDisplay.banner`, from
+`Health.onScreen`, else the recording's notice), `WarningPanel` shows it at the
+top right of the screen with the pointer: on every Space, at status bar level,
+never key, and excluded from screen capture (`sharingType = .none`), so it is
+not in the recording.
 
 ## Tests
 
@@ -549,7 +558,7 @@ written, and the log is kept in memory.
 | Audio gap tolerance | `MovieWriter.gapTolerance`, `MicConverter` | 0.1 s |
 | Microphone drop limit | `MicConverter.longestDrop` | 1 s in a row, then shift |
 | Silence per buffer | `MicConverter.longestFill` | 10 s |
-| Watchdog | `RecordingMonitor` | 5 s without audio, 20 s of zeros, 5 s without a first frame |
+| Watchdog | `RecordingMonitor` | 5 s without audio, 20 s of zeros, 5 s without a first frame: status item; 15 s (`announceSeconds`): notification and on-screen panel |
 | Capture stop wait | `RecordingSession.stopCapture` | 5 s |
 | Mix stall limit | `RecordingMixer.stallLimit` | 60 s |
 | Mix check | `RecordingMixer.verify` | audio within 2 s of the video (12 s shorter for a leftover never closed); length within 1 s; 30 windows; silence below -60 dBFS |

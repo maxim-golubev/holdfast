@@ -54,8 +54,8 @@ enum TapPermission: Equatable {
 enum SystemAudioSelection {
     /// The title of the notice when the tap is not used
     static let noticeTitle = "Call Audio Not Included"
-    /// A recording without the tap because it is not allowed is notified once while the app runs; every recording
-    /// without the tap says why in the log
+    /// A recording without the tap is notified once while the app runs, whether the tap failed or was not allowed;
+    /// every recording without the tap says why in the log
     static let callAudioNotice = NoticeOnce()
     /// The status line and on-screen warning of a recording whose tap failed
     static let tapFailedWarning = "Call audio is not being recorded"
@@ -87,12 +87,12 @@ enum SystemAudioSelection {
         return "System audio is recorded through screen capture, which leaves out the audio of FaceTime calls and of phone calls taken on this Mac: the other side of such a call will not be in the recording. " + reason
     }
 
-    /// Whether the notice is posted for this recording: for every one whose tap failed, since call audio is then
-    /// missing although it was allowed; once while the app runs (`once`) when the tap is not allowed, the user's own
-    /// answer
+    /// Whether the notice is posted for this recording, which runs on `route`: only when it records without the tap,
+    /// and then once while the app runs (`once`). A recording whose tap failed also shows it for as long as it runs
+    /// (`warning`), so later ones are not missed without a notification of their own.
     static func notifies(_ route: SystemAudioRoute, once: NoticeOnce) -> Bool {
-        guard case .screenCaptureKit(_, let tapFailed) = route else { return false }
-        return tapFailed || once.take()
+        guard case .screenCaptureKit = route else { return false }
+        return once.take()
     }
 
     /// What the recording shows for as long as it runs, in its status line and on screen like a track warning, when

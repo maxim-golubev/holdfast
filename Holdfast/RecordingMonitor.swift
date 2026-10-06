@@ -12,30 +12,51 @@ import Foundation
 /// It has the recording's writer keep every track of the file advancing when its source delivers nothing:
 /// silence for the microphone and for system audio, the last frame again for video. A track that stops would hold back the fragments of all the others
 /// and leave a hole that players handle badly. It is also the watchdog that tells the user while a source is not
-/// being recorded. Everything here is only used on the sample queue; the methods the session calls and the timer trap elsewhere.
+/// being recorded: a problem shows in the status item at once, and only one that lasts `announceSeconds` is notified
+/// and shown on screen, so that a call app taking the microphone for a few seconds interrupts nobody. Everything
+/// here is only used on the sample queue; the methods the session calls and the timer trap elsewhere.
 final class RecordingMonitor {
     static let interval: Double = 0.5
     /// How long a source may deliver nothing before its track is continued without it. The tracks are filled up to
     /// this far behind the present, so that a buffer which is merely late still fits.
     static let gapSeconds: Double = 1
-    /// How long a source may deliver nothing before the user is warned
+    /// How long a source may deliver nothing before the status item shows it as a problem (and the log has it)
     static let silentSeconds: Double = 5
-    /// How long the microphone may deliver nothing but zeros before the user is warned
+    /// How long the microphone may deliver nothing but zeros before that
     static let zeroSeconds: Double = 20
+    /// How long a problem must have lasted before it is notified and shown on screen, over every app. A shorter
+    /// one is only the status item's warning while it lasts, and its end is notified only when it was.
+    static let announceSeconds: Double = 15
+
+    /// What the status item and the on-screen warning show
+    struct Display: Equatable {
+        /// Every problem there is now, as one status line
+        var warning: String?
+        /// The problems among them that have lasted `announceSeconds`: shown on screen
+        var onScreen: String?
+        /// Nil without a microphone track; true while it delivers nothing or digital silence
+        var micSilent: Bool?
+    }
+
+    /// A problem that is up: its status line, and whether it was notified
+    private struct Problem {
+        let line: String
+        var announced = false
+    }
 
     private let queue: DispatchQueue
-    /// A problem began or is over: title and text of the notification. Called on the sample queue.
-    var notify: (String, String) -> Void = { _, _ in }
-    /// What the status bar shows changed: the warning, and whether the microphone is silent (nil without one).
+    /// A problem has lasted `announceSeconds`, or such a problem is over: title and text of the notification.
     /// Called on the sample queue.
-    var show: (String?, Bool?) -> Void = { _, _ in }
+    var notify: (String, String) -> Void = { _, _ in }
+    /// What the status bar and the on-screen warning show changed. Called on the sample queue.
+    var show: (Display) -> Void = { _ in }
     /// The writer of the recording, while it is being watched
     private var writer: RecordingWriter?
     private var timer: DispatchSourceTimer?
     private var lastTick: UInt64 = 0
     /// When the monitor was started, which is when the capture began to run
     private var started: UInt64 = 0
-    private var startWarning: String?
+    private var startProblem: Problem?
     private var skippedLateTick = false
     /// A resumed recording continues at the first buffer that arrives. Only when none has arrived a whole tick later
     /// does the monitor continue it.
@@ -46,10 +67,9 @@ final class RecordingMonitor {
     private var micPeak: Float = 0
     /// End of the last system audio that ScreenCaptureKit delivered and that was written
     private var audioHeard: CMTime?
-    private var micWarning: String?
-    private var audioWarning: String?
-    private var shownWarning: String?
-    private var shownSilent: Bool?
+    private var micProblem: Problem?
+    private var audioProblem: Problem?
+    private var shown = Display()
 
     init(queue: DispatchQueue) {
         self.queue = queue
@@ -84,16 +104,16 @@ final class RecordingMonitor {
         writer = nil
         lastTick = 0
         started = 0
-        startWarning = nil
+        startProblem = nil
         skippedLateTick = false
         resumeWaited = false
         micHeard = nil
         micSound = nil
         micPeak = 0
         audioHeard = nil
-        micWarning = nil
-        audioWarning = nil
-        show(warning: nil, silent: nil)
+        micProblem = nil
+        audioProblem = nil
+        update(Display())
     }
 
     /// The recording was paused or resumed: after a resume the monitor waits a tick for the first buffer again
@@ -133,20 +153,19 @@ final class RecordingMonitor {
             // The file starts with the first complete picture (the first system audio of an audio-only recording),
             // and all audio that arrives before it is left out. When that takes this long it may never come, a
             // window that is minimized or a display that is asleep for example, and the user must know.
+            let waited = started != 0 && uptime >= started ? Double(uptime - started) / 1_000_000_000 : 0
             var problem: String?
-            if started != 0, uptime >= started, Double(uptime - started) / 1_000_000_000 > silentSeconds {
+            if waited > silentSeconds {
                 problem = recording.audioOnly
                     ? "No system audio has arrived since the recording was started, so nothing has been recorded so far."
                     : "No picture has arrived from the screen or window since the recording was started, so nothing has been recorded so far, audio included. Check that the window is visible and the display is awake."
             }
-            report(problem, was: startWarning, title: startTitle, backTitle: "", backBody: "")
-            startWarning = problem
-            if problem != nil { show(warning: "Nothing is being recorded yet", silent: nil) }
+            startProblem = report(problem, lasted: waited, line: "Nothing is being recorded yet", was: startProblem, title: startTitle, backTitle: "", backBody: "")
+            update(display([startProblem], micSilent: nil))
             return
         }
-        if startWarning != nil {
-            report(nil, was: startWarning, title: startTitle, backTitle: "Recording Started", backBody: "The recording has started now. What came before is not in it.")
-            startWarning = nil
+        if startProblem != nil {
+            startProblem = report(nil, lasted: 0, line: "", was: startProblem, title: startTitle, backTitle: "Recording Started", backBody: "The recording has started now. What came before is not in it.")
         }
         guard let anchor = writer.clockAnchor, uptime >= anchor.uptime else { return }
         // After the process was held up, the buffers that piled up may still be waiting behind this tick. Judging the
@@ -178,58 +197,75 @@ final class RecordingMonitor {
         writer.repeatVideoFrame(at: now)
         guard writer.isCapturing else { return }
 
-        var micProblem: String?
         var micSilent: Bool?
         if writer.hasMicrophoneTrack, writer.isMicrophoneMuted {
             // Silence the user asked for is no problem to report. The time muted does not count towards a
             // warning afterwards either, and a warning that was up goes without a "Microphone Is Back".
             micHeard = now
             micSound = now
-            micWarning = nil
+            if micProblem != nil { RecLog.write("Microphone muted: its warning goes") }
+            micProblem = nil
             micPeak = 0
             micSilent = true
         } else if writer.hasMicrophoneTrack {
-            if seconds(from: micHeard ?? sessionStart, to: now) > silentSeconds {
-                micProblem = String(format: "No audio has arrived from the microphone for %d seconds. The recording continues with silence in its place until the microphone comes back.", Int(silentSeconds))
-            } else if seconds(from: micSound ?? sessionStart, to: now) > zeroSeconds {
-                micProblem = String(format: "The microphone has delivered nothing but silence for %d seconds. Check that it is not muted or in use by another app.", Int(zeroSeconds))
+            var problem: String?
+            var lasted: Double = 0
+            let unheard = seconds(from: micHeard ?? sessionStart, to: now)
+            let unsounded = seconds(from: micSound ?? sessionStart, to: now)
+            if unheard > silentSeconds {
+                lasted = unheard
+                problem = String(format: "No audio has arrived from the microphone for %d seconds. The recording continues with silence in its place until the microphone comes back.", Int(unheard))
+            } else if unsounded > zeroSeconds {
+                lasted = unsounded
+                problem = String(format: "The microphone has delivered nothing but silence for %d seconds. Check that it is not muted or in use by another app.", Int(unsounded))
             }
+            micProblem = report(problem, lasted: lasted, line: "Microphone is not being recorded", was: micProblem, title: "Microphone Is Not Being Recorded",
+                                backTitle: "Microphone Is Back", backBody: "Microphone audio is being recorded again.")
             // Nothing, or nothing but digital zeros, since the last tick
             micSilent = micPeak == 0
             micPeak = 0
         }
-        var audioProblem: String?
-        if hasSystemAudio, seconds(from: audioHeard ?? sessionStart, to: now) > silentSeconds {
-            audioProblem = String(format: "No system audio has arrived for %d seconds. The recording continues with silence in its place until it comes back.", Int(silentSeconds))
+        var problem: String?
+        let unheard = seconds(from: audioHeard ?? sessionStart, to: now)
+        if hasSystemAudio, unheard > silentSeconds {
+            problem = String(format: "No system audio has arrived for %d seconds. The recording continues with silence in its place until it comes back.", Int(unheard))
         }
-        report(micProblem, was: micWarning, title: "Microphone Is Not Being Recorded",
-               backTitle: "Microphone Is Back", backBody: "Microphone audio is being recorded again.")
-        micWarning = micProblem
-        report(audioProblem, was: audioWarning, title: "System Audio Is Not Being Recorded",
-               backTitle: "System Audio Is Back", backBody: "System audio is being recorded again.")
-        audioWarning = audioProblem
-        // The status line is a sentence, the notifications have titles
-        var warning: String?
-        if micProblem != nil { warning = "Microphone is not being recorded" }
-        if audioProblem != nil { warning = (warning.map { $0 + ". " } ?? "") + "System audio is not being recorded" }
-        show(warning: warning, silent: micSilent)
+        audioProblem = report(problem, lasted: unheard, line: "System audio is not being recorded", was: audioProblem, title: "System Audio Is Not Being Recorded",
+                              backTitle: "System Audio Is Back", backBody: "System audio is being recorded again.")
+        update(display([micProblem, audioProblem], micSilent: micSilent))
     }
 
-    /// One notification when a problem starts and one when it is over
-    private func report(_ problem: String?, was previous: String?, title: String, backTitle: String, backBody: String) {
-        if let problem = problem, previous == nil {
-            RecLog.write("\(title): \(problem)")
+    /// The problem that is up after this tick. `problem` is the text of its notification, nil when there is none
+    /// (any more); `lasted` how long it has been going on. The log has every problem when it begins and ends; the
+    /// user is notified of one once it has lasted `announceSeconds`, and of its end only when that was the case.
+    private func report(_ problem: String?, lasted: Double, line: String, was previous: Problem?, title: String, backTitle: String, backBody: String) -> Problem? {
+        guard let problem else {
+            if let previous {
+                RecLog.write(previous.announced ? backTitle : backTitle + " (within \(Int(RecordingMonitor.announceSeconds)) s, not notified)")
+                if previous.announced { notify(backTitle, backBody) }
+            }
+            return nil
+        }
+        var current = previous ?? Problem(line: line)
+        if previous == nil { RecLog.write("\(title): \(problem)") }
+        if !current.announced && lasted >= RecordingMonitor.announceSeconds {
+            current.announced = true
+            if previous != nil { RecLog.write("\(title): still so after \(Int(lasted)) s, notified") }
             notify(title, problem)
-        } else if problem == nil, previous != nil {
-            RecLog.write(backTitle)
-            notify(backTitle, backBody)
         }
+        return current
     }
 
-    private func show(warning: String?, silent: Bool?) {
-        guard warning != shownWarning || silent != shownSilent else { return }
-        shownWarning = warning
-        shownSilent = silent
-        show(warning, silent)
+    /// The status line has every problem as a sentence; the on-screen warning only those that were notified
+    private func display(_ problems: [Problem?], micSilent: Bool?) -> Display {
+        let up = problems.compactMap { $0 }
+        func joined(_ lines: [String]) -> String? { lines.isEmpty ? nil : lines.joined(separator: ". ") }
+        return Display(warning: joined(up.map(\.line)), onScreen: joined(up.filter(\.announced).map(\.line)), micSilent: micSilent)
+    }
+
+    private func update(_ display: Display) {
+        guard display != shown else { return }
+        shown = display
+        show(display)
     }
 }

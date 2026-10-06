@@ -573,7 +573,7 @@ func sessionTests() async {
         let monitor = RecordingMonitor(queue: queue)
         let shown = Journal()
         monitor.notify = { title, _ in journal.note("notify: " + title) }
-        monitor.show = { warning, silent in shown.note("\(warning ?? "none") \(silent.map { $0 ? "silent" : "sound" } ?? "-")") }
+        monitor.show = { display in shown.note("\(display.warning ?? "none") \(display.micSilent.map { $0 ? "silent" : "sound" } ?? "-")") }
         // A session that started 100 s ago, from whose microphone nothing was ever written
         writer.sessionStart = time(0)
         writer.clockAnchor = (time(100), DispatchTime.now().uptimeNanoseconds)

@@ -52,7 +52,9 @@ final class MonitorRun {
     /// Titles of the notifications, and the text of the last one
     private(set) var notified = [String]()
     private(set) var lastText = ""
+    /// The status item's warning, the part of it shown on screen, and whether the microphone is silent
     private(set) var warning: String?
+    private(set) var onScreen: String?
     private(set) var silent: Bool?
     /// An uptime far from zero, as the system's is
     private let zero: UInt64 = 1_000_000_000_000
@@ -62,7 +64,7 @@ final class MonitorRun {
         monitor = RecordingMonitor(queue: queue)
         writer.clockAnchor = (time(0), zero)
         monitor.notify = { [unowned self] title, text in notified.append(title); lastText = text }
-        monitor.show = { [unowned self] shown, shownSilent in warning = shown; silent = shownSilent }
+        monitor.show = { [unowned self] display in warning = display.warning; onScreen = display.onScreen; silent = display.micSilent }
         queue.sync { monitor.watch(writer, from: zero) }
     }
 
@@ -102,25 +104,49 @@ func monitorTests() async {
     let micWarning = "Microphone is not being recorded"
     let systemWarning = "System audio is not being recorded"
 
-    await test("monitor: a microphone that delivers nothing for 5 s is reported once, and once when it is back") {
+    await test("monitor: a microphone that delivers nothing is shown after 5 s, notified and put on screen after 15 s, and its return too") {
         let run = try MonitorRun("monitor-mic-silent")
         run.ticks(after: 0, through: 5) { run.microphone(upTo: $0) }
         expectEqual(run.notified, [], "nothing to report while the microphone delivers")
         expectEqual(run.silent, false, "it is shown as not silent")
         // The last microphone audio ends at 5 s
         run.ticks(after: 5, through: 10)
-        expectEqual(run.notified, [], "5 s without microphone audio is not yet a problem")
+        expectEqual(run.warning, nil, "5 s without microphone audio is not yet a problem")
         run.tick(at: 10.5)
-        expectEqual(run.notified, [micTitle], "more than 5 s is")
-        expect(run.lastText.contains("No audio has arrived from the microphone"), "and says what happened: \(run.lastText)")
-        expectEqual(run.warning, micWarning, "the status item shows it")
-        run.ticks(after: 10.5, through: 12)
+        expectEqual(run.warning, micWarning, "more than 5 s is, and the status item shows it")
+        expectEqual(run.notified, [], "without a notification")
+        expectEqual(run.onScreen, nil, "or a warning on screen")
+        expect(RecLog.lines.contains { $0.hasPrefix(micTitle + ": No audio has arrived from the microphone") }, "the log has it: \(RecLog.lines)")
+        run.ticks(after: 10.5, through: 19.5)
+        expectEqual(run.notified, [], "not before it has lasted 15 s")
+        run.tick(at: 20)
+        expectEqual(run.notified, [micTitle], "15 s is long enough to be notified")
+        expect(run.lastText.contains("No audio has arrived from the microphone for 15 seconds"), "saying how long: \(run.lastText)")
+        expectEqual(run.onScreen, micWarning, "and shown on screen")
+        expectEqual(run.warning, micWarning, "the status item still shows it")
+        run.ticks(after: 20, through: 22)
         expectEqual(run.notified, [micTitle], "one notification for as long as it lasts")
-        run.microphone(upTo: 12.5)
-        run.tick(at: 12.5)
+        run.microphone(upTo: 22.5)
+        run.tick(at: 22.5)
         expectEqual(run.notified, [micTitle, "Microphone Is Back"], "and one when it is back")
         expectEqual(run.warning, nil, "the warning goes")
+        expectEqual(run.onScreen, nil, "from the screen too")
         expect(run.fills("microphone") > 0, "the track is continued meanwhile")
+    }
+
+    await test("monitor: a microphone gap shorter than 15 s, a call app taking the microphone, is only shown in the status item") {
+        let run = try MonitorRun("monitor-mic-short")
+        run.ticks(after: 0, through: 5) { run.microphone(upTo: $0) }
+        // The FaceTime call of the first real use: about 11 s without microphone audio
+        run.ticks(after: 5, through: 16)
+        expectEqual(run.warning, micWarning, "the status item shows it while it lasts")
+        expectEqual(run.onScreen, nil, "nothing on screen")
+        run.microphone(upTo: 16.5)
+        run.tick(at: 16.5)
+        expectEqual(run.warning, nil, "the warning goes")
+        expectEqual(run.notified, [], "no notification, neither of the problem nor of its end")
+        expect(RecLog.lines.contains { $0.hasPrefix(micTitle + ":") }, "the log has the problem")
+        expect(RecLog.lines.contains("Microphone Is Back (within 15 s, not notified)"), "and its end: \(RecLog.lines)")
     }
 
     await test("monitor: a microphone that delivers only digital silence for 20 s is reported") {
@@ -128,50 +154,87 @@ func monitorTests() async {
         run.microphone(upTo: 1)
         run.ticks(after: 0, through: 21) { run.microphone(upTo: $0, peak: $0 <= 1 ? 0.3 : 0) }
         expectEqual(run.notified, [], "20 s of zeros is not yet a problem")
+        expectEqual(run.warning, nil, "not even in the status item")
         expectEqual(run.silent, true, "but shows as silent")
         run.microphone(upTo: 21.5, peak: 0)
         run.tick(at: 21.5)
-        expectEqual(run.notified, [micTitle], "more than 20 s is")
-        expect(run.lastText.contains("nothing but silence"), "and says so: \(run.lastText)")
+        expectEqual(run.notified, [micTitle], "more than 20 s is, and has lasted long enough to be notified at once")
+        expect(run.lastText.contains("nothing but silence for 20 seconds"), "and says so: \(run.lastText)")
+        expectEqual(run.onScreen, micWarning, "on screen too")
         run.microphone(upTo: 22, peak: 0.005)
         run.tick(at: 22)
         expectEqual(run.notified, [micTitle, "Microphone Is Back"], "any sound ends it")
         expectEqual(run.silent, false, "a quiet microphone is not silent")
     }
 
-    await test("monitor: system audio that stops is filled, reported after 5 s and when it is back") {
+    await test("monitor: system audio that stops is filled, shown after 5 s, notified after 15 s and when it is back") {
         let run = try MonitorRun("monitor-system", microphone: false, systemAudio: true)
         run.ticks(after: 0, through: 3) { run.systemAudio(upTo: $0) }
         expectEqual(run.fills("system audio"), 0, "no fill while it arrives")
         run.ticks(after: 3, through: 8)
         expect(run.fills("system audio") > 0, "filled with silence once it is more than a second behind")
-        expectEqual(run.notified, [], "5 s is not yet a problem")
+        expectEqual(run.warning, nil, "5 s is not yet a problem")
         run.tick(at: 8.5)
-        expectEqual(run.notified, [systemTitle], "more than 5 s is")
-        expectEqual(run.warning, systemWarning, "and shown")
-        run.systemAudio(upTo: 9)
-        run.tick(at: 9)
+        expectEqual(run.warning, systemWarning, "more than 5 s is shown")
+        expectEqual(run.notified, [], "but not notified")
+        run.ticks(after: 8.5, through: 18)
+        expectEqual(run.notified, [systemTitle], "until it has lasted 15 s")
+        expectEqual(run.onScreen, systemWarning, "then it is on screen too")
+        run.systemAudio(upTo: 18.5)
+        run.tick(at: 18.5)
         expectEqual(run.notified, [systemTitle, "System Audio Is Back"], "and its return")
         expectEqual(run.warning, nil, "the warning goes")
     }
 
-    await test("monitor: a recording whose file has not started after 5 s is reported, and its start too") {
+    await test("monitor: only the problems that have lasted 15 s are on screen, every one is in the status item") {
+        let run = try MonitorRun("monitor-both", microphone: true, systemAudio: true)
+        // Nothing from the microphone ever; system audio up to 6 s
+        run.ticks(after: 0, through: 15) { if $0 <= 6 { run.systemAudio(upTo: $0) } }
+        expectEqual(run.notified, [micTitle], "the microphone has lasted 15 s")
+        expectEqual(run.warning, micWarning + ". " + systemWarning, "both in the status line")
+        expectEqual(run.onScreen, micWarning, "only the microphone on screen")
+        run.ticks(after: 15, through: 21)
+        expectEqual(run.notified, [micTitle, systemTitle], "then system audio")
+        expectEqual(run.onScreen, micWarning + ". " + systemWarning, "both on screen")
+    }
+
+    await test("monitor: a recording whose file has not started is shown after 5 s, notified after 15 s, and its start too") {
         let run = try MonitorRun("monitor-no-session")
         run.writer.sessionStart = nil
         run.ticks(after: 0, through: 5)
-        expectEqual(run.notified, [], "5 s without a first picture is not yet a problem")
+        expectEqual(run.warning, nil, "5 s without a first picture is not yet a problem")
         run.tick(at: 5.5)
-        expectEqual(run.notified, ["Nothing Is Being Recorded Yet"], "more than 5 s is")
-        expectEqual(run.warning, "Nothing is being recorded yet", "and shown")
+        expectEqual(run.warning, "Nothing is being recorded yet", "more than 5 s is shown")
+        expectEqual(run.notified, [], "not notified yet")
+        run.ticks(after: 5.5, through: 15)
+        expectEqual(run.notified, ["Nothing Is Being Recorded Yet"], "15 s is")
+        expectEqual(run.onScreen, "Nothing is being recorded yet", "and on screen")
         expectEqual(run.fills("video") + run.fills("microphone"), 0, "nothing is filled before the file starts")
+        run.ticks(after: 15, through: 16)
         run.queue.sync {
-            run.writer.sessionStart = time(6)
-            run.writer.clockAnchor = (time(6), run.uptime(6))
+            run.writer.sessionStart = time(16)
+            run.writer.clockAnchor = (time(16), run.uptime(16))
         }
-        run.microphone(upTo: 6.5)
-        run.tick(at: 6.5)
+        run.microphone(upTo: 16.5)
+        run.tick(at: 16.5)
         expectEqual(run.notified, ["Nothing Is Being Recorded Yet", "Recording Started"], "the start is reported")
         expectEqual(run.warning, nil, "and the warning goes")
+        expectEqual(run.onScreen, nil, "from the screen too")
+    }
+
+    await test("monitor: a file that starts after 8 s is only shown in the status item meanwhile") {
+        let run = try MonitorRun("monitor-late-session")
+        run.writer.sessionStart = nil
+        run.ticks(after: 0, through: 7.5)
+        expectEqual(run.warning, "Nothing is being recorded yet", "shown")
+        run.queue.sync {
+            run.writer.sessionStart = time(8)
+            run.writer.clockAnchor = (time(8), run.uptime(8))
+        }
+        run.microphone(upTo: 8.5)
+        run.tick(at: 8.5)
+        expectEqual(run.warning, nil, "gone once the file starts")
+        expectEqual(run.notified, [], "without any notification")
     }
 
     await test("monitor: one late tick in a row is passed over, not two") {

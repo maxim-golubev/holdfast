@@ -550,13 +550,13 @@ func systemAudioTests() async {
         let once = NoticeOnce()
         expectEqual([once.take(), once.take(), once.take()], [true, false, false], "the notice is shown once")
 
-        // A tap that failed although it was allowed: every recording is told, and shows it while it runs. Not
-        // allowed (the user's answer): one notification while the app runs, nothing on screen.
+        // Without the tap, failed or not allowed: one notification while the app runs. A recording whose tap failed
+        // although it was allowed also shows it while it runs; one that is not allowed (the user's answer) does not.
         let launch = NoticeOnce()
-        expectEqual([failed, failed, failed].map { SystemAudioSelection.notifies($0, once: launch) }, [true, true, true], "a failed tap is notified every time")
-        expectEqual(SystemAudioSelection.warning(for: failed), "Call audio is not being recorded", "and is the recording's warning")
-        expectEqual([denied, denied, failed, denied].map { SystemAudioSelection.notifies($0, once: launch) }, [true, false, true, false], "not allowed: once while the app runs")
-        expect(SystemAudioSelection.warning(for: denied) == nil, "without a warning on screen")
+        expectEqual([failed, failed, denied, failed].map { SystemAudioSelection.notifies($0, once: launch) }, [true, false, false, false], "once while the app runs")
+        expectEqual(SystemAudioSelection.warning(for: failed), "Call audio is not being recorded", "a failed tap is the recording's warning")
+        expectEqual([denied, failed].map { SystemAudioSelection.notifies($0, once: NoticeOnce()) }, [true, true], "whichever comes first is notified")
+        expect(SystemAudioSelection.warning(for: denied) == nil, "not allowed: no warning on screen")
         expect(!SystemAudioSelection.notifies(tap, once: NoticeOnce()) && SystemAudioSelection.warning(for: tap) == nil, "with the tap: nothing to tell")
         expect(!SystemAudioSelection.notifies(none, once: NoticeOnce()) && SystemAudioSelection.warning(for: none) == nil, "nor without system audio")
     }
