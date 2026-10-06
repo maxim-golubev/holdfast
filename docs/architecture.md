@@ -326,11 +326,23 @@ is rebuilt when the input format changes, and each change is logged.
   taken at an anchor would stay for the rest of the recording.
 - A hole is written as silence of the same length, at most 10 s per incoming
   buffer, so a gap never shifts the audio after it.
-- A buffer more than 0.1 s before the track's end is dropped, but for at most
-  1 s in a row. After that the microphone's timeline is taken to have moved,
-  and its buffers go at the end, late by that lag but recorded; the shift is
-  given back at the next real gap. Silence the monitor wrote must never make
-  the converter drop the microphone for good.
+- A buffer more than 0.1 s before the track's end is late, and the writer
+  tells the converter when each buffer arrived (host clock, the clock of the
+  timestamps). Late buffers are one of two things. A backlog: the microphone
+  was held up (a call app taking it) and then hands over what piled up, with
+  the times it was captured at, faster than real time, so each buffer's age
+  (arrival minus the end of its audio) shrinks. Its time was already filled
+  with silence, so it is dropped and the buffers after it sit at their own
+  time: no offset. Or a microphone clock that lags: the buffers keep arriving
+  at real-time pace, all behind, their age steady. Late buffers are dropped
+  while their age varies by more than 0.25 s over the last 2 s of arrivals or
+  their audio adds up to less than the time the first of them lay behind; only
+  then is the timeline taken to have moved, and the buffers go at the end,
+  late by that lag but recorded; the shift is given back at the next real gap.
+  Silence the monitor wrote must never make the converter drop the microphone
+  for good. Without arrival times the shift comes after 1 s of late audio.
+  The log says which it was: a "Microphone backlog" line with what was dropped
+  (from a quarter of a second up), or the shift with its lag.
 - It counts what it did (buffers in, written, dropped, failed, all-zero,
   seconds of silence, format changes, loudest peak) for the log line written
   when the recording finishes.

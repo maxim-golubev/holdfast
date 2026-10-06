@@ -85,10 +85,56 @@ final class MicConverter {
     /// Added to the time of every buffer. Zero unless the microphone's buffers kept arriving for a time the track
     /// has already passed; see `convert`.
     private var shift = CMTime.zero
-    /// Length of the buffers dropped in a row because they lie before the end of the track
-    private var droppedSeconds: Double = 0
-    /// How much is dropped that way before the microphone's timeline is taken to have moved
+    /// The buffers that arrived behind the end of the track since the last one written, nil while there are none
+    private var late: LateRun?
+    /// How much is dropped before a microphone whose arrival times are not known is taken to lag
     private let longestDrop: Double = 1
+    /// Seconds of arrivals over which the age of late buffers must hold steady before they are taken to lag
+    static let steadyWindow: Double = 2
+    /// How far the age of late buffers may vary within `steadyWindow` and still count as steady
+    static let steadyRange: Double = 0.25
+
+    /// Buffers that lie before the end of the track, one after another. They are one of two things. A backlog: the
+    /// microphone was held up (a call app taking it, for one) and then hands over what piled up meanwhile, with the
+    /// times the audio was captured at, faster than real time. Their time was filled with silence while they were
+    /// held up, so they are dropped, and the buffers after them are at their own time again. Or a microphone whose
+    /// timestamps lag the recording's clock: its buffers keep arriving at real-time pace, all of them behind, and
+    /// dropping them would leave the track silent for good, so they are shifted to the end of the track.
+    /// The age of a buffer (when it arrived minus when its audio ends) tells them apart: it shrinks while a backlog
+    /// drains and holds steady for a lagging clock.
+    private struct LateRun {
+        /// How far the first buffer was behind the end of the track: the time already filled that a backlog covers
+        let span: Double
+        var buffers = 0
+        /// Seconds of audio in the late buffers so far
+        var audio: Double = 0
+        var firstAge: Double?
+        var lastAge: Double?
+        /// Arrival and age of the late buffers of about the last `steadyWindow` seconds of arrivals
+        private var recent = [(arrival: Double, age: Double)]()
+
+        init(span: Double) { self.span = span }
+
+        mutating func note(arrival: Double, age: Double) {
+            if firstAge == nil { firstAge = age }
+            lastAge = age
+            recent.append((arrival, age))
+            while recent.count > 2 && recent[1].arrival <= arrival - MicConverter.steadyWindow { recent.removeFirst() }
+        }
+
+        /// The buffers have arrived at real-time pace, their age within `steadyRange`, for `steadyWindow` at least
+        var isSteady: Bool {
+            guard let first = recent.first, let last = recent.last,
+                  last.arrival - first.arrival >= MicConverter.steadyWindow - 0.001 else { return false }
+            var low = Double.infinity
+            var high = -Double.infinity
+            for entry in recent {
+                low = min(low, entry.age)
+                high = max(high, entry.age)
+            }
+            return high - low <= MicConverter.steadyRange
+        }
+    }
 
     /// What happened to the microphone during this recording, for the log
     private(set) var buffersIn = 0
@@ -100,6 +146,10 @@ final class MicConverter {
     private(set) var silenceFrames: Int64 = 0
     private(set) var formatChanges = 0
     private(set) var loudestPeak: Float = 0
+    /// Seconds of audio in buffers dropped because they arrived behind the end of the track
+    private(set) var lateSecondsDropped: Double = 0
+    /// How many times late buffers were taken for a lagging clock and the timeline was shifted
+    private(set) var shifts = 0
 
     var summary: String {
         let rate = Double(MicConverter.sampleRate)
@@ -124,6 +174,7 @@ final class MicConverter {
     /// The next buffer is placed at its own time exactly. For a point where the timeline is put together anew.
     func realign() {
         aligning = true
+        endLateRun()
     }
 
     /// Converts one microphone buffer whose (pause adjusted) start time is `pts` and hands the result to `append`,
@@ -132,15 +183,18 @@ final class MicConverter {
     /// The writer plays audio buffers back to back whatever their timestamps say, so missing samples (a device
     /// switch, a buffer the writer was not ready for) are written as silence to keep the track in sync.
     ///
-    /// A buffer that lies before the end of the track is dropped: the device delivered more samples than time has
-    /// passed, or silence was written in its place while it was late. That must not go on for ever. When buffers
-    /// keep arriving more than a second's worth behind the end (the microphone's times lag the recording's clock,
-    /// while the monitor keeps the track up to the present with silence), every one of them would be dropped and
-    /// the track would be silence for the rest of the recording. After `longestDrop` the microphone's timeline is
-    /// therefore taken to have moved: its buffers go at the end of the track from then on (`shift`), late by that
-    /// lag but recorded. The shift is given back as soon as the buffers are ahead of the track again.
+    /// A buffer that lies more than the tolerance before the end of the track is dropped: silence was written in its
+    /// place while it was held up, or the device delivered more samples than time has passed. `arrival` is when the
+    /// buffer reached the app, on the clock of `pts` (pause adjusted the same way), and tells a backlog from a
+    /// microphone whose clock lags (see `LateRun`). While the late buffers' age shrinks (a backlog draining), varies,
+    /// or the late audio adds up to less than the time it lies behind, they are dropped and the timeline stays as it
+    /// is: the first buffer after a backlog sits at its own time. Only buffers that keep arriving at real-time pace,
+    /// still behind, are taken to come from a clock that lags: dropping them would leave the track silent for the
+    /// rest of the recording, so from then on they go at the end of the track (`shift`), late by that lag but
+    /// recorded. The shift is given back as soon as the buffers are ahead of the track again. Without an arrival
+    /// time the shift comes after `longestDrop` of late audio.
     @discardableResult
-    func convert(_ sampleBuffer: CMSampleBuffer, at pts: CMTime, append: (CMSampleBuffer) -> Bool) -> Bool {
+    func convert(_ sampleBuffer: CMSampleBuffer, at pts: CMTime, arrival: CMTime = .invalid, append: (CMSampleBuffer) -> Bool) -> Bool {
         buffersIn += 1
         var start = CMTimeConvertScale(CMTimeAdd(pts, shift), timescale: MicConverter.sampleRate, method: .default)
         guard start.isValid else { buffersFailed += 1; return false }
@@ -160,12 +214,9 @@ final class MicConverter {
                 // Still behind after a long hole: keep filling on the next buffers before audio is written again
                 if missing > longestFill { buffersDropped += 1; return false }
             } else if missing < -tolerance {
-                let length = CMTimeGetSeconds(sampleBuffer.duration)
-                droppedSeconds += length.isFinite && length > 0 ? length : 0.02
-                guard droppedSeconds > longestDrop else { buffersDropped += 1; return false }
                 let lag = CMTimeSubtract(nextPTS, start)
+                guard lateBufferIsShifted(sampleBuffer, at: pts, arrival: arrival, lag: lag) else { buffersDropped += 1; return false }
                 shift = CMTimeAdd(shift, lag)
-                RecLog.write("Microphone buffers are \(CMTimeGetSeconds(lag)) s behind the recording; they are recorded that much late from here on")
             } else if aligning, missing > 0 {
                 guard writeSilence(frames: missing, append: append) else { buffersFailed += 1; return false }
             } else if aligning, missing < 0 {
@@ -184,7 +235,7 @@ final class MicConverter {
         buffersWritten += 1
         framesWritten += Int64(converted.frameLength)
         aligning = false
-        droppedSeconds = 0
+        endLateRun()
         advance(by: Int64(converted.frameLength))
         var peak: Float = 0
         if let samples = converted.floatChannelData {
@@ -195,6 +246,53 @@ final class MicConverter {
         if peak == 0 { buffersAllZero += 1 }
         loudestPeak = max(loudestPeak, peak)
         return true
+    }
+
+    /// Counts a buffer that lies `lag` behind the end of the track and decides what becomes of it: false when it is
+    /// dropped, true when the timeline is shifted by `lag` so that it goes at the end of the track. Logs the shift.
+    private func lateBufferIsShifted(_ sampleBuffer: CMSampleBuffer, at pts: CMTime, arrival: CMTime, lag: CMTime) -> Bool {
+        let duration = CMTimeGetSeconds(sampleBuffer.duration)
+        let length = duration.isFinite && duration > 0 ? duration : 0.02
+        let lagSeconds = CMTimeGetSeconds(lag)
+        var run = late ?? LateRun(span: lagSeconds)
+        run.buffers += 1
+        run.audio += length
+        let shifted: Bool
+        if arrival.isValid {
+            run.note(arrival: CMTimeGetSeconds(arrival), age: CMTimeGetSeconds(CMTimeSubtract(arrival, pts)) - length)
+            shifted = run.isSteady && run.audio >= run.span
+        } else {
+            shifted = run.audio > longestDrop
+        }
+        guard shifted else {
+            late = run
+            return false
+        }
+        // This buffer is written at the end of the track; the ones before it were dropped
+        let dropped = run.audio - length
+        lateSecondsDropped += dropped
+        shifts += 1
+        late = nil
+        if let age = run.lastAge {
+            RecLog.write(String(format: "Microphone buffers are %.2f s behind the recording and keep arriving at real-time pace, each %.2f s after its time: the microphone's clock lags. They are recorded that much late from here on (%.2f s of late audio dropped before)", lagSeconds, age, dropped))
+        } else {
+            RecLog.write(String(format: "Microphone buffers are %.2f s behind the recording (their arrival times are not known); they are recorded that much late from here on (%.2f s of late audio dropped before)", lagSeconds, dropped))
+        }
+        return true
+    }
+
+    /// The late buffers were followed by one at its own time: they were dropped and the timeline did not move
+    private func endLateRun() {
+        guard let run = late else { return }
+        late = nil
+        lateSecondsDropped += run.audio
+        // Less than a quarter of a second is a hiccup, not worth a line
+        guard run.audio >= 0.25 else { return }
+        var ages = ""
+        if let first = run.firstAge, let last = run.lastAge {
+            ages = String(format: ", arriving %.2f s to %.2f s after their time", first, last)
+        }
+        RecLog.write(String(format: "Microphone backlog: %d buffers (%.2f s of audio) came in late%@, and were dropped, as silence had been written in their place; the microphone goes on at its own time", run.buffers, run.audio, ages))
     }
 
     /// Writes silence from the end of the track up to `pts`, when at least `frames` are missing.

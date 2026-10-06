@@ -95,14 +95,14 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 124 tests in under half a minute, without the app, a screen
+`Tools/test.sh` runs 127 tests in under half a minute, without the app, a screen
 or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
 
 | Area | Tests | What they cover |
 | --- | ---: | --- |
-| Microphone converter | 18 | Format changes (24 → 48 → 24 kHz, 44.1 kHz stereo), gaps as silence, jitter, late buffers dropped then shifted, full-length track, silence generation |
+| Microphone converter | 21 | Format changes (24 → 48 → 24 kHz, 44.1 kHz stereo), gaps as silence, jitter, a backlog with its own timestamps dropped where silence was filled with no offset after it, a lagging clock shifted, full-length track, silence generation |
 | System audio and timeline | 7 | Placement at the end of what was written, holes filled past 0.1 s, pause offsets |
 | Writer | 14 | One file with three tracks of the same length, pause, mute, a source that stops, late frames, no empty file, every audio format |
 | Session | 17 | Every state in order, stop while starting, repeated stops, failures, quitting while recording, starting or exporting, pause and the timer |

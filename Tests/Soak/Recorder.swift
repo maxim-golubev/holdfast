@@ -316,7 +316,7 @@ final class SimulatedRecording {
                     nextSystem = system.next()
                 case .mic(let buffer):
                     let dropped = writer.micConverter?.buffersDropped ?? 0
-                    clockWriter.deliver(CaptureSample(kind: .microphone, buffer: try micBuffer(buffer), pts: Plan.stamp(buffer.pts)), at: uptime)
+                    clockWriter.deliver(CaptureSample(kind: .microphone, buffer: try micBuffer(buffer), pts: Plan.stamp(buffer.pts), arrival: Plan.stamp(now)), at: uptime)
                     stats.micBuffers += 1
                     if (writer.micConverter?.buffersDropped ?? 0) > dropped {
                         stats.micDrops.append(String(format: "%.3f s (stamped %.3f s, %.1f ms)", now, buffer.pts, 1000 * (buffer.end - buffer.start)))

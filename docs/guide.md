@@ -296,7 +296,9 @@ Log**) has one line per event, with the time: each recording's start (its file,
 what it records, whether system audio and microphone are on, and whether system
 audio comes from the process tap, on which output device and in which format, or
 from screen capture and why) and its video settings; every rebuild of the tap; its stop, with the reason when it stopped by itself; where it was
-saved; microphone device switches and format changes; mute and unmute; every
+saved; microphone device switches and format changes; microphone audio that
+came in late (a backlog dropped, or a microphone clock found to lag and recorded
+that much late); mute and unmute; every
 track warning and its end; every failure that was reported; and at the end of
 each recording with a microphone, a summary of its microphone track: buffers
 received, written, dropped, failed and all zero, seconds of audio, seconds of

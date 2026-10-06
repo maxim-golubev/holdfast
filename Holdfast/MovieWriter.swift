@@ -20,6 +20,16 @@ struct CaptureSample {
     let buffer: CMSampleBuffer
     /// When the buffer starts on the stream's clock
     let pts: CMTime
+    /// When the buffer reached the app, on the host clock its timestamps are on; invalid when not known. The
+    /// microphone's converter tells a backlog from a clock that lags by it.
+    let arrival: CMTime
+
+    init(kind: Kind, buffer: CMSampleBuffer, pts: CMTime, arrival: CMTime = .invalid) {
+        self.kind = kind
+        self.buffer = buffer
+        self.pts = pts
+        self.arrival = arrival
+    }
 }
 
 /// Writes one recording: the `AVAssetWriter` with its tracks (or the audio files of an audio-only recording), the
@@ -393,7 +403,9 @@ final class MovieWriter {
             }
         case .microphone:
             guard sessionStart != nil, !isMicrophoneMuted, let micInput = micInput, let converter = micConverter else { return }
-            let written = converter.convert(sampleBuffer, at: pts) { buffer in
+            // On the timeline like the buffer's time, so its age is unchanged by pauses
+            let arrival = sample.arrival.isValid ? CMTimeSubtract(sample.arrival, timeOffset) : CMTime.invalid
+            let written = converter.convert(sampleBuffer, at: pts, arrival: arrival) { buffer in
                 append(buffer, to: micInput)
             }
             if written { events.microphoneWritten(converter.end, converter.lastPeak) }

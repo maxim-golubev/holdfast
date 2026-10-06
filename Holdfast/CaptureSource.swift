@@ -278,6 +278,8 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
+        // The host clock, which the buffers' timestamps are on
+        let arrival = CMClockGetHostTimeClock().time
         var pts = sampleBuffer.presentationTimeStamp
         let kind: CaptureSample.Kind
         switch outputType {
@@ -303,7 +305,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
             // An output type this version does not know is not recorded
             return
         }
-        onSample(CaptureSample(kind: kind, buffer: sampleBuffer, pts: pts))
+        onSample(CaptureSample(kind: kind, buffer: sampleBuffer, pts: pts, arrival: arrival))
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
