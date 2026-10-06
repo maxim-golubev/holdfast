@@ -126,9 +126,12 @@ func monitorTests() async {
         expectEqual(run.warning, micWarning, "the status item still shows it")
         run.ticks(after: 20, through: 22)
         expectEqual(run.notified, [micTitle], "one notification for as long as it lasts")
-        run.microphone(upTo: 22.5)
-        run.tick(at: 22.5)
-        expectEqual(run.notified, [micTitle, "Microphone Is Back"], "and one when it is back")
+        run.ticks(after: 22, through: 27) { run.microphone(upTo: $0) }
+        expectEqual(run.notified, [micTitle], "back for less than 5 s is not yet back")
+        expectEqual(run.onScreen, micWarning, "and stays on screen")
+        run.microphone(upTo: 27.5)
+        run.tick(at: 27.5)
+        expectEqual(run.notified, [micTitle, "Microphone Is Back"], "and one when it has been back for 5 s")
         expectEqual(run.warning, nil, "the warning goes")
         expectEqual(run.onScreen, nil, "from the screen too")
         expect(run.fills("microphone") > 0, "the track is continued meanwhile")
@@ -141,12 +144,16 @@ func monitorTests() async {
         run.ticks(after: 5, through: 16)
         expectEqual(run.warning, micWarning, "the status item shows it while it lasts")
         expectEqual(run.onScreen, nil, "nothing on screen")
-        run.microphone(upTo: 16.5)
-        run.tick(at: 16.5)
+        // Back for good: the problem has lasted more than 15 s once the microphone has been steady for 5 s, but
+        // the time it was steady does not count
+        run.ticks(after: 16, through: 21) { run.microphone(upTo: $0) }
+        expectEqual(run.warning, micWarning, "shown until the microphone has been back for 5 s")
+        run.microphone(upTo: 21.5)
+        run.tick(at: 21.5)
         expectEqual(run.warning, nil, "the warning goes")
         expectEqual(run.notified, [], "no notification, neither of the problem nor of its end")
         expect(RecLog.lines.contains { $0.hasPrefix(micTitle + ":") }, "the log has the problem")
-        expect(RecLog.lines.contains("Microphone Is Back (within 15 s, not notified)"), "and its end: \(RecLog.lines)")
+        expect(RecLog.lines.contains("Microphone Is Back (it lasted less than 15 s: not notified)"), "and its end: \(RecLog.lines)")
     }
 
     await test("monitor: a microphone that delivers only digital silence for 20 s is reported") {
@@ -161,9 +168,8 @@ func monitorTests() async {
         expectEqual(run.notified, [micTitle], "more than 20 s is, and has lasted long enough to be notified at once")
         expect(run.lastText.contains("nothing but silence for 20 seconds"), "and says so: \(run.lastText)")
         expectEqual(run.onScreen, micWarning, "on screen too")
-        run.microphone(upTo: 22, peak: 0.005)
-        run.tick(at: 22)
-        expectEqual(run.notified, [micTitle, "Microphone Is Back"], "any sound ends it")
+        run.ticks(after: 21.5, through: 27) { run.microphone(upTo: $0, peak: 0.005) }
+        expectEqual(run.notified, [micTitle, "Microphone Is Back"], "any sound, for 5 s, ends it")
         expectEqual(run.silent, false, "a quiet microphone is not silent")
     }
 
@@ -180,10 +186,53 @@ func monitorTests() async {
         run.ticks(after: 8.5, through: 18)
         expectEqual(run.notified, [systemTitle], "until it has lasted 15 s")
         expectEqual(run.onScreen, systemWarning, "then it is on screen too")
-        run.systemAudio(upTo: 18.5)
-        run.tick(at: 18.5)
-        expectEqual(run.notified, [systemTitle, "System Audio Is Back"], "and its return")
+        run.ticks(after: 18, through: 23.5) { run.systemAudio(upTo: $0) }
+        expectEqual(run.notified, [systemTitle, "System Audio Is Back"], "and its return, once it has been back for 5 s")
         expectEqual(run.warning, nil, "the warning goes")
+    }
+
+    await test("monitor: a microphone that keeps dropping out, each gap under 15 s, is notified once and stays on screen") {
+        // Weak Bluetooth, or a call app that keeps taking the microphone: half a second of audio every 10 s
+        let run = try MonitorRun("monitor-mic-intermittent")
+        run.ticks(after: 0, through: 10) { run.microphone(upTo: $0) }
+        run.ticks(after: 10, through: 130) { at in
+            if at.truncatingRemainder(dividingBy: 10) < 0.6 { run.microphone(upTo: at) }
+        }
+        expectEqual(run.notified, [micTitle], "one notification")
+        expect(run.lastText.contains("kept dropping out"), "saying that it keeps dropping out: \(run.lastText)")
+        expectEqual(run.onScreen, micWarning, "on screen for as long as it goes on")
+        expectEqual(RecLog.lines.filter { $0.hasPrefix(micTitle + ":") && !$0.contains("still so") }.count, 1, "one problem in the log: \(RecLog.lines)")
+        expect(RecLog.lines.allSatisfy { !$0.hasPrefix("Microphone Is Back") }, "and no end of it")
+        run.ticks(after: 130, through: 135.5) { run.microphone(upTo: $0) }
+        expectEqual(run.notified, [micTitle, "Microphone Is Back"], "back once it delivers steadily")
+        expectEqual(run.onScreen, nil, "and off the screen")
+    }
+
+    await test("monitor: system audio that keeps dropping out for 6 to 14 s at a time is notified once") {
+        let run = try MonitorRun("monitor-system-intermittent", microphone: false, systemAudio: true)
+        run.ticks(after: 0, through: 5) { run.systemAudio(upTo: $0) }
+        // Back for a second after 8 s, then after 12 s, and so on
+        var next = 13.0
+        var gap = 12.0
+        run.ticks(after: 5, through: 95) { at in
+            if at >= next && at < next + 1 { run.systemAudio(upTo: at) }
+            if at >= next + 1 { next += gap + 1; gap = gap == 12 ? 6 : 12 }
+        }
+        expectEqual(run.notified, [systemTitle], "one notification")
+        expectEqual(run.onScreen, systemWarning, "and on screen")
+    }
+
+    await test("monitor: a microphone that comes back with only digital silence is not back") {
+        let run = try MonitorRun("monitor-mic-zeros-return")
+        run.ticks(after: 0, through: 5) { run.microphone(upTo: $0) }
+        run.ticks(after: 5, through: 20)
+        expectEqual(run.notified, [micTitle], "15 s without audio is notified")
+        // 16 s after the last sound it delivers again, but only zeros
+        run.ticks(after: 20, through: 40) { at in if at >= 21 { run.microphone(upTo: at, peak: 0) } }
+        expectEqual(run.notified, [micTitle], "no \"Microphone Is Back\", and no second notification when the zeros reach 20 s")
+        expectEqual(run.onScreen, micWarning, "the warning stays on screen")
+        run.ticks(after: 40, through: 45.5) { run.microphone(upTo: $0) }
+        expectEqual(run.notified, [micTitle, "Microphone Is Back"], "sound for 5 s is back")
     }
 
     await test("monitor: only the problems that have lasted 15 s are on screen, every one is in the status item") {

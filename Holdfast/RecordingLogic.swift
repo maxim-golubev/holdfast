@@ -39,15 +39,21 @@ enum Timeline {
 }
 
 /// Whether a buffer's own timestamp can be believed, judged against when it reached the app on the host clock that
-/// timestamps are on. Audio is never stamped after it arrived, and a backlog is seconds old, not minutes: a buffer
-/// stamped later than `ahead` after its arrival, or earlier than `behind` before it, carries a time from another
-/// clock or none at all (a process tap's buffer was once stamped 1100 s in the future as a call ended) and is given
-/// its arrival time instead.
+/// timestamps are on. Audio is never stamped after it arrived: a buffer stamped later than `ahead` after its arrival
+/// carries a time from another clock or none at all (a process tap's buffer was once stamped 1100 s in the future as
+/// a call ended) and is given its arrival time instead. One stamped long before it arrived is either the same or a
+/// backlog with its true times. For system audio, placed by what was written, more than `behind` is the former. The
+/// microphone's converter tells a backlog from a lagging clock and drops a backlog whose time was filled with
+/// silence; given its arrival time instead, a backlog's stale audio would be spliced in at the present, chopped,
+/// where silence belongs. So the microphone is restamped only when it is `microphoneBehind` old, minutes, which is no
+/// backlog but a time from another clock.
 enum ArrivalCheck {
     /// Seconds a buffer may be stamped after its arrival
     static let ahead: Double = 1
-    /// Seconds a buffer may be stamped before its arrival
+    /// Seconds a system audio buffer may be stamped before its arrival
     static let behind: Double = 30
+    /// Seconds a microphone buffer may be stamped before its arrival
+    static let microphoneBehind: Double = 300
 
     enum Verdict: Equatable {
         case trusted
@@ -57,8 +63,9 @@ enum ArrivalCheck {
         case behind(Double)
     }
 
-    /// What a buffer starting at `pts` that arrived at `arrival` is worth. Trusted when the arrival is not known.
-    static func verdict(pts: CMTime, arrival: CMTime) -> Verdict {
+    /// What a buffer starting at `pts` that arrived at `arrival` is worth, when it may be stamped up to `behind`
+    /// seconds before it. Trusted when the arrival is not known.
+    static func verdict(pts: CMTime, arrival: CMTime, behind: Double = ArrivalCheck.behind) -> Verdict {
         guard pts.isValid, arrival.isValid else { return .trusted }
         let offset = CMTimeGetSeconds(CMTimeSubtract(pts, arrival))
         guard offset.isFinite else { return .trusted }

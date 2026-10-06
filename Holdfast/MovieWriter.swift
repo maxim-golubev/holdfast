@@ -111,8 +111,8 @@ final class MovieWriter {
     /// invalid time turns the checks against the present off.
     var presentClock: () -> CMTime = { CMClockGetHostTimeClock().time }
     /// Audio buffers given their arrival time because their own could not be believed, per source, for the log
-    private var systemRestamps = Restamps(name: "System audio")
-    private var microphoneRestamps = Restamps(name: "Microphone")
+    private var systemRestamps = Restamps(name: "System audio", behind: ArrivalCheck.behind)
+    private var microphoneRestamps = Restamps(name: "Microphone", behind: ArrivalCheck.microphoneBehind)
     /// Buffers left out because they end beyond the present, and ends the timeline did not take for that reason
     private var futureBuffers = 0
     private var futureEnds = 0
@@ -394,6 +394,8 @@ final class MovieWriter {
     private struct Restamps {
         static let loggedRuns = 10
         let name: String
+        /// Seconds a buffer may be stamped before its arrival (`ArrivalCheck`)
+        let behind: Double
         var run = 0
         var runs = 0
         var total = 0
@@ -401,7 +403,7 @@ final class MovieWriter {
         /// The start of a buffer that starts at `pts`, lasts `duration` and arrived at `arrival`
         mutating func start(_ pts: CMTime, duration: CMTime, arrival: CMTime) -> CMTime {
             let how: String
-            switch ArrivalCheck.verdict(pts: pts, arrival: arrival) {
+            switch ArrivalCheck.verdict(pts: pts, arrival: arrival, behind: behind) {
             case .trusted:
                 if run > 0, runs <= Restamps.loggedRuns {
                     RecLog.write("\(name): timestamps can be believed again, after \(Restamps.buffers(run)) at \(run == 1 ? "its" : "their") arrival time")

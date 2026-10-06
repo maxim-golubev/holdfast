@@ -93,15 +93,25 @@ final class MicConverter {
     static let steadyWindow: Double = 2
     /// How far the age of late buffers may vary within `steadyWindow` and still count as steady
     static let steadyRange: Double = 0.25
+    /// How fast the age of late buffers may fall, in seconds per second of arrivals over the whole run, and still
+    /// count as steady. A backlog drained at rate r makes it fall by r - 1: drained at 1.1 times real time, its age
+    /// falls by only 0.2 s over `steadyWindow`, within `steadyRange`, but by 0.1 s every second all along.
+    static let steadyFall: Double = 0.02
 
     /// Buffers that lie before the end of the track, one after another. They are one of two things. A backlog: the
-    /// microphone was held up (a call app taking it, for one) and then hands over what piled up meanwhile, with the
-    /// times the audio was captured at, faster than real time. Their time was filled with silence while they were
-    /// held up, so they are dropped, and the buffers after them are at their own time again. Or a microphone whose
-    /// timestamps lag the recording's clock: its buffers keep arriving at real-time pace, all of them behind, and
-    /// dropping them would leave the track silent for good, so they are shifted to the end of the track.
-    /// The age of a buffer (when it arrived minus when its audio ends) tells them apart: it shrinks while a backlog
+    /// microphone was held up and then hands over what piled up meanwhile, with the times the audio was captured
+    /// at, faster than real time. Their time was filled with silence while they were held up, so they are dropped,
+    /// and the buffers after them are at their own time again. Or a microphone whose timestamps lag the
+    /// recording's clock: its buffers keep arriving at real-time pace, all of them behind, and dropping them would
+    /// leave the track silent for good, so they are shifted to the end of the track.
+    /// The age of a buffer (when it arrived minus when its audio ends) tells them apart: it falls while a backlog
     /// drains and holds steady for a lagging clock.
+    ///
+    /// Neither is what moved the owner's FaceTime call 11 s late. There the end of the track itself had run ahead:
+    /// a buffer of another source stamped about 12 s in the future as the call connected moved the monitor's
+    /// present, the monitor filled the microphone that far, and the microphone's buffers, on time, then lay 11 s
+    /// "behind" it and were shifted. What keeps that from happening is that nothing on the timeline may end after
+    /// the present (`MovieWriter.endsByPresent`, `ArrivalCheck`); with it, such buffers are never late.
     private struct LateRun {
         /// How far the first buffer was behind the end of the track: the time already filled that a backlog covers
         let span: Double
@@ -112,6 +122,10 @@ final class MicConverter {
         var lastAge: Double?
         /// Arrival and age of the late buffers of about the last `steadyWindow` seconds of arrivals
         private var recent = [(arrival: Double, age: Double)]()
+        /// Sums for the least-squares slope of age against arrival over the whole run, relative to its first buffer
+        private var firstArrival: Double?
+        private var count: Double = 0
+        private var sumX: Double = 0, sumY: Double = 0, sumXX: Double = 0, sumXY: Double = 0
 
         init(span: Double) { self.span = span }
 
@@ -120,9 +134,27 @@ final class MicConverter {
             lastAge = age
             recent.append((arrival, age))
             while recent.count > 2 && recent[1].arrival <= arrival - MicConverter.steadyWindow { recent.removeFirst() }
+            let origin = firstArrival ?? arrival
+            firstArrival = origin
+            let x = arrival - origin
+            let y = age - (firstAge ?? age)
+            count += 1
+            sumX += x
+            sumY += y
+            sumXX += x * x
+            sumXY += x * y
         }
 
-        /// The buffers have arrived at real-time pace, their age within `steadyRange`, for `steadyWindow` at least
+        /// How fast the age changed over the whole run, in seconds per second of arrivals; nil before the arrivals
+        /// span any time
+        var ageSlope: Double? {
+            let spread = count * sumXX - sumX * sumX
+            guard count >= 2, spread > 1e-9 else { return nil }
+            return (count * sumXY - sumX * sumY) / spread
+        }
+
+        /// The buffers have arrived at real-time pace for `steadyWindow` at least: their age within `steadyRange`
+        /// over that window, and not falling over the whole run (`steadyFall`), as it does while a backlog drains
         var isSteady: Bool {
             guard let first = recent.first, let last = recent.last,
                   last.arrival - first.arrival >= MicConverter.steadyWindow - 0.001 else { return false }
@@ -132,7 +164,8 @@ final class MicConverter {
                 low = min(low, entry.age)
                 high = max(high, entry.age)
             }
-            return high - low <= MicConverter.steadyRange
+            guard high - low <= MicConverter.steadyRange, let slope = ageSlope else { return false }
+            return slope >= -MicConverter.steadyFall
         }
     }
 
@@ -186,7 +219,7 @@ final class MicConverter {
     /// A buffer that lies more than the tolerance before the end of the track is dropped: silence was written in its
     /// place while it was held up, or the device delivered more samples than time has passed. `arrival` is when the
     /// buffer reached the app, on the clock of `pts` (pause adjusted the same way), and tells a backlog from a
-    /// microphone whose clock lags (see `LateRun`). While the late buffers' age shrinks (a backlog draining), varies,
+    /// microphone whose clock lags (see `LateRun`). While the late buffers' age falls (a backlog draining), varies,
     /// or the late audio adds up to less than the time it lies behind, they are dropped and the timeline stays as it
     /// is: the first buffer after a backlog sits at its own time. Only buffers that keep arriving at real-time pace,
     /// still behind, are taken to come from a clock that lags: dropping them would leave the track silent for the

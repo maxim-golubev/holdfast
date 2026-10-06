@@ -301,10 +301,13 @@ through. Now every buffer carries its arrival time on the host clock
 (`CaptureSource` stamps the stream's, `SystemAudioSource` the tap's on the IO
 thread), and the writer reads the present from `presentClock` (the host clock;
 the tests and the simulation give their own):
-- A system audio or microphone buffer stamped more than 1 s after its arrival,
-  or more than 30 s before it (`ArrivalCheck`), is given its arrival time less
-  its length instead; the first of a run and its end are logged, the total at
-  the stop. A backlog of seconds is left to the microphone converter.
+- A system audio or microphone buffer stamped more than 1 s after its arrival
+  (`ArrivalCheck`) is given its arrival time less its length instead; the first
+  of a run and its end are logged, the total at the stop. So is a system audio
+  buffer stamped more than 30 s before its arrival, and a microphone buffer
+  more than 300 s before it: a microphone backlog is left to the converter,
+  which drops it where silence was filled, while given its arrival time it
+  would put stale audio at the present, chopped up.
 - A buffer that still ends more than 1 s after the present (a frame, or audio
   whose arrival is not known) is left out, logged once and counted at the stop.
 - `lastPTS` takes no end more than 1 s after the present, and the monitor's
@@ -362,14 +365,32 @@ is rebuilt when the input format changes, and each change is logged.
   with silence, so it is dropped and the buffers after it sit at their own
   time: no offset. Or a microphone clock that lags: the buffers keep arriving
   at real-time pace, all behind, their age steady. Late buffers are dropped
-  while their age varies by more than 0.25 s over the last 2 s of arrivals or
-  their audio adds up to less than the time the first of them lay behind; only
-  then is the timeline taken to have moved, and the buffers go at the end,
-  late by that lag but recorded; the shift is given back at the next real gap.
+  while their age varies by more than 0.25 s over the last 2 s of arrivals,
+  falls by more than 0.02 s a second over the whole run (the least-squares
+  slope: a backlog drained at 1.1 times real time falls 0.1 s a second, but
+  only 0.2 s within 2 s), or their audio adds up to less than the time the
+  first of them lay behind; only then is the timeline taken to have moved, and
+  the buffers go at the end, late by that lag but recorded; the shift is given
+  back at the next real gap.
   Silence the monitor wrote must never make the converter drop the microphone
   for good. Without arrival times the shift comes after 1 s of late audio.
   The log says which it was: a "Microphone backlog" line with what was dropped
   (from a quarter of a second up), or the shift with its lag.
+- The owner's first FaceTime call came out with the microphone 11 s late for
+  the whole call, and that was neither of the two. As the call connected
+  (13.7 s in), a buffer stamped about 12 s in the future reached the writer:
+  the video has one 12.06 s hole there (a frame at 13.690 s, the next at
+  25.755 s), system audio is digital silence from 13.5 to 26.5 s, and the
+  microphone from 14 to 25.5 s. The writer of the day believed it, so the
+  monitor's present ran 12 s ahead: it filled the microphone and system audio
+  that far, the frames and tap buffers on time were dropped as lying before
+  what was written, and the microphone's buffers, arriving on time at real-time
+  pace (49 dropped in 1 s), lay 11 s behind the filled track and were shifted
+  by the 1-s rule of the day. The log's "Microphone buffers are 11.06 s behind"
+  was that shift. What prevents it is "Never past the present" (nothing ends
+  more than 1 s after the present, fills included), not the backlog rule; the
+  test "a frame and a tap buffer stamped 12 s ahead as a call connects" runs
+  that pattern through the writer and the monitor.
 - It counts what it did (buffers in, written, dropped, failed, all-zero,
   seconds of silence, format changes, loudest peak) for the log line written
   when the recording finishes.
@@ -399,9 +420,18 @@ warn. After a resume it waits one tick for the first buffer.
 It is also the watchdog. No microphone audio written for 5 s, only exact zeros
 for 20 s, or no system audio for 5 s (no first frame 5 s after the start) sets
 the session's warning, which the status item shows, and writes a log line.
-Only a problem that has lasted `announceSeconds` (15 s, counted from the last
-audio written, or from the start) is notified, once, and put in
-`Health.onScreen`, which `WarningPanel` shows; when audio is back the warning
+A problem is over only once its source has delivered steadily for
+`steadySeconds` (5 s): audio written up to within `steadyGap` (2 s) of the
+present on every tick, and for the microphone audio that is not digital
+silence, so a microphone that comes back with zeros is not back. Until then
+it stays one problem, counted from where the audio stopped when it began,
+whatever came back in between: a source that drops out again and again for
+less than 15 s at a time, AirPods on a weak link or a tap rebuilt over and
+over, adds up to one problem that is notified. Only a problem that has lasted
+`announceSeconds` (15 s, counted from the last audio written, or from the
+start) while its source is not steady is notified, once (saying that the
+audio keeps dropping out when it came back in between), and put in
+`Health.onScreen`, which `WarningPanel` shows; once it is over the warning
 clears, and the "back" notification is posted only for a problem that was
 notified (the log has both either way). A call app that takes the microphone
 for a few seconds is therefore an orange item and nothing more. A muted
@@ -570,11 +600,11 @@ written, and the log is kept in memory.
 | Audio gap tolerance | `MovieWriter.gapTolerance`, `MicConverter` | 0.1 s |
 | Microphone drop limit | `MicConverter.longestDrop` | 1 s in a row, then shift |
 | Silence per buffer | `MicConverter.longestFill` | 10 s |
-| Watchdog | `RecordingMonitor` | 5 s without audio, 20 s of zeros, 5 s without a first frame: status item; 15 s (`announceSeconds`): notification and on-screen panel |
+| Watchdog | `RecordingMonitor` | 5 s without audio, 20 s of zeros, 5 s without a first frame: status item; 15 s (`announceSeconds`), returns in between included: notification and on-screen panel; over after 5 s of steady audio (`steadySeconds`) |
 | Capture stop wait | `RecordingSession.stopCapture` | 5 s |
 | Mix stall limit | `RecordingMixer.stallLimit` | 60 s |
 | Mix check | `RecordingMixer.verify` | audio within 2 s of the video (12 s shorter for a leftover never closed); length within 1 s; 30 windows; silence below -60 dBFS |
-| Timestamp check | `ArrivalCheck` | audio stamped over 1 s after or 30 s before its arrival gets its arrival time; nothing ends over 1 s after the present |
+| Timestamp check | `ArrivalCheck` | audio stamped over 1 s after its arrival, system audio over 30 s and the microphone over 300 s before it, gets its arrival time; nothing ends over 1 s after the present |
 | Disk | `DiskSpace` | start 2 GB, stop 500 MB, checked every 5 s |
 | Device switch | `MicDevices` | check 0.7 s after a change; 3 retries, 2 s apart |
 | Tap rebuild | `SystemAudioSource` | 0.5 s after the last device change; 3 retries, 2 s apart |

@@ -95,24 +95,24 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 142 tests in under half a minute, without the app, a screen
+`Tools/test.sh` runs 149 tests in under half a minute, without the app, a screen
 or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
 
 | Area | Tests | What they cover |
 | --- | ---: | --- |
-| Microphone converter | 21 | Format changes (24 → 48 → 24 kHz, 44.1 kHz stereo), gaps as silence, jitter, a backlog with its own timestamps dropped where silence was filled with no offset after it, a lagging clock shifted, full-length track, silence generation |
+| Microphone converter | 23 | Format changes (24 → 48 → 24 kHz, 44.1 kHz stereo), gaps as silence, jitter, a backlog with its own timestamps dropped where silence was filled with no offset after it (drained at 3, 1.1 and 1.05 times real time, held 13 s or 40 s), a lagging clock shifted, full-length track, silence generation |
 | System audio and timeline | 7 | Placement at the end of what was written, holes filled past 0.1 s, pause offsets |
 | Writer | 14 | One file with three tracks of the same length, pause, mute, a source that stops, late frames, no empty file, every audio format |
 | Session | 17 | Every state in order, stop while starting, repeated stops, failures, quitting while recording, starting or exporting, pause and the timer |
-| Monitor | 7 | Fills and warnings for each track, the start warning, late ticks, resume |
+| Monitor | 10 | Fills and warnings for each track, the start warning, late ticks, resume, a source that keeps dropping out notified once, a microphone back with only zeros not back |
 | Files, names, disk | 18 | Temporary and final names, leftovers, staging, free-space thresholds, a moved or deleted folder |
 | Mixer and recovery | 11 | Mix and its checks, MP3 and package mixes, every recovery outcome |
 | Settings | 7 | Keys, defaults and stored types of earlier installations |
 | Status item | 7 | Every state's symbol, title and sentence, the timer text, the item's width, the call-audio warning |
 | Package | 1 | `.qma` info files of earlier versions |
-| Timestamps and length | 11 | The timeline never past the present: a tap buffer stamped 1100 s in the future near the end of a call recorded at its arrival time (through the writer and through the tap's source), audio stamped 40 s before its arrival, a frame or audio of unknown arrival in the future left out, fills and repeats cut off a second after the present, the stop's padding up to the video's end (sound only: the present), a mix whose audio is over 2 s longer or shorter than its video rejected and the recording kept unmixed |
+| Timestamps and length | 13 | The timeline never past the present: a tap buffer stamped 1100 s in the future near the end of a call recorded at its arrival time (through the writer and through the tap's source), a frame and a tap buffer stamped 12 s ahead as a call connects (no video hole, no fill past the present, the microphone not shifted), a microphone stamped 400 s before its arrival, a microphone backlog 40 s old left to the converter, a frame or audio of unknown arrival in the future left out, fills and repeats cut off a second after the present, the stop's padding up to the video's end (sound only: the present), a mix whose audio is over 2 s longer or shorter than its video rejected and the recording kept unmixed |
 | System audio tap | 17 | Build and teardown order against fake Core Audio calls, cleanup after each failed step, the IOProc's stream usage (only the tap's stream), the IOProc's copy (interleaved, non-interleaved, behind other input streams, turned-off streams, malformed lists), nothing handed on once the output device changes its rate, host-time stamps, conversion and resampling to 48 kHz stereo, the choice between tap and screen capture with its notice and warning, rebuilds on device changes with nothing of the old device after the new, retries, no endless rebuild from the tap's own aggregate device, a sound-only file written from the tap's buffers |
 
 ## Not yet checked on the real machine

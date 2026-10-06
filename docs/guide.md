@@ -126,15 +126,18 @@ line in the log:
 The recording goes on, with silence in place of the missing audio, so the
 tracks stay in step. A short problem stays in the menu bar: a call app taking
 the microphone for a few seconds, for example, turns the item orange until the
-audio is back, and nothing else. A problem that has lasted 15 seconds (counted
-from when the audio stopped, so 10 seconds after the item turned orange; at
-once for 20 seconds of digital silence) also posts one notification and is
+audio has been back for 5 seconds, and nothing else. Audio that keeps dropping
+out and coming back for a moment counts as one problem from the first gap on,
+and a microphone that comes back with nothing but digital silence is not back.
+A problem that has lasted 15 seconds (counted from when the audio stopped, so
+10 seconds after the item turned orange; at once for 20 seconds of digital
+silence) also posts one notification and is
 shown in a small panel at the top right of the screen with the pointer, over
 every app and every Space, a full-screen meeting included: the meeting hides
 the menu bar, and macOS holds back notifications while the screen is shared.
 The panel is not captured in the recording. Its close button hides it until the
-warning changes. When the audio is back, the warning clears, and a second
-notification says so if the first one was posted.
+warning changes. When the audio has been back for 5 seconds, the warning
+clears, and a second notification says so if the first one was posted.
 
 **Mute Microphone** (menu, shortcut, or `mute microphone`) records silence in
 place of the microphone until you unmute; the track stays as long as the

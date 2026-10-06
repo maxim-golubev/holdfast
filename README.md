@@ -79,7 +79,7 @@ Most of the work went into five problems:
 
 One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
-final file. 142 tests run in under half a minute without the app, a screen, or
+final file. 149 tests run in under half a minute without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 

@@ -9,7 +9,7 @@ import AVFoundation
 import Foundation
 
 func presentTests() async {
-    await test("Arrival check: audio stamped more than 1 s after it arrived, or more than 30 s before, is given its arrival time") {
+    await test("Arrival check: audio stamped more than 1 s after it arrived, or more than 30 s before (a microphone: 300 s), is given its arrival time") {
         let arrival = time(5000)
         expectEqual(ArrivalCheck.verdict(pts: time(4999.98), arrival: arrival), .trusted, "a buffer stamped just before it arrived")
         expectEqual(ArrivalCheck.verdict(pts: time(5000.9), arrival: arrival), .trusted, "up to a second after it")
@@ -18,6 +18,11 @@ func presentTests() async {
         expectEqual(ArrivalCheck.verdict(pts: time(6100), arrival: arrival), .ahead(1100), "1100 s in the future")
         expectEqual(ArrivalCheck.verdict(pts: time(5001.5), arrival: arrival), .ahead(1.5), "1.5 s in the future")
         expectEqual(ArrivalCheck.verdict(pts: time(4960), arrival: arrival), .behind(40), "40 s old")
+        let microphone = ArrivalCheck.microphoneBehind
+        expectEqual(ArrivalCheck.verdict(pts: time(4960), arrival: arrival, behind: microphone), .trusted, "a microphone backlog 40 s old is left to the converter")
+        expectEqual(ArrivalCheck.verdict(pts: time(4701), arrival: arrival, behind: microphone), .trusted, "nor one 299 s old")
+        expectEqual(ArrivalCheck.verdict(pts: time(4600), arrival: arrival, behind: microphone), .behind(400), "a microphone stamped 400 s before is on another clock")
+        expectEqual(ArrivalCheck.verdict(pts: time(5001.5), arrival: arrival, behind: microphone), .ahead(1.5), "and one in the future is not trusted either")
         expectEqual(ArrivalCheck.verdict(pts: time(6100), arrival: .invalid), .trusted, "an arrival that is not known judges nothing")
         expectEqual(ArrivalCheck.restamped(arrival: arrival, duration: time(0.01)), time(4999.99), "given its arrival time, it ends when it arrived")
         expectEqual(ArrivalCheck.restamped(arrival: arrival, duration: .invalid), arrival, "without a length, it starts then")
@@ -91,7 +96,7 @@ func presentTests() async {
         for track in tracks.video + tracks.audio { expectClose(track.end, 2, within: 0.25, "every track is two seconds long") }
     }
 
-    await test("Writer: a microphone buffer stamped 40 s before it arrived is recorded at its arrival time") {
+    await test("Writer: a microphone stamped 400 s before its buffers arrive is recorded at their arrival time") {
         let run = try TestRecording(folder: "present-old-microphone")
         let writer = run.writer
         let converter = try require(writer.micConverter, "converter")
@@ -102,16 +107,109 @@ func presentTests() async {
             run.present = t + 0.1
             try run.frame(t)
             try run.systemAudio(t, arrival: t + 0.1)
-            try run.microphone(t - 40, arrival: t + 0.1)
+            try run.microphone(t - 400, arrival: t + 0.1)
             usleep(15_000)
         }
         expectEqual(converter.buffersDropped, 0, "nothing dropped")
         expectEqual(converter.shifts, 0, "nothing shifted")
         expectClose(CMTimeGetSeconds(try require(run.microphoneEnd, "microphone written")) - TestRecording.base, 2, within: 0.01, "the microphone is at its arrival time")
-        expect(RecLog.lines.contains { $0.contains("Microphone: a buffer is stamped 40.10 s before it arrived") }, "logged: \(RecLog.lines)")
+        expect(RecLog.lines.contains { $0.contains("Microphone: a buffer is stamped 400.10 s before it arrived") }, "logged: \(RecLog.lines)")
         expectEqual(RecLog.lines.filter { $0.contains("a buffer is stamped") }.count, 1, "once for the run")
         _ = try await run.close()
         expect(run.failures.isEmpty, "no failure: \(run.failures)")
+    }
+
+    await test("Writer: a microphone buffer 40 s old, the end of a backlog, is left to the converter and not written at the present") {
+        let run = try TestRecording(folder: "present-backlog-microphone")
+        let writer = run.writer
+        let converter = try require(writer.micConverter, "converter")
+        try writer.prepareVideo(width: 320, height: 240)
+        writer.startCapturing()
+        for index in 0..<10 {
+            let t = Double(index) / 10
+            run.present = t + 0.1
+            try run.frame(t)
+            try run.systemAudio(t, arrival: t + 0.1)
+            try run.microphone(t, arrival: t + 0.1)
+            usleep(15_000)
+        }
+        let end = try require(run.microphoneEnd, "microphone written")
+        // A buffer captured 40 s before it arrives, as the last of a backlog would be: its time has passed
+        try run.microphone(-38.9, arrival: 1.1)
+        expectEqual(run.microphoneEnd, end, "it is not written at its arrival time")
+        expectEqual(converter.buffersDropped, 1, "the converter drops it as late")
+        expect(RecLog.lines.allSatisfy { !$0.contains("a buffer is stamped") }, "it keeps its own time: \(RecLog.lines)")
+        _ = try await run.close()
+        expect(run.failures.isEmpty, "no failure: \(run.failures)")
+    }
+
+    await test("Writer and monitor: a frame and a tap buffer stamped 12 s ahead as a call connects leave no hole and do not shift the microphone") {
+        // The owner's FaceTime call: as it connected, a buffer stamped about 12 s in the future reached the writer.
+        // Without the checks against the present, the monitor's present ran 12 s ahead: video lost 12 s of picture,
+        // system audio was filled 11 s into the future and its real buffers dropped, and the microphone, filled as
+        // far, was then recorded 11 s late for the rest of the call.
+        let run = try TestRecording(folder: "present-call-connect")
+        let writer = run.writer
+        let converter = try require(writer.micConverter, "converter")
+        try writer.prepareVideo(width: 320, height: 240)
+        let queue = DispatchQueue(label: "HoldfastTests.callConnect")
+        let monitor = RecordingMonitor(queue: queue)
+        var notified = [String]()
+        monitor.notify = { title, _ in notified.append(title) }
+        writer.events.microphoneWritten = { [unowned run] end, peak in
+            run.microphoneEnd = end
+            monitor.microphoneWritten(upTo: end, peak: peak)
+        }
+        writer.events.systemAudioWritten = { [unowned run] end in
+            run.systemAudioEnd = end
+            monitor.systemAudioWritten(upTo: end)
+        }
+        writer.startCapturing()
+        queue.sync { monitor.watch(writer, from: DispatchTime.now().uptimeNanoseconds) }
+        var latestFill = -Double.infinity
+        var videoGap = 0.0
+        // Every buffer arrives 0.1 s after it is stamped, and the monitor ticks after each tenth of a second
+        func step(_ t: Double, tap: Bool = true) throws {
+            run.present = t + 0.1
+            let videoBefore = writer.videoPTS
+            try queue.sync {
+                try run.frame(t)
+                if tap { try run.systemAudio(t, arrival: t + 0.1) }
+                try run.microphone(t, arrival: t + 0.1)
+                monitor.tick(at: DispatchTime.now().uptimeNanoseconds)
+            }
+            if let before = videoBefore, let after = writer.videoPTS { videoGap = max(videoGap, CMTimeGetSeconds(CMTimeSubtract(after, before))) }
+            if let audioEnd = writer.audioEndPTS { latestFill = max(latestFill, CMTimeGetSeconds(audioEnd) - TestRecording.base - run.present) }
+            usleep(15_000)
+        }
+        for index in 0..<30 { try step(Double(index) / 10) }
+        // The call connects: a frame and a tap buffer stamped 12 s ahead, then nothing from the tap for 2 s
+        try queue.sync {
+            try run.frame(3.0 + 12)
+            try run.systemAudio(3.0 + 12, arrival: 3.1)
+        }
+        for index in 30..<50 { try step(Double(index) / 10, tap: false) }
+        for index in 50..<70 { try step(Double(index) / 10) }
+        queue.sync { monitor.stop() }
+
+        expect(try require(writer.clockAnchor, "clock anchor").raw <= run.at(7.1), "the monitor's present stayed with the present")
+        expect(videoGap < 0.25, "no hole in the video: the longest step between frames is \(videoGap) s")
+        expectEqual(writer.videoPTS, run.at(6.9), "every frame on time is written")
+        expect(latestFill <= 1.0001, "system audio never reaches more than a second past the present: \(latestFill) s")
+        expectClose(CMTimeGetSeconds(try require(run.systemAudioEnd, "system audio")) - TestRecording.base, 7, within: 0.01, "the tap's buffers after the silence are recorded")
+        expectEqual(converter.shifts, 0, "the microphone is not shifted")
+        expectEqual(converter.buffersDropped, 0, "nor any of it dropped")
+        expectClose(CMTimeGetSeconds(converter.end) - TestRecording.base, 7, within: 0.03, "it ends with its last buffer, less what the resampler holds")
+        expectEqual(notified, [], "nothing to notify")
+        expect(RecLog.lines.contains { $0.contains("A video buffer ending 12.") && $0.contains("after the present was left out") }, "the frame is left out: \(RecLog.lines)")
+        expect(RecLog.lines.contains { $0.contains("System audio: a buffer is stamped 11.90 s after it arrived") }, "the tap buffer is given its arrival time")
+
+        _ = try await run.close()
+        expect(run.failures.isEmpty, "no failure: \(run.failures)")
+        let tracks = try await TestRecording.tracks(of: run.recording.rawURL)
+        for (name, track) in [("video", tracks.video.first), ("system audio", tracks.audio.first), ("microphone", tracks.audio.last)] {
+            expectClose(try require(track, name).end, 7, within: 0.25, "\(name) is as long as the call")
+        }
     }
 
     await test("Writer: what the monitor fills or repeats never reaches past a second after the present") {

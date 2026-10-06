@@ -362,6 +362,65 @@ func micConverterTests() async {
         expectClose(mic.trackSeconds, mic.wallSeconds, within: 0.0001, "full length, no longer")
     }
 
+    await test("MicConverter: a backlog drained only a little faster than real time is still dropped, not shifted") {
+        // Held for 11 s while the monitor filled the track, then handed over at 1.1 times real time: the age of the
+        // late buffers falls by only 0.2 s over 2 s, within the steady range, but falls all along
+        for rate in [1.1, 1.05] {
+            RecLog.lines = []
+            let mic = try Mic()
+            mic.monitor = true
+            try mic.deliver(3)
+            let held = mic.now
+            let step: Int64 = 20_000_000
+            let release = held + 11_000_000_000
+            let dropsBefore = mic.converter.buffersDropped
+            var offsets = [Double]()
+            var k: Int64 = 0
+            var live = 0
+            while live < 100 {
+                let pts = held + k * step
+                let drained = release + Int64((Double(k * step) / rate).rounded())
+                let onTime = pts + step + 5_000_000
+                if onTime >= drained { live += 1 }
+                if try mic.receive(stampedAt: pts, arrival: max(drained, onTime)) {
+                    let end = try require(mic.track.end, "end of the track")
+                    offsets.append(CMTimeGetSeconds(CMTimeSubtract(end, mic.stamp(pts + step))))
+                }
+                k += 1
+            }
+            expectEqual(mic.converter.shifts, 0, "\(rate)x: no shift")
+            expect(RecLog.lines.allSatisfy { !$0.contains("behind the recording") }, "\(rate)x: no shift in the log: \(RecLog.lines.filter { $0.contains("behind") })")
+            expect(mic.converter.buffersDropped - dropsBefore > 500, "\(rate)x: the backlog is dropped: \(mic.converter.buffersDropped - dropsBefore) buffers")
+            let worst = offsets.map { abs($0) }.max() ?? 1
+            expect(!offsets.isEmpty && worst <= 0.02, "\(rate)x: what is written sits at its own time: worst \(worst) s of \(offsets.count)")
+            expectEqual(RecLog.lines.filter { $0.contains("Microphone backlog") }.count, 1, "\(rate)x: logged as a backlog")
+            expect(mic.track.contiguous, "\(rate)x: continuous")
+        }
+    }
+
+    await test("MicConverter: a backlog 40 s old is dropped where silence was filled, without a shift") {
+        let mic = try Mic()
+        mic.monitor = true
+        try mic.deliver(2)
+        let held = mic.now
+        let step: Int64 = 20_000_000
+        let release = held + 40_000_000_000
+        var k: Int64 = 0
+        var firstWritten: Int64?
+        while firstWritten == nil || k < 2_200 {
+            let pts = held + k * step
+            let arrival = max(release + k * step / 3, pts + step + 5_000_000)
+            if try mic.receive(stampedAt: pts, arrival: arrival), firstWritten == nil { firstWritten = pts }
+            k += 1
+        }
+        expectEqual(mic.converter.shifts, 0, "no shift")
+        let resumed = Double(try require(firstWritten, "written again") - held) / 1_000_000_000
+        expect(resumed > 39 && resumed < 61, "only the buffers after the silence the monitor wrote are written: from \(resumed) s on")
+        expect(mic.track.contiguous, "continuous")
+        mic.stop()
+        expectClose(mic.trackSeconds, mic.wallSeconds, within: 0.0001, "full length, no longer")
+    }
+
     await test("MicConverter: a few late buffers are dropped without shifting the timeline") {
         let mic = try Mic()
         try mic.deliver(1)
