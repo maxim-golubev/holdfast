@@ -322,6 +322,7 @@ struct GeneralSettings: View {
     @AppStorage(AppSettings.$showOnDock)  private var showOnDock: Bool
     @AppStorage(AppSettings.$showMenubar) private var showMenubar: Bool
     @AppStorage(AppSettings.$openPanelAtLaunch) private var openPanelAtLaunch: Bool
+    @AppStorage(AppSettings.$showDuringScreenSharing) private var showDuringScreenSharing: Bool
     @AppStorage(AppSettings.$countdown)   private var countdown: Int
     @AppStorage(AppSettings.$notifications) private var notifications: Notifications
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -339,6 +340,9 @@ struct GeneralSettings: View {
                     RowLabel("Open the Panel When Holdfast Opens", "Off: Holdfast opens in the menu bar only. The panel still opens from the menu bar item, the Open Main Panel shortcut, or by opening Holdfast again. With neither a menu bar item nor a Dock icon it always opens.")
                 }
                 .help("Whether the main panel appears in the middle of the screen when you open Holdfast")
+                Toggle(isOn: $showDuringScreenSharing) {
+                    RowLabel("Show During Screen Sharing", "Off (the default): when you share your screen in a call, or another app records it, the others do not see Holdfast's menu bar item, panel, preview or settings. Holdfast's own recordings leave them out either way.")
+                }
                 Toggle(isOn: Binding(get: { launchAtLogin }, set: { setLaunchAtLogin($0) })) {
                     RowLabel("Launch at Login", "At login Holdfast waits in the menu bar; the panel does not open.")
                 }
@@ -377,6 +381,7 @@ struct GeneralSettings: View {
         .onAppear { launchAtLogin = SMAppService.mainApp.status == .enabled }
         // Once the setting is stored
         .onChange(of: showMenubar) { DispatchQueue.main.async { StatusItemController.shared.refresh() } }
+        .onChange(of: showDuringScreenSharing) { DispatchQueue.main.async { ScreenSharingPrivacy.apply() } }
         .onChange(of: showOnDock) { _, shown in
             if shown {
                 NSApp.setActivationPolicy(.regular)

@@ -15,6 +15,7 @@
 		18A551F82D0749C3008FC5F6 /* SleepPreventer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A551F12D0749C3008FC5F6 /* SleepPreventer.swift */; };
 		18FEBDAE2BCF8300003F09BC /* DiskSpace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDAD2BCF8300003F09BC /* DiskSpace.swift */; };
 		18FEBDB42BCF8600003F09BC /* RecLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDB32BCF8600003F09BC /* RecLog.swift */; };
+		18FEBDF12BCF9900003F09BC /* ScreenSharingPrivacy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDF02BCF9900003F09BC /* ScreenSharingPrivacy.swift */; };
 		18FEBDB82BCF8800003F09BC /* WindowID.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDB72BCF8800003F09BC /* WindowID.swift */; };
 		18A551FA2D0749C3008FC5F6 /* WindowAccessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A551F32D0749C3008FC5F6 /* WindowAccessor.swift */; };
 		18A551FB2D0749C3008FC5F6 /* WindowHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A551F42D0749C3008FC5F6 /* WindowHighlighter.swift */; };
@@ -67,6 +68,7 @@
 		18A551F12D0749C3008FC5F6 /* SleepPreventer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepPreventer.swift; sourceTree = "<group>"; };
 		18FEBDAD2BCF8300003F09BC /* DiskSpace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskSpace.swift; sourceTree = "<group>"; };
 		18FEBDB32BCF8600003F09BC /* RecLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecLog.swift; sourceTree = "<group>"; };
+		18FEBDF02BCF9900003F09BC /* ScreenSharingPrivacy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSharingPrivacy.swift; sourceTree = "<group>"; };
 		18FEBDB72BCF8800003F09BC /* WindowID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowID.swift; sourceTree = "<group>"; };
 		18A551F32D0749C3008FC5F6 /* WindowAccessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowAccessor.swift; sourceTree = "<group>"; };
 		18A551F42D0749C3008FC5F6 /* WindowHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowHighlighter.swift; sourceTree = "<group>"; };
@@ -135,6 +137,7 @@
 				18A551F12D0749C3008FC5F6 /* SleepPreventer.swift */,
 				18FEBDAD2BCF8300003F09BC /* DiskSpace.swift */,
 				18FEBDB32BCF8600003F09BC /* RecLog.swift */,
+				18FEBDF02BCF9900003F09BC /* ScreenSharingPrivacy.swift */,
 				18FEBDB72BCF8800003F09BC /* WindowID.swift */,
 				18A551F32D0749C3008FC5F6 /* WindowAccessor.swift */,
 				18A551F42D0749C3008FC5F6 /* WindowHighlighter.swift */,
@@ -305,6 +308,7 @@
 				18A551F82D0749C3008FC5F6 /* SleepPreventer.swift in Sources */,
 				18FEBDAE2BCF8300003F09BC /* DiskSpace.swift in Sources */,
 				18FEBDB42BCF8600003F09BC /* RecLog.swift in Sources */,
+				18FEBDF12BCF9900003F09BC /* ScreenSharingPrivacy.swift in Sources */,
 				18FEBDB82BCF8800003F09BC /* WindowID.swift in Sources */,
 				18CEED922D08312C00FBC4BF /* PreviewView.swift in Sources */,
 				18A551FA2D0749C3008FC5F6 /* WindowAccessor.swift in Sources */,

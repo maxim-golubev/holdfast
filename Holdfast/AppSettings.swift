@@ -101,6 +101,8 @@ enum AppSettings {
     @Setting("showMenubar", default: true) static var showMenubar: Bool
     /// "Open the Panel When Holdfast Opens"
     @Setting("openPanelAtLaunch", default: false) static var openPanelAtLaunch: Bool
+    /// "Show During Screen Sharing": off, the app's windows and menu bar item are left out of other apps' captures
+    @Setting("showDuringScreenSharing", default: false) static var showDuringScreenSharing: Bool
     /// The last of the one-time changes to stored settings (`migrate`) that this installation has had
     @Setting("settingsVersion", default: 0) private static var settingsVersion: Int
     /// Seconds counted down before a recording starts, 0 for none

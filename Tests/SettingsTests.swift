@@ -25,6 +25,7 @@ func settingsTests() async {
         check(AppSettings.$showOnDock, "showOnDock", false)
         check(AppSettings.$showMenubar, "showMenubar", true)
         check(AppSettings.$openPanelAtLaunch, "openPanelAtLaunch", false)
+        check(AppSettings.$showDuringScreenSharing, "showDuringScreenSharing", false)
         check(AppSettings.$countdown, "countdown", 0)
         check(AppSettings.$preventSleep, "preventSleep", true)
         check(AppSettings.$showPreview, "showPreview", true)

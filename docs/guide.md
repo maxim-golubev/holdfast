@@ -240,7 +240,7 @@ on, a mixed audio file next to it.
   recordings; one launched after the start cannot be left out.
 - **Output:** **Save Folder**, **Show a Preview**, and **Recordings Log**, which
   opens the log.
-- **General:** **Show in the Menu Bar** (on), **Show in the Dock** (off),
+- **General:** **Show in the Menu Bar** (on), **Show in the Dock** (off), **Show During Screen Sharing** (off: when you share your screen in a call, or another app records it, others do not see Holdfast's menu bar item or windows),
   **Open the Panel When Holdfast Opens** (off: Holdfast opens in the menu bar
   only; with neither a menu bar item nor a Dock icon the panel always opens),
   **Launch at Login** (the panel does not open at login), **Countdown Before a

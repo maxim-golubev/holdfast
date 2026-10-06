@@ -321,6 +321,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
+        ScreenSharingPrivacy.start()
         withRecorder { $0.recovery.start(in: AppSettings.saveDirectory) }
         // Holdfast starts in the menu bar. Opened by the user, it shows its panel only when "Open the Panel When
         // Holdfast Opens" says so, or when it has neither a menu bar item nor a Dock icon: nothing else would show
