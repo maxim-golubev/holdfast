@@ -119,8 +119,12 @@ extension RecorderController {
                 return
             }
         }
-        // The output files and the settings this recording keeps until it is finished, whatever changes meanwhile
-        let recording = RecordingContext(audioOnly: target.type == .systemaudio, recordMic: microphone != nil, fastStart: fastStart, saveDirectory: store.directory)
+        // The output files and the settings this recording keeps until it is finished, whatever changes meanwhile. With
+        // the process tap the writer has a track for the backup of the system audio as well.
+        let audioOnly = target.type == .systemaudio
+        let permission = SystemAudioPermission.status()
+        let tap = SystemAudioSelection.usesTap(wanted: RecordingContext.wantsSystemAudio(audioOnly: audioOnly, fastStart: fastStart), permission: permission)
+        let recording = RecordingContext(audioOnly: audioOnly, recordMic: microphone != nil, fastStart: fastStart, saveDirectory: store.directory, tap: tap)
         let writer = MovieWriter(recording: recording, micConverter: microphone?.converter)
         session.install(writer)
         if recording.audioOnly {
@@ -131,7 +135,7 @@ extension RecorderController {
                 return
             }
         }
-        Task { await RecorderController.record(session, filter: filter, target: target, writer: writer, microphone: microphone) }
+        Task { await RecorderController.record(session, filter: filter, target: target, writer: writer, microphone: microphone, permission: permission) }
     }
 
     /// A recording that was set up but could not be started: everything created for it is removed, the state goes
@@ -173,18 +177,20 @@ extension RecorderController {
         return (MicrophoneChoice(converter: converter, selection: selected, selectionName: selectedName, captureDeviceID: nil, active: defaultDevice), nil)
     }
 
-    /// Not on the main thread: creating the stream and starting the capture take their time.
-    private nonisolated static func record(_ session: RecordingSession, filter: SCContentFilter, target: CaptureTarget, writer: MovieWriter, microphone: MicrophoneChoice?) async {
+    /// Not on the main thread: creating the stream and starting the capture take their time. `permission` is the
+    /// system audio permission the recording's context was made with.
+    private nonisolated static func record(_ session: RecordingSession, filter: SCContentFilter, target: CaptureTarget, writer: MovieWriter, microphone: MicrophoneChoice?, permission: TapPermission) async {
         let recording = writer.recording
         let audioOnly = recording.audioOnly
         // Every buffer, the stream's and the tap's, goes to this session
         let deliver: (CaptureSample) -> Void = { session.received($0) }
 
-        // System audio from a process tap when it can be started, which hears FaceTime and phone calls; from the
-        // stream otherwise, never from both. The tap is global whatever is recorded: a window or application
-        // recording has every app's sound, since call audio comes from avconferenced, not from the call's app.
+        // System audio from a process tap when it is allowed, which hears FaceTime and phone calls, with the stream's
+        // system audio recorded as its backup on a track of its own; from the stream alone otherwise. The tap is
+        // global whatever is recorded: a window or application recording has every app's sound, since call audio
+        // comes from avconferenced, not from the call's app.
         var systemAudio: SystemAudioSource?
-        let route = SystemAudioSelection.choose(wanted: recording.systemAudio, permission: SystemAudioPermission.status()) {
+        let route = SystemAudioSelection.choose(wanted: recording.systemAudio, permission: permission) {
             let source = SystemAudioSource(factory: .coreAudio, sampleQueue: session.queue, onSample: deliver)
             try source.start()
             systemAudio = source
@@ -192,10 +198,10 @@ extension RecorderController {
         if case .screenCaptureKit(let reason, _) = route {
             RecLog.write("System audio: screen capture, without call audio (\(reason))")
         }
-        // A tap that failed is also shown where the track warnings are, for the whole recording
+        // A tap that cannot run at all is also shown where the track warnings are, for the whole recording
         if let warning = SystemAudioSelection.warning(for: route) { await session.showNotice(warning) }
         let conf = CaptureSource.configuration(for: recording, target: target, filter: filter, microphoneDeviceID: microphone?.captureDeviceID,
-                                               capturesAudio: route.streamCapturesAudio)
+                                               capturesAudio: recording.systemAudio)
 
         if !audioOnly && !AppSettings.usesHEVC && !Encoder.encodesInHardware(kCMVideoCodecType_H264, width: Int32(conf.width), height: Int32(conf.height)) {
             let button = showAlertSyncOnMainThread(

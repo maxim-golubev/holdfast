@@ -6,8 +6,9 @@
 import AVFoundation
 import Foundation
 
-/// The audio mix that follows a video recording with system audio and a microphone, and what can be told about a
-/// recording an earlier run left behind by opening it. The names of the files are `RecordingFileStore`'s.
+/// The audio mix that follows a video recording with system audio and a microphone, or with the process tap and its
+/// backup, and what can be told about a recording an earlier run left behind by opening it. The names of the files
+/// are `RecordingFileStore`'s.
 ///
 /// Nothing here deletes or renames a file. It writes the mix to the URL it is given and says whether that file can
 /// be trusted; the caller decides what happens to the files.
@@ -21,34 +22,143 @@ enum RecordingMixer {
         AVLinearPCMIsBigEndianKey: false,
         AVLinearPCMIsNonInterleaved: false
     ]
+    /// What the tracks are read as: 48 kHz stereo float, interleaved
+    private static var trackSettings: [String: Any] {
+        var settings = pcmSettings
+        settings[AVSampleRateKey] = 48000
+        settings[AVNumberOfChannelsKey] = 2
+        return settings
+    }
+    static let sampleRate = 48000.0
 
-    /// Writes `source` to `output` in one pass: the video samples are copied as they are, and all audio tracks are
-    /// mixed into one track encoded with `audioSettings`. `progress` gets a value from 0 to 1, on a background queue.
-    /// `source` is only read. When this throws, `output` is missing or incomplete.
-    static func mix(source: URL, output: URL, fileType: AVFileType, audioSettings: [String: Any], progress: @escaping (Double) -> Void) async throws {
+    /// The audio tracks of a recording: the system audio (the tap's, when there is a backup), the backup of the
+    /// system audio, the microphone. Told by their titles (`MovieWriter.TrackTitle`); in a file without titles, one
+    /// written before there were any, by their order: system audio, then microphone.
+    struct Layout {
+        var system: AVAssetTrack?
+        var backup: AVAssetTrack?
+        var microphone: AVAssetTrack?
+
+        static func read(_ tracks: [AVAssetTrack]) async throws -> Layout {
+            let ordered = tracks.sorted { $0.trackID < $1.trackID }
+            var layout = Layout()
+            var titled = false
+            for track in ordered {
+                guard let title = try await RecordingMixer.title(of: track) else { continue }
+                titled = true
+                switch title {
+                case MovieWriter.TrackTitle.system, MovieWriter.TrackTitle.tap: layout.system = track
+                case MovieWriter.TrackTitle.backup: layout.backup = track
+                case MovieWriter.TrackTitle.microphone: layout.microphone = track
+                default: break
+                }
+            }
+            guard !titled else { return layout }
+            switch ordered.count {
+            case 1: return Layout(system: ordered[0])
+            case 2: return Layout(system: ordered[0], microphone: ordered[1])
+            case 3: return Layout(system: ordered[0], backup: ordered[1], microphone: ordered[2])
+            default: return layout
+            }
+        }
+
+        /// The tracks there are, in the order the writer adds them
+        var all: [AVAssetTrack] { [system, backup, microphone].compactMap { $0 } }
+    }
+
+    /// The title a track was written with, nil when it has none
+    static func title(of track: AVAssetTrack) async throws -> String? {
+        for item in try await track.load(.commonMetadata) where item.commonKey == .commonKeyTitle {
+            if let title = try await item.load(.stringValue) { return title }
+        }
+        return nil
+    }
+
+    /// What a mix did with the system audio: which source each stretch came from (`SystemAudioChoice`; empty when
+    /// the recording has no backup and its system audio track is taken throughout), and whether the microphone was
+    /// kept as a track of its own
+    struct MixPlan {
+        var segments: [SystemAudioChoice.Segment]
+        var separateMicrophone: Bool
+
+        /// The sources of the system audio from `start` to `end` seconds
+        func sources(from start: Double, to end: Double) -> Set<SystemAudioChoice.Source> {
+            guard !segments.isEmpty else { return [.tap] }
+            return Set(segments.filter { $0.end > start && $0.start < end }.map(\.source))
+        }
+    }
+
+    /// Writes `source` to `output` in one pass: the video samples are copied as they are, and the audio tracks are
+    /// mixed into one track encoded with `audioSettings`. With the process tap's backup on a track of its own, the
+    /// system audio is the tap's or the backup's stretch by stretch, never both (`SystemAudioChoice`, from the tap's
+    /// recorded `tapSpans`, nil when they are not known); with `separateMicrophone` the microphone is not mixed in
+    /// but copied as a second audio track. `progress` gets a value from 0 to 1, on a background queue. `source` is
+    /// only read. Returns what was done with the system audio; when this throws, `output` is missing or incomplete.
+    @discardableResult
+    static func mix(source: URL, output: URL, fileType: AVFileType, audioSettings: [String: Any], tapSpans: TapSpans? = nil,
+                    separateMicrophone: Bool = false, progress: @escaping (Double) -> Void) async throws -> MixPlan {
         let asset = AVURLAsset(url: source)
         let videoTracks = try await asset.loadTracks(withMediaType: .video)
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         guard let videoTrack = videoTracks.first, videoTracks.count == 1 else { throw RecordingError("The recording has no video track.") }
-        guard audioTracks.count > 1 else { throw RecordingError("The recording does not have two audio tracks to mix.") }
+        let layout = try await Layout.read(audioTracks)
+        guard audioTracks.count > 1, let system = layout.system, layout.backup != nil || layout.microphone != nil else {
+            throw RecordingError("The recording does not have two audio tracks to mix.")
+        }
+        let separate = separateMicrophone && layout.backup != nil && layout.microphone != nil
         let duration = try await asset.load(.duration)
         let seconds = CMTimeGetSeconds(duration)
         guard seconds.isFinite, seconds > 0 else { throw RecordingError("The recording is empty.") }
         let transform = try await videoTrack.load(.preferredTransform)
         guard let videoFormat = try await videoTrack.load(.formatDescriptions).first else { throw RecordingError("The video track has no format.") }
 
+        // Which source of the system audio each stretch takes
+        var plan = MixPlan(segments: [], separateMicrophone: separate)
+        var tapGain: GainCurve?
+        if let backup = layout.backup {
+            plan.segments = try await choose(tap: system, backup: backup, in: asset, spans: tapSpans)
+            tapGain = SystemAudioChoice.tapGain(for: plan.segments, spans: tapSpans)
+            RecLog.write("System audio in the mix: " + SystemAudioChoice.summary(plan.segments) + (tapSpans == nil ? " (the tap's spans were not known: judged by the sound alone)" : ""))
+        }
+
         let reader = try AVAssetReader(asset: asset)
         // No output settings: the compressed frames are handed over as they are in the file
         let videoOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
         videoOutput.alwaysCopiesSampleData = false
-        var mixSettings = pcmSettings
-        mixSettings[AVSampleRateKey] = 48000
-        mixSettings[AVNumberOfChannelsKey] = 2
-        let audioOutput = AVAssetReaderAudioMixOutput(audioTracks: audioTracks, audioSettings: mixSettings)
-        audioOutput.alwaysCopiesSampleData = false
-        guard reader.canAdd(videoOutput), reader.canAdd(audioOutput) else { throw RecordingError("The recording cannot be read for mixing.") }
+        guard reader.canAdd(videoOutput) else { throw RecordingError("The recording cannot be read for mixing.") }
         reader.add(videoOutput)
-        reader.add(audioOutput)
+        var parts = [MixedAudio.Part]()
+        func pcm(_ track: AVAssetTrack) throws -> TrackPCM {
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: trackSettings)
+            output.alwaysCopiesSampleData = false
+            guard reader.canAdd(output) else { throw RecordingError("The recording cannot be read for mixing.") }
+            reader.add(output)
+            return TrackPCM(output)
+        }
+        parts.append(MixedAudio.Part(track: try pcm(system), gain: tapGain, complement: false))
+        if let backup = layout.backup { parts.append(MixedAudio.Part(track: try pcm(backup), gain: tapGain, complement: true)) }
+        var microphoneOutput: AVAssetReaderTrackOutput?
+        var microphoneFormat: CMFormatDescription?
+        if let microphone = layout.microphone {
+            if separate {
+                let output = AVAssetReaderTrackOutput(track: microphone, outputSettings: nil)
+                output.alwaysCopiesSampleData = false
+                guard reader.canAdd(output) else { throw RecordingError("The recording cannot be read for mixing.") }
+                reader.add(output)
+                microphoneOutput = output
+                microphoneFormat = try await microphone.load(.formatDescriptions).first
+            } else {
+                parts.append(MixedAudio.Part(track: try pcm(microphone), gain: nil, complement: false))
+            }
+        }
+        // Up to the end of the longest track that goes into the mix
+        var end = 0.0
+        for track in [system, layout.backup, separate ? nil : layout.microphone].compactMap({ $0 }) {
+            end = max(end, CMTimeGetSeconds(try await track.load(.timeRange).end))
+        }
+        guard let mixed = MixedAudio(parts: parts, frames: Int64((end * sampleRate).rounded())) else {
+            throw RecordingError("The audio could not be mixed.")
+        }
 
         let writer = try AVAssetWriter(outputURL: output, fileType: fileType)
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: videoFormat)
@@ -59,6 +169,19 @@ enum RecordingMixer {
         guard writer.canAdd(videoInput), writer.canAdd(audioInput) else { throw RecordingError("The mixed recording cannot be written in this format.") }
         writer.add(videoInput)
         writer.add(audioInput)
+        var pairs: [(next: () -> CMSampleBuffer?, input: AVAssetWriterInput)] = [
+            ({ videoOutput.copyNextSampleBuffer() }, videoInput),
+            ({ mixed.next() }, audioInput),
+        ]
+        if let microphoneOutput {
+            audioInput.metadata = [MovieWriter.titleItem(MovieWriter.TrackTitle.system)]
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: microphoneFormat)
+            input.expectsMediaDataInRealTime = false
+            input.metadata = [MovieWriter.titleItem(MovieWriter.TrackTitle.microphone)]
+            guard writer.canAdd(input) else { throw RecordingError("The mixed recording cannot be written in this format.") }
+            writer.add(input)
+            pairs.append(({ microphoneOutput.copyNextSampleBuffer() }, input))
+        }
 
         guard reader.startReading() else { throw reader.error ?? RecordingError("The recording could not be read.") }
         guard writer.startWriting() else {
@@ -68,7 +191,7 @@ enum RecordingMixer {
         writer.startSession(atSourceTime: .zero)
 
         var lastPercent = -1
-        let copied = await copy([(videoOutput, videoInput), (audioOutput, audioInput)], reader: reader, writer: writer) { buffer, index in
+        let copied = await copy(pairs, reader: reader, writer: writer) { buffer, index in
             guard index == 0 else { return }
             let percent = Int(max(0, min(1, CMTimeGetSeconds(buffer.presentationTimeStamp) / seconds)) * 100)
             // Video samples come in decoding order, so their times do not only go up
@@ -78,7 +201,7 @@ enum RecordingMixer {
             }
         }
         // Every state but "completed" is a failure: failed, cancelled, and anything unexpected
-        guard copied == nil, reader.status == .completed else {
+        guard copied == nil, reader.status == .completed, !mixed.failed else {
             let error = writer.error ?? reader.error
             reader.cancelReading()
             writer.cancelWriting()
@@ -92,11 +215,38 @@ enum RecordingMixer {
             throw writer.error ?? RecordingError("The mixed recording could not be closed.")
         }
         progress(1)
+        return plan
+    }
+
+    /// Which source each stretch of the system audio takes, from the levels of the tap's and the backup's tracks
+    private static func choose(tap: AVAssetTrack, backup: AVAssetTrack, in asset: AVAsset, spans: TapSpans?) async throws -> [SystemAudioChoice.Segment] {
+        let tapLevels = try blockLevels(of: tap, in: asset)
+        let backupLevels = try blockLevels(of: backup, in: asset)
+        let end = max(CMTimeGetSeconds(try await tap.load(.timeRange).end), CMTimeGetSeconds(try await backup.load(.timeRange).end))
+        return SystemAudioChoice.plan(tap: tapLevels, backup: backupLevels, spans: spans, duration: end)
+    }
+
+    /// The RMS level of a track, all channels, every `SystemAudioChoice.block` seconds from the start of the file
+    static func blockLevels(of track: AVAssetTrack, in asset: AVAsset) throws -> [Float] {
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: trackSettings)
+        output.alwaysCopiesSampleData = false
+        guard reader.canAdd(output) else { throw RecordingError("The audio cannot be read to choose its sources.") }
+        reader.add(output)
+        guard reader.startReading() else { throw reader.error ?? RecordingError("The audio cannot be read to choose its sources.") }
+        var levels = BlockLevels(rate: sampleRate)
+        var samples = [Float]()
+        while let buffer = output.copyNextSampleBuffer() {
+            guard let count = TrackPCM.copy(buffer, into: &samples) else { continue }
+            let first = Int64((CMTimeGetSeconds(buffer.presentationTimeStamp) * sampleRate).rounded())
+            samples.withUnsafeBufferPointer { levels.add($0, frames: count, channels: 2, at: first) }
+        }
+        guard reader.status == .completed else { throw reader.error ?? RecordingError("The audio cannot be read to choose its sources.") }
+        return levels.finish()
     }
 
     /// How long the copy may go without moving a single sample before it is given up
     static let stallLimit: TimeInterval = 60
-
     /// What the copy and its watchdog share: they run on different queues
     private final class CopyState {
         private let lock = NSLock()
@@ -135,12 +285,12 @@ enum RecordingMixer {
         }
     }
 
-    /// Moves every sample of each reader output to its writer input. Returns nil when all of them have reached
+    /// Moves every sample of each source (a reader output, the mixed audio) to its writer input. Returns nil when all of them have reached
     /// their end, and what went wrong otherwise: at once when an append fails, and from a watchdog when the writer
     /// or the reader has failed or no sample has moved for `stallLimit` seconds. The copy runs on one serial queue,
     /// which owns its bookkeeping. The watchdog runs on another, because a read that hangs would hold up the first;
     /// without it a writer that stops asking for data would leave the caller waiting for ever.
-    private static func copy(_ pairs: [(AVAssetReaderOutput, AVAssetWriterInput)], reader: AVAssetReader, writer: AVAssetWriter, each: @escaping (CMSampleBuffer, Int) -> Void) async -> String? {
+    private static func copy(_ pairs: [(next: () -> CMSampleBuffer?, input: AVAssetWriterInput)], reader: AVAssetReader, writer: AVAssetWriter, each: @escaping (CMSampleBuffer, Int) -> Void) async -> String? {
         let queue = DispatchQueue(label: "Holdfast.mix")
         let watchdog = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "Holdfast.mix.watchdog"))
         let failure = await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
@@ -153,7 +303,7 @@ enum RecordingMixer {
                 guard !state.isOver else { return }
                 if !ended[index] {
                     ended[index] = true
-                    pairs[index].1.markAsFinished()
+                    pairs[index].input.markAsFinished()
                     remaining -= 1
                 }
                 if let failure = failure {
@@ -164,10 +314,10 @@ enum RecordingMixer {
                 }
             }
             for (index, pair) in pairs.enumerated() {
-                let (output, input) = pair
+                let (next, input) = pair
                 input.requestMediaDataWhenReady(on: queue) {
                     while !ended[index] && !state.isOver && input.isReadyForMoreMediaData {
-                        guard let buffer = output.copyNextSampleBuffer() else {
+                        guard let buffer = next() else {
                             end(index, failure: nil)
                             return
                         }
@@ -256,6 +406,86 @@ enum RecordingMixer {
         try checkTiming(of: output, sources: sources)
     }
 
+    /// The system audio of a sound-only recording made with the process tap, from its two files: the tap's (`tap`)
+    /// and the backup's (`backup`), each stretch from the source `SystemAudioChoice` takes (`spans` where the tap
+    /// delivered, nil when not known), written to `output` with `settings`, as long as the longer file. Returns
+    /// the stretches; throws, leaving `output` incomplete, when it cannot be written or is not as long as the tap's
+    /// file. Blocks while it renders, so not on the main thread.
+    @discardableResult
+    static func mergeSystemAudio(tap: URL, backup: URL, spans: TapSpans?, to output: URL, settings: [String: Any]) throws -> [SystemAudioChoice.Segment] {
+        let files = try [tap, backup].map { try AVAudioFile(forReading: $0) }
+        let format = files[0].processingFormat
+        guard files[1].processingFormat == format, format.channelCount > 0, !format.isInterleaved else {
+            throw RecordingError("The two system audio files are not in the same format.")
+        }
+        let readBuffers = try files.map { _ in try require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096)) }
+        // The levels, then the plan
+        var levels = [[Float]]()
+        for (file, buffer) in zip(files, readBuffers) {
+            var blocks = BlockLevels(rate: format.sampleRate)
+            var interleaved = [Float]()
+            while file.framePosition < file.length {
+                let first = file.framePosition
+                try file.read(into: buffer, frameCount: 4096)
+                guard buffer.frameLength > 0 else { break }
+                interleave(buffer, into: &interleaved)
+                interleaved.withUnsafeBufferPointer { blocks.add($0, frames: Int(buffer.frameLength), channels: Int(format.channelCount), at: first) }
+            }
+            levels.append(blocks.finish())
+        }
+        let frames = max(files[0].length, files[1].length)
+        let segments = SystemAudioChoice.plan(tap: levels[0], backup: levels[1], spans: spans, duration: Double(frames) / format.sampleRate)
+        let curve = SystemAudioChoice.tapGain(for: segments, spans: spans)
+        RecLog.write("System audio of the sound-only recording: " + SystemAudioChoice.summary(segments) + (spans == nil ? " (the tap's spans were not known: judged by the sound alone)" : ""))
+        // The merge
+        files.forEach { $0.framePosition = 0 }
+        let outputFile = try AVAudioFile(forWriting: output, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let mixed = try require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096))
+        var gains = [Float]()
+        var cursor = 0
+        var position: AVAudioFramePosition = 0
+        while position < frames {
+            let count = AVAudioFrameCount(min(4096, frames - position))
+            for (file, buffer) in zip(files, readBuffers) {
+                buffer.frameLength = 0
+                if file.framePosition < file.length { try file.read(into: buffer, frameCount: count) }
+            }
+            curve.values(from: position, count: Int(count), rate: format.sampleRate, cursor: &cursor, into: &gains)
+            mixed.frameLength = count
+            guard let out = mixed.floatChannelData, let tapData = readBuffers[0].floatChannelData, let backupData = readBuffers[1].floatChannelData else {
+                throw RecordingError("The system audio could not be merged.")
+            }
+            let tapFrames = Int(readBuffers[0].frameLength), backupFrames = Int(readBuffers[1].frameLength)
+            for channel in 0..<Int(format.channelCount) {
+                for frame in 0..<Int(count) {
+                    let fromTap = frame < tapFrames ? tapData[channel][frame] : 0
+                    let fromBackup = frame < backupFrames ? backupData[channel][frame] : 0
+                    out[channel][frame] = gains[frame] * fromTap + (1 - gains[frame]) * fromBackup
+                }
+            }
+            try outputFile.write(from: mixed)
+            position += AVAudioFramePosition(count)
+        }
+        outputFile.close()
+        try verifyConversion(source: files[0].length >= files[1].length ? tap : backup, output: output)
+        return segments
+    }
+
+    /// The frames of a non-interleaved buffer, one after the other with their channels side by side
+    private static func interleave(_ buffer: AVAudioPCMBuffer, into samples: inout [Float]) {
+        let channels = Int(buffer.format.channelCount), frames = Int(buffer.frameLength)
+        if samples.count < channels * frames { samples = [Float](repeating: 0, count: channels * frames) }
+        guard let data = buffer.floatChannelData else { return }
+        for frame in 0..<frames {
+            for channel in 0..<channels { samples[frame * channels + channel] = data[channel][frame] }
+        }
+    }
+
+    private static func require<T>(_ value: T?) throws -> T {
+        guard let value else { throw RecordingError("The audio could not be mixed.") }
+        return value
+    }
+
     /// How far into the files `checkTiming` looks, and in what steps
     private static let timingSeconds = 30.0
     private static let timingStep = 0.01
@@ -319,18 +549,21 @@ enum RecordingMixer {
     /// where the last fragment of each reached the disk, and audio lags the picture by up to a fragment
     static var unfinishedAudioShortfall: Double { CMTimeGetSeconds(MovieWriter.fragmentInterval) + maxAudioVideoDifference }
 
-    /// Throws unless `output` is a complete mix of `source`: one video and one audio track, whose lengths differ
-    /// by `maxAudioVideoDifference` at most (the audio of an `unfinished` recording, one never closed, may be up
-    /// to `unfinishedAudioShortfall` shorter), as long as the source to within a second, and with the microphone
-    /// audible where only the microphone had sound.
-    static func verify(source: URL, output: URL, unfinished: Bool = false) async throws {
+    /// Throws unless `output` is a complete mix of `source`: one video and one audio track (two with the
+    /// microphone kept separate, `plan`), whose lengths differ by `maxAudioVideoDifference` at most (the audio of an
+    /// `unfinished` recording, one never closed, may be up to `unfinishedAudioShortfall` shorter), as long as the
+    /// source to within a second, with the microphone audible where only the microphone had sound, and the system
+    /// audio at the level of the source the plan took for it where only it had sound: neither missing nor doubled.
+    /// `plan` is what the mix returned; without it the system audio's sources are chosen again.
+    static func verify(source: URL, output: URL, unfinished: Bool = false, plan: MixPlan? = nil) async throws {
         guard FileManager.default.fileExists(atPath: output.path) else { throw RecordingError("The mixed recording was not written.") }
         let raw = AVURLAsset(url: source)
         let mixed = AVURLAsset(url: output)
         let video = try await mixed.loadTracks(withMediaType: .video)
-        let audio = try await mixed.loadTracks(withMediaType: .audio)
-        guard video.count == 1, let mixedAudio = audio.first, audio.count == 1 else {
-            throw RecordingError("The mixed recording does not have one video and one audio track.")
+        let audio = try await mixed.loadTracks(withMediaType: .audio).sorted { $0.trackID < $1.trackID }
+        let separate = plan?.separateMicrophone ?? false
+        guard video.count == 1, let mixedAudio = audio.first, audio.count == (separate ? 2 : 1) else {
+            throw RecordingError(separate ? "The mixed recording does not have one video and two audio tracks." : "The mixed recording does not have one video and one audio track.")
         }
         let rawSeconds = CMTimeGetSeconds(try await raw.load(.duration))
         let mixedSeconds = CMTimeGetSeconds(try await mixed.load(.duration))
@@ -350,15 +583,18 @@ enum RecordingMixer {
         guard videoSeconds.isFinite, videoSeconds >= rawVideoSeconds - 1 else {
             throw RecordingError("The video of the mixed recording is shorter than the recording.")
         }
-        // Tracks in the order they were added to the file: system audio, then microphone
-        let rawAudio = try await raw.loadTracks(withMediaType: .audio).sorted { $0.trackID < $1.trackID }
+        let layout = try await Layout.read(try await raw.loadTracks(withMediaType: .audio))
         var rawAudioSeconds = 0.0
-        for track in rawAudio { rawAudioSeconds = max(rawAudioSeconds, CMTimeGetSeconds(try await track.load(.timeRange).duration)) }
+        for track in layout.all { rawAudioSeconds = max(rawAudioSeconds, CMTimeGetSeconds(try await track.load(.timeRange).duration)) }
         guard audioSeconds.isFinite, audioSeconds >= rawAudioSeconds - 1 else {
             throw RecordingError("The audio of the mixed recording is shorter than the recording.")
         }
-        guard rawAudio.count == 2 else { return }
-        try checkMicrophone(system: rawAudio[0], microphone: rawAudio[1], in: raw, mixed: mixedAudio, in: mixed, seconds: rawSeconds)
+        guard let system = layout.system else { return }
+        var used = plan ?? MixPlan(segments: [], separateMicrophone: false)
+        if plan == nil, let backup = layout.backup {
+            used.segments = try await choose(tap: system, backup: backup, in: raw, spans: nil)
+        }
+        try checkLevels(layout, in: raw, mixed: mixedAudio, in: mixed, plan: used, seconds: rawSeconds)
     }
 
     /// Throws unless `output`, an audio file converted from the audio file `source`, opens and is as long as
@@ -378,27 +614,49 @@ enum RecordingMixer {
 
     /// A sound below this (-60 dBFS) counts as silence
     private static let silence = 0.001
+    /// How far the system audio in the mix may be from the level of its source where only it has sound: half of it
+    /// is missing it, one and a half times it is the same sound twice (two sources of one sound add up to twice the
+    /// level)
+    private static let systemLevelRange = 0.5...1.5
 
     /// Looks at up to 30 one-second windows spread over the recording. Where the microphone has sound and system
-    /// audio has next to none, the mix must have sound of about the microphone's level. Throws when it does not in
-    /// half of those windows or more. A recording without such a window passes: there is nothing to tell from.
-    private static func checkMicrophone(system: AVAssetTrack, microphone: AVAssetTrack, in raw: AVAsset, mixed: AVAssetTrack, in mixedAsset: AVAsset, seconds: Double) throws {
+    /// audio has next to none, the mix must have sound of about the microphone's level. Where the system audio has
+    /// sound from one source (the tap's or the backup's, as the plan took it) and the microphone next to none, the
+    /// mix must have it at its level: not missing, as a dead tap would leave it, and not twice. Throws when either
+    /// fails in half of its windows or more. A recording without such windows passes: there is nothing to tell from.
+    private static func checkLevels(_ layout: Layout, in raw: AVAsset, mixed: AVAssetTrack, in mixedAsset: AVAsset, plan: MixPlan, seconds: Double) throws {
+        guard let system = layout.system else { return }
         let count = min(30, Int(seconds))
         guard count > 0 else { return }
-        var microphoneOnly = 0
-        var missing = 0
+        // The microphone counts against the mix's track only when it is mixed into it
+        let microphone = plan.separateMicrophone ? nil : layout.microphone
+        var microphoneOnly = 0, microphoneMissing = 0
+        var systemOnly = 0, systemWrong = 0
         for index in 0..<count {
             let middle = (Double(index) + 0.5) * seconds / Double(count)
-            let range = CMTimeRange(start: CMTime(seconds: max(0, middle - 0.5), preferredTimescale: 48000), duration: CMTime(seconds: 1, preferredTimescale: 48000))
-            let microphoneLevel = try level(of: microphone, in: raw, range: range)
-            guard microphoneLevel > silence else { continue }
-            guard try level(of: system, in: raw, range: range) < microphoneLevel / 4 else { continue }
-            microphoneOnly += 1
-            if try level(of: mixed, in: mixedAsset, range: range) < microphoneLevel / 4 { missing += 1 }
+            let start = max(0, middle - 0.5)
+            let range = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 48000), duration: CMTime(seconds: 1, preferredTimescale: 48000))
+            let sources = plan.sources(from: start, to: start + 1)
+            var systemLevel = 0.0
+            if sources.contains(.tap) { systemLevel = max(systemLevel, try level(of: system, in: raw, range: range)) }
+            if sources.contains(.backup), let backup = layout.backup { systemLevel = max(systemLevel, try level(of: backup, in: raw, range: range)) }
+            let microphoneLevel = try microphone.map { try level(of: $0, in: raw, range: range) } ?? 0
+            let mixedLevel = try level(of: mixed, in: mixedAsset, range: range)
+            if microphoneLevel > silence && systemLevel < microphoneLevel / 4 {
+                microphoneOnly += 1
+                if mixedLevel < microphoneLevel / 4 { microphoneMissing += 1 }
+            }
+            if sources.count == 1 && systemLevel > silence && microphoneLevel < systemLevel / 4 {
+                systemOnly += 1
+                if !systemLevelRange.contains(mixedLevel / systemLevel) { systemWrong += 1 }
+            }
         }
-        print("Mix check: \(count) windows, \(microphoneOnly) with the microphone alone, \(missing) of them without it in the mix")
-        if microphoneOnly > 0 && missing * 2 >= microphoneOnly {
+        print("Mix check: \(count) windows, \(microphoneOnly) with the microphone alone, \(microphoneMissing) of them without it in the mix; \(systemOnly) with system audio alone, \(systemWrong) of them not at its level in the mix")
+        if microphoneOnly > 0 && microphoneMissing * 2 >= microphoneOnly {
             throw RecordingError("The microphone is in the recording but cannot be heard in the mixed audio.")
+        }
+        if systemOnly > 0 && systemWrong * 2 >= systemOnly {
+            throw RecordingError("The system audio is in the recording but the mixed audio does not have it at its level.")
         }
     }
 
@@ -441,8 +699,10 @@ enum RecordingMixer {
         /// (`canContainFragments`), also before the first fragment after the header was written. Closing it rewrites
         /// it as an ordinary movie. (`containsFragments` is false for a file cut off within its first fragment.)
         let fragmented: Bool
-        /// One video track and two audio tracks
+        /// One video track and two or three audio tracks
         let mixable: Bool
+        /// How many audio tracks it has
+        var audioTracks = 0
     }
 
     static func inspect(_ url: URL) async -> Inspection {
@@ -456,6 +716,198 @@ enum RecordingMixer {
         let fragmented = (try? await asset.load(.canContainFragments)) ?? true
         let video = (try? await asset.loadTracks(withMediaType: .video).count) ?? 0
         let audio = (try? await asset.loadTracks(withMediaType: .audio).count) ?? 0
-        return Inspection(seconds: length, fragmented: fragmented, mixable: video == 1 && audio == 2)
+        return Inspection(seconds: length, fragmented: fragmented, mixable: video == 1 && (2...3).contains(audio), audioTracks: audio)
+    }
+}
+
+/// One audio track read as 48 kHz stereo float, interleaved, by the frame: `add` puts the frames of a range into a
+/// mix, each by its gain, placing every buffer the reader hands over at its own time. Frames the track does not have
+/// (before its first buffer, after its end) count as silence. Used on one queue at a time.
+final class TrackPCM {
+    private let output: AVAssetReaderTrackOutput
+    /// Frames from `start` on, from index `head`, two values a frame
+    private var samples = [Float]()
+    private var head = 0
+    private var start: Int64 = 0
+    private var started = false
+    private var ended = false
+    private var incoming = [Float]()
+
+    init(_ output: AVAssetReaderTrackOutput) {
+        self.output = output
+    }
+
+    /// Copies the samples of an interleaved stereo float buffer into `samples` (made large enough); returns how many
+    /// frames it has, nil when it has none
+    static func copy(_ buffer: CMSampleBuffer, into samples: inout [Float]) -> Int? {
+        guard let block = buffer.dataBuffer else { return nil }
+        let count = CMBlockBufferGetDataLength(block) / MemoryLayout<Float>.size
+        guard count >= 2 else { return nil }
+        if samples.count < count { samples = [Float](repeating: 0, count: count) }
+        let status = samples.withUnsafeMutableBytes { bytes -> OSStatus in
+            guard let base = bytes.baseAddress else { return kCMBlockBufferBadPointerParameterErr }
+            return CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count * MemoryLayout<Float>.size, destination: base)
+        }
+        return status == kCMBlockBufferNoErr ? count / 2 : nil
+    }
+
+    private var available: Int { (samples.count - head) / 2 }
+
+    /// Reads what is left of the track, which the mix does not need
+    func drain() {
+        while !ended {
+            if output.copyNextSampleBuffer() == nil { ended = true }
+        }
+        samples = []
+        head = 0
+    }
+
+    /// Adds the frames `from` to `from + count` of the track, each times `gains[i]` (1 without gains), into `mix`
+    /// (interleaved stereo, `count` frames). Frames before `from` are let go: the mix only goes forward.
+    func add(into mix: inout [Float], from: Int64, count: Int, gains: [Float]?) {
+        let needed = from + Int64(count)
+        while !ended && (!started || start + Int64(available) < needed) {
+            guard let buffer = output.copyNextSampleBuffer() else {
+                ended = true
+                break
+            }
+            guard let frames = TrackPCM.copy(buffer, into: &incoming) else { continue }
+            let first = Int64((CMTimeGetSeconds(buffer.presentationTimeStamp) * RecordingMixer.sampleRate).rounded())
+            if !started {
+                started = true
+                start = first
+            }
+            let expected = start + Int64(available)
+            var skip = 0
+            if first > expected {
+                samples.append(contentsOf: repeatElement(0, count: Int(first - expected) * 2))
+            } else if first < expected {
+                skip = Int(min(Int64(frames), expected - first))
+            }
+            if skip < frames { samples.append(contentsOf: incoming[(skip * 2)..<(frames * 2)]) }
+        }
+        guard started else { return }
+        if from > start {
+            let drop = Int(min(from - start, Int64(available)))
+            head += drop * 2
+            start += Int64(drop)
+            if head > 65536 {
+                samples.removeFirst(head)
+                head = 0
+            }
+        }
+        let offset = Int(min(Int64(count), max(0, start - from)))
+        let frames = min(count - offset, available)
+        guard frames > 0 else { return }
+        samples.withUnsafeBufferPointer { source in
+            for index in 0..<frames {
+                let gain = gains?[offset + index] ?? 1
+                let at = (offset + index) * 2, from = head + index * 2
+                mix[at] += source[from] * gain
+                mix[at + 1] += source[from + 1] * gain
+            }
+        }
+    }
+}
+
+/// The mixed audio track, made `chunk` frames at a time from the parts: each track at its gain over time (the
+/// backup at one minus the tap's), added up, as sample buffers of 48 kHz stereo float
+final class MixedAudio {
+    struct Part {
+        let track: TrackPCM
+        /// Nil: the whole track
+        let gain: GainCurve?
+        /// Whether the part takes one minus `gain`
+        let complement: Bool
+    }
+
+    static let chunk = 4096
+    private let parts: [Part]
+    private let frames: Int64
+    private let format: AVAudioFormat
+    private var position: Int64 = 0
+    private var cursors: [Int]
+    private var gains = [Float]()
+    private var mix = [Float]()
+    /// Set when a buffer could not be made: the mix is then incomplete
+    private(set) var failed = false
+
+    init?(parts: [Part], frames: Int64) {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: RecordingMixer.sampleRate, channels: 2, interleaved: true) else { return nil }
+        self.parts = parts
+        self.frames = frames
+        self.format = format
+        cursors = parts.map { _ in 0 }
+    }
+
+    /// The next piece of the mix, nil at its end
+    func next() -> CMSampleBuffer? {
+        guard position < frames, !failed else {
+            // The reader completes only once every output has been read to its end
+            parts.forEach { $0.track.drain() }
+            return nil
+        }
+        let count = Int(min(Int64(MixedAudio.chunk), frames - position))
+        if mix.count < count * 2 { mix = [Float](repeating: 0, count: count * 2) }
+        for index in 0..<(count * 2) { mix[index] = 0 }
+        for (index, part) in parts.enumerated() {
+            if let curve = part.gain {
+                curve.values(from: position, count: count, rate: RecordingMixer.sampleRate, cursor: &cursors[index], into: &gains)
+                if part.complement { for frame in 0..<count { gains[frame] = 1 - gains[frame] } }
+                part.track.add(into: &mix, from: position, count: count, gains: gains)
+            } else {
+                part.track.add(into: &mix, from: position, count: count, gains: nil)
+            }
+        }
+        guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)), let data = pcm.floatChannelData else {
+            failed = true
+            return nil
+        }
+        pcm.frameLength = AVAudioFrameCount(count)
+        mix.withUnsafeBufferPointer { source in
+            guard let base = source.baseAddress else { return }
+            data[0].update(from: base, count: count * 2)
+        }
+        guard let buffer = AudioSilence.sampleBuffer(from: pcm, description: format.formatDescription, at: CMTime(value: position, timescale: CMTimeScale(RecordingMixer.sampleRate))) else {
+            failed = true
+            return nil
+        }
+        position += Int64(count)
+        return buffer
+    }
+}
+
+/// The RMS level of audio every `SystemAudioChoice.block` seconds, all channels together
+struct BlockLevels {
+    private let size: Int64
+    private var sums = [Double]()
+    private var counts = [Int]()
+
+    init(rate: Double) {
+        size = max(1, Int64((rate * SystemAudioChoice.block).rounded()))
+    }
+
+    /// `frames` frames of `channels` interleaved samples, the first at frame `first`
+    mutating func add(_ samples: UnsafeBufferPointer<Float>, frames: Int, channels: Int, at first: Int64) {
+        guard frames > 0, channels > 0, first >= 0 else { return }
+        let last = Int((first + Int64(frames) - 1) / size)
+        if sums.count <= last {
+            sums.append(contentsOf: repeatElement(0, count: last + 1 - sums.count))
+            counts.append(contentsOf: repeatElement(0, count: last + 1 - counts.count))
+        }
+        for frame in 0..<frames {
+            let block = Int((first + Int64(frame)) / size)
+            var sum = 0.0
+            for channel in 0..<channels {
+                let value = Double(samples[frame * channels + channel])
+                sum += value * value
+            }
+            sums[block] += sum
+            counts[block] += channels
+        }
+    }
+
+    func finish() -> [Float] {
+        return zip(sums, counts).map { $1 > 0 ? Float(($0 / Double($1)).squareRoot()) : 0 }
     }
 }

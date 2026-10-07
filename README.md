@@ -19,13 +19,17 @@
 Holdfast lives in the menu bar: no Dock icon, and no window when it opens.
 Start a recording from its menu, its panel, or a shortcut. Holdfast records the
 screen, the sound the Mac plays, and your microphone. When you stop, it mixes
-the two sound sources into one audio track, so the whole meeting plays in any
-player, and keeps the recording as written, with the two tracks separate, next
-to it.
+the sound sources into one audio track, so the whole meeting plays in any
+player, and keeps the recording as written, with its tracks separate, next to
+it.
 
 - **Nothing goes silent:** the microphone keeps recording when the meeting app
   takes it, and follows AirPods as they come and go. In a six-minute test with
   two simulated calls, 18,063 of 18,063 microphone buffers were written.
+- **The other side of the call is always there:** the sound the Mac plays comes
+  from a Core Audio process tap, which hears FaceTime, and screen capture's
+  system audio is recorded beside it as a backup. A tap that stops delivering
+  is rebuilt within a second, and the backup fills the gap in the final file.
 - **A crash costs seconds, not the meeting:** the file is written in
   10-second fragments. After a `kill -9` 35 s into a recording, the next launch
   found the file, recovered 30 s of it, and mixed it. Quitting during a
@@ -42,7 +46,7 @@ QuickRecorder 1.6.7, the microphone track was exact digital silence from 24 s
 on, the moment the meeting app took the AirPods microphone. The other side of
 the call was intact.
 
-Most of the work went into five problems:
+Most of the work went into six problems:
 
 - **A call app silences the microphone.** QuickRecorder taps the microphone
   with AVAudioEngine. When another process opens the input with voice
@@ -69,6 +73,17 @@ Most of the work went into five problems:
   audio track, the same length to within a second, and the microphone audible
   in the mix wherever it was alone in the recording. On any failure the
   two-track recording is what you get, with a report saying where it is.
+- **System audio can die without a word.** In a 47-minute Zoom meeting in a
+  browser, with AirPods, the process tap's aggregate device was clocked by the
+  AirPods in their 24 kHz call mode, and its IOProc delivered nothing for the
+  whole meeting; nothing in Core Audio said so. Measured since: a tap delivers
+  the same whatever device clocks its aggregate device, the Mac's built-in
+  output, none at all, or the AirPods. So Holdfast clocks it by the built-in
+  output, rebuilds a tap that has delivered nothing for a second, in another
+  way after two failures, for as long as the recording runs, and records
+  screen capture's system audio beside it the whole time. The final file takes
+  the tap's sound where the tap delivered and the backup's where it did not,
+  switching where the tap stopped, never both at once.
 - **A dead track must be seen during the meeting, a hiccup must not interrupt
   it.** No microphone audio for 5 seconds, only digital zeros for 20, or no
   system audio for 5 turns the menu bar item into a warning. Once the problem
@@ -79,7 +94,7 @@ Most of the work went into five problems:
 
 One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
-final file. 149 tests run in under half a minute without the app, a screen, or
+final file. 163 tests run in about a minute without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 
@@ -87,9 +102,10 @@ recovery with synthetic buffers and check the files they write.
 
 - ScreenCaptureKit leaves out the audio of FaceTime calls and of phone calls
   taken on the Mac. Holdfast records system audio through a Core Audio process
-  tap instead, which should include them, but this has not yet been verified
-  on a real FaceTime call. Without the System Audio Recording permission it
-  falls back to ScreenCaptureKit, says so, and call audio is missing.
+  tap, which was checked to hear a FaceTime call, with screen capture's as a
+  backup; a stretch in which the tap was dead has only the backup's sound,
+  without FaceTime audio. Without the System Audio Recording permission it
+  falls back to ScreenCaptureKit alone, says so, and call audio is missing.
 - A file that was never closed (a crash, a kill, a power loss) misses up to
   about its last 12 seconds.
 - Only the current save folder is searched for interrupted recordings.
@@ -122,7 +138,7 @@ identifier in Xcode.
 
 ```sh
 Tools/build.sh      # Release build into build/, prints BUILD SUCCEEDED
-Tools/test.sh       # the tests, under half a minute, no app, screen or microphone
+Tools/test.sh       # the tests, about a minute, no app, screen or microphone
 Tools/release.sh    # build/release/Holdfast-<version>.zip, signed and verified
 ```
 

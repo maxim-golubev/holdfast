@@ -9,15 +9,18 @@ import AVFoundation
 import CoreAudio
 import Foundation
 
-/// Core Audio as `SystemAudioTap` uses it, taking notes. `failing` makes that step fail.
+/// Core Audio as `SystemAudioTap` uses it, taking notes. `failing` makes that step fail; `refusedClocks` makes the
+/// aggregate device fail with those main sub-devices (nil: the one without a sub-device).
 final class FakeTapHardware: TapHardware {
     let journal: Journal
     var failing: String?
     var output = TapOutputDevice(id: 40, uid: "speakers-uid", name: "Speakers")
+    var builtIn: TapOutputDevice? = TapOutputDevice(id: 30, uid: "builtin-uid", name: "MacBook Pro Speakers")
     var own: AudioObjectID? = 77
     var format: AudioStreamBasicDescription
     var deviceRate: Double? = nil
     var alive = true
+    var refusedClocks = [String?]()
     /// The aggregate device's input and output streams
     var streams = (input: 1, output: 2)
     /// The IOProc's stream usage that was set, by scope (true: input)
@@ -25,9 +28,12 @@ final class FakeTapHardware: TapHardware {
     /// The IOProc the tap installed, to be called as Core Audio would
     private(set) var ioBlock: AudioDeviceIOBlock?
     private(set) var excluded = [AudioObjectID]()
-    private(set) var aggregateMain: String?
+    /// The main sub-device of every aggregate device asked for, nil for none
+    private(set) var mains = [String?]()
+    var aggregateMain: String? { mains.last ?? nil }
     private(set) var aggregateTap: String?
-    private(set) var watched: (() -> Void)?
+    private(set) var watchers = [() -> Void]()
+    private(set) var watchedObjects = [AudioObjectID]()
 
     init(_ journal: Journal, format: AudioStreamBasicDescription) {
         self.journal = journal
@@ -39,11 +45,15 @@ final class FakeTapHardware: TapHardware {
         journal.note(name)
     }
 
+    /// What the listeners hear when a watched property changes
+    func notifyWatchers() { watchers.forEach { $0() } }
+
     func ownProcessObject() -> AudioObjectID? { own }
     func defaultOutputDevice() throws -> TapOutputDevice {
         if failing == "output" { throw SystemAudioTapError("There is no output device") }
         return output
     }
+    func builtInOutputDevice() -> TapOutputDevice? { failing == "builtIn" ? nil : builtIn }
     func isAlive(deviceUID: String) -> Bool { alive }
     func createTap(excluding excluded: [AudioObjectID]) throws -> (id: AudioObjectID, uid: String) {
         try step("createTap")
@@ -54,9 +64,10 @@ final class FakeTapHardware: TapHardware {
         if failing == "tapFormat" { throw SystemAudioTapError("Reading the tap's format", -50) }
         return format
     }
-    func createAggregateDevice(name: String, uid: String, mainUID: String, tapUID: String) throws -> AudioObjectID {
+    func createAggregateDevice(name: String, uid: String, mainUID: String?, tapUID: String) throws -> AudioObjectID {
+        mains.append(mainUID)
+        if refusedClocks.contains(mainUID) { throw SystemAudioTapError("Creating the aggregate device", -50) }
         try step("createAggregate")
-        aggregateMain = mainUID
         aggregateTap = tapUID
         return 200
     }
@@ -82,7 +93,8 @@ final class FakeTapHardware: TapHardware {
     func destroyTap(_ tap: AudioObjectID) -> OSStatus { journal.note("destroyTap"); return noErr }
     func watch(_ object: AudioObjectID, _ selectors: [AudioObjectPropertySelector], queue: DispatchQueue, _ changed: @escaping () -> Void) -> TapListener? {
         journal.note("watch")
-        watched = changed
+        watchers.append(changed)
+        watchedObjects.append(object)
         return TapListener(object: object, entries: [], queue: queue)
     }
     func unwatch(_ listener: TapListener) { journal.note("unwatch") }
@@ -111,15 +123,15 @@ final class FakeTapHardware: TapHardware {
 /// A tap as `SystemAudioSource` sees it
 final class FakeTap: SystemAudioTapping {
     let number: Int
+    let clock: TapClock
     let deliver: (CMSampleBuffer) -> Void
     let outputChanged: () -> Void
     private let journal: Journal
-    var isCurrent = true
-    let deviceName: String
     let formatText = "48000 Hz, 2 ch, float32 interleaved"
-    init(_ number: Int, device: String, journal: Journal, deliver: @escaping (CMSampleBuffer) -> Void, outputChanged: @escaping () -> Void) {
+    var clockText: String { clock.name }
+    init(_ number: Int, clock: TapClock, journal: Journal, deliver: @escaping (CMSampleBuffer) -> Void, outputChanged: @escaping () -> Void) {
         self.number = number
-        deviceName = device
+        self.clock = clock
         self.journal = journal
         self.deliver = deliver
         self.outputChanged = outputChanged
@@ -127,50 +139,54 @@ final class FakeTap: SystemAudioTapping {
     func stop() { journal.note("tap\(number).stop") }
 }
 
-/// Makes `FakeTap`s, fails while `fails` is above zero, and lets a test announce device changes
+/// Makes `FakeTap`s in the order `constructions` says, failing while `fails` is above zero or for the clocks in
+/// `refused`
 final class FakeTapFactory {
     let journal = Journal()
     private let lock = NSLock()
     private var made = [FakeTap]()
     var fails = 0
-    var device = "Speakers"
-    /// A failed make announces a device-list change, as the aggregate device a real one creates and destroys does
-    var failureChangesDevices = false
-    private(set) var announce: ((String) -> Void)?
-    private(set) var watching = false
+    var refused = Set<TapClock>()
+    var constructions: [TapClock] = [.builtInOutput, .none, .defaultOutput]
 
     var taps: [FakeTap] { lock.lock(); defer { lock.unlock() }; return made }
 
     var factory: SystemAudioSource.Factory {
-        return SystemAudioSource.Factory(makeTap: { [self] _, deliver, outputChanged in
+        return SystemAudioSource.Factory(constructions: { [self] in
             lock.lock()
             defer { lock.unlock() }
-            if fails > 0 {
-                fails -= 1
-                journal.note("make failed")
-                if failureChangesDevices {
-                    announce?("the audio devices changed")
-                    announce?("the audio devices changed")
-                }
+            return constructions
+        }, makeTap: { [self] clock, _, deliver, outputChanged in
+            lock.lock()
+            defer { lock.unlock() }
+            if fails > 0 || refused.contains(clock) {
+                if fails > 0 { fails -= 1 }
+                journal.note("make failed: \(clock)")
                 throw SystemAudioTapError("Creating the process tap failed ('!hog')")
             }
-            let tap = FakeTap(made.count + 1, device: device, journal: journal, deliver: deliver, outputChanged: outputChanged)
+            let tap = FakeTap(made.count + 1, clock: clock, journal: journal, deliver: deliver, outputChanged: outputChanged)
             made.append(tap)
-            journal.note("tap\(tap.number).make on \(device)")
+            journal.note("tap\(tap.number).make: \(clock)")
             return tap
-        }, watchDevices: { [self] queue, changed in
-            watching = true
-            announce = { reason in queue.async { changed(reason) } }
-            return { [self] in
-                watching = false
-                journal.note("unwatch devices")
-            }
-        }, defaultOutput: { [self] in
-            lock.lock()
-            defer { lock.unlock() }
-            return device
         })
     }
+}
+
+/// Keeps `tap` delivering a buffer every 10 ms on a queue of its own, as a live IOProc does, until `stop`
+final class LiveTap {
+    private let stopped = NSLock()
+    private var running = true
+    init(_ tap: FakeTap) throws {
+        let buffer = try tapBuffer(tapFormat(interleaved: true), frames: 480, at: time(1))
+        DispatchQueue.global().async { [self] in
+            while isRunning {
+                tap.deliver(buffer)
+                usleep(10_000)
+            }
+        }
+    }
+    private var isRunning: Bool { stopped.lock(); defer { stopped.unlock() }; return running }
+    func stop() { stopped.lock(); running = false; stopped.unlock() }
 }
 
 /// Interleaved or not, as a tap's format can be
@@ -243,65 +259,71 @@ func hostTicks(_ seconds: Double = 0) -> UInt64 {
 }
 
 func systemAudioTests() async {
-    await test("system audio tap: built on the default output device, torn down in order, once") {
+    await test("system audio tap: clocked by the built-in output, no sub-device or the default output, torn down in order, once") {
         let journal = Journal()
         let hardware = FakeTapHardware(journal, format: tapFormat(interleaved: true))
-        var tap: SystemAudioTap? = try SystemAudioTap(hardware: hardware, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
-        expectEqual(journal.all, ["createTap", "createAggregate", "createIOProc", "usage in", "usage out", "start", "watch"], "the order it is built in")
+        var tap: SystemAudioTap? = try SystemAudioTap(hardware: hardware, clock: .builtInOutput, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
+        expectEqual(journal.all, ["createTap", "createAggregate", "createIOProc", "usage in", "usage out", "start", "watch", "watch"], "the order it is built in")
         expectEqual(hardware.excluded, [77], "Holdfast's own process is left out of the tap")
-        expectEqual(hardware.aggregateMain, "speakers-uid", "the default output device is the aggregate device's main sub-device")
+        expectEqual(hardware.aggregateMain, "builtin-uid", "the built-in output is the aggregate device's main sub-device, not the default output")
         expectEqual(hardware.aggregateTap, "tap-uid", "with the tap as its sub-tap")
-        expect(tap?.isCurrent == true, "on the default output")
-        var changes = 0
-        let watching = FakeTapHardware(Journal(), format: tapFormat(interleaved: true))
-        watching.deviceRate = 48000
-        let watched = try SystemAudioTap(hardware: watching, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: { changes += 1 })
-        watching.watched?()
-        expectEqual(changes, 0, "a notification from the output device that changed nothing does not rebuild")
-        watching.deviceRate = 24000
-        watching.watched?()
-        expectEqual(changes, 1, "a new rate does (AirPods in their call mode)")
-        watching.deviceRate = 48000
-        watching.alive = false
-        watching.watched?()
-        expectEqual(changes, 2, "and so does a device that went away")
-        watched.stop()
-        expectEqual(hardware.usage[true], [true], "the IOProc uses the tap's stream")
-        expectEqual(hardware.usage[false], [false, false], "and none of the output device's output streams")
+        expectEqual(hardware.watchedObjects, [200, 30], "the aggregate device and the device that clocks it are watched")
+        expectEqual(tap?.clockText, "the built-in output \"MacBook Pro Speakers\"", "for the log")
         hardware.output = TapOutputDevice(id: 41, uid: "airpods-uid", name: "AirPods")
-        expect(tap?.isCurrent == false, "not any more once the default output is another device")
+        hardware.notifyWatchers()
         tap?.stop()
         tap?.stop()
         tap = nil
-        expectEqual(journal.all, ["createTap", "createAggregate", "createIOProc", "usage in", "usage out", "start", "watch",
-                                  "unwatch", "stop", "destroyIOProc", "destroyAggregate", "destroyTap"],
+        expectEqual(journal.all, ["createTap", "createAggregate", "createIOProc", "usage in", "usage out", "start", "watch", "watch",
+                                  "unwatch", "unwatch", "stop", "destroyIOProc", "destroyAggregate", "destroyTap"],
                     "stopped, then the IOProc, the aggregate device and the tap destroyed, once whatever stops it")
 
-        let second = Journal()
-        let alone = FakeTapHardware(second, format: tapFormat(interleaved: false))
-        alone.own = nil
-        _ = try SystemAudioTap(hardware: alone, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
-        expectEqual(alone.excluded, [], "a process that has no audio object yet excludes nothing")
-        expectEqual(second.all, ["createTap", "createAggregate", "createIOProc", "usage in", "usage out", "start", "watch",
-                                 "unwatch", "stop", "destroyIOProc", "destroyAggregate", "destroyTap"],
-                    "a tap that is let go of is torn down the same way")
+        let alone = Journal()
+        let tapOnly = FakeTapHardware(alone, format: tapFormat(interleaved: false))
+        tapOnly.own = nil
+        tapOnly.streams = (input: 1, output: 0)
+        let none = try SystemAudioTap(hardware: tapOnly, clock: .none, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
+        expectEqual(tapOnly.mains, [nil], "no sub-device at all")
+        expectEqual(tapOnly.excluded, [], "a process that has no audio object yet excludes nothing")
+        expectEqual(tapOnly.watchedObjects, [200], "only the aggregate device is watched")
+        expectEqual(none.clockText, "no sub-device", "for the log")
+        none.stop()
+        expectEqual(alone.all, ["createTap", "createAggregate", "createIOProc", "usage in", "start", "watch",
+                                "unwatch", "stop", "destroyIOProc", "destroyAggregate", "destroyTap"], "built and torn down the same way")
+
+        let last = FakeTapHardware(Journal(), format: tapFormat(interleaved: true))
+        last.output = TapOutputDevice(id: 41, uid: "airpods-uid", name: "AirPods")
+        let output = try SystemAudioTap(hardware: last, clock: .defaultOutput, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
+        expectEqual(last.aggregateMain, "airpods-uid", "the last resort: the default output")
+        expectEqual(output.clockText, "the default output \"AirPods\"", "for the log")
+        output.stop()
+    }
+
+    await test("system audio tap: the order of constructions") {
+        let builtIn = TapOutputDevice(id: 30, uid: "builtin-uid", name: "MacBook Pro Speakers")
+        let airPods = TapOutputDevice(id: 41, uid: "airpods-uid", name: "AirPods")
+        expectEqual(TapClock.order(builtIn: builtIn, defaultOutput: airPods), [.builtInOutput, .none, .defaultOutput], "the built-in output, no sub-device, the default output last")
+        expectEqual(TapClock.order(builtIn: builtIn, defaultOutput: builtIn), [.builtInOutput, .none], "the default output that is the built-in one is not tried twice")
+        expectEqual(TapClock.order(builtIn: nil, defaultOutput: airPods), [.none, .defaultOutput], "a Mac without a built-in output")
+        expectEqual(TapClock.order(builtIn: nil, defaultOutput: nil), [.none], "and without any output device")
     }
 
     await test("system audio tap: a step that fails leaves nothing behind") {
-        let cases: [(String, [String])] = [
-            ("output", []),
-            ("createTap", []),
-            ("tapFormat", ["createTap", "destroyTap"]),
-            ("createAggregate", ["createTap", "destroyTap"]),
-            ("createIOProc", ["createTap", "createAggregate", "destroyAggregate", "destroyTap"]),
-            ("start", ["createTap", "createAggregate", "createIOProc", "usage in", "usage out", "destroyIOProc", "destroyAggregate", "destroyTap"]),
+        let cases: [(String, TapClock, [String])] = [
+            ("output", .defaultOutput, []),
+            ("builtIn", .builtInOutput, []),
+            ("createTap", .builtInOutput, []),
+            ("tapFormat", .builtInOutput, ["createTap", "destroyTap"]),
+            ("createAggregate", .none, ["createTap", "destroyTap"]),
+            ("createIOProc", .builtInOutput, ["createTap", "createAggregate", "destroyAggregate", "destroyTap"]),
+            ("start", .builtInOutput, ["createTap", "createAggregate", "createIOProc", "usage in", "usage out", "destroyIOProc", "destroyAggregate", "destroyTap"]),
         ]
-        for (failing, expected) in cases {
+        for (failing, clock, expected) in cases {
             let journal = Journal()
             let hardware = FakeTapHardware(journal, format: tapFormat(interleaved: true))
             hardware.failing = failing
             await expectThrows("\(failing) fails") {
-                _ = try SystemAudioTap(hardware: hardware, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
+                _ = try SystemAudioTap(hardware: hardware, clock: clock, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
             }
             expectEqual(journal.all, expected, "\(failing) fails: what was created is destroyed, the last first")
         }
@@ -309,7 +331,7 @@ func systemAudioTests() async {
         var odd = tapFormat(interleaved: true)
         odd.mFormatID = kAudioFormatMPEG4AAC
         await expectThrows("a tap that does not deliver linear PCM") {
-            _ = try SystemAudioTap(hardware: FakeTapHardware(journal, format: odd), queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
+            _ = try SystemAudioTap(hardware: FakeTapHardware(journal, format: odd), clock: .builtInOutput, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
         }
         expectEqual(journal.all, ["createTap", "createAggregate", "destroyAggregate", "destroyTap"], "is not recorded, and nothing is left")
     }
@@ -320,11 +342,11 @@ func systemAudioTests() async {
         expectEqual(SystemAudioTap.streamUsage(streams: 2, input: false), [false, false], "no output stream")
         expectEqual(SystemAudioTap.streamUsage(streams: 0, input: true), [], "nothing to say for no stream")
 
-        // AirPods: the main device has an input stream (its microphone), in front of the tap's
+        // AirPods as the last resort: the main device has an input stream (its microphone), in front of the tap's
         let journal = Journal()
         let hardware = FakeTapHardware(journal, format: tapFormat(interleaved: true))
         hardware.streams = (input: 2, output: 1)
-        var tap: SystemAudioTap? = try SystemAudioTap(hardware: hardware, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
+        var tap: SystemAudioTap? = try SystemAudioTap(hardware: hardware, clock: .defaultOutput, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
         expectEqual(hardware.usage[true], [false, true], "the headset's microphone is not opened")
         expectEqual(hardware.usage[false], [false], "nothing is played")
         expectEqual(journal.all.prefix(6), ["createTap", "createAggregate", "createIOProc", "usage in", "usage out", "start"], "set before the device starts")
@@ -333,7 +355,7 @@ func systemAudioTests() async {
         // A device without output streams of its own: only the input is set
         let quiet = FakeTapHardware(Journal(), format: tapFormat(interleaved: true))
         quiet.streams = (input: 1, output: 0)
-        _ = try SystemAudioTap(hardware: quiet, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
+        _ = try SystemAudioTap(hardware: quiet, clock: .builtInOutput, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: {})
         expect(quiet.usage[true] == [true] && quiet.usage[false] == nil, "no output usage to set")
 
         // When the usage cannot be set, the tap still records, and the log says so
@@ -342,7 +364,7 @@ func systemAudioTests() async {
             hardware.failing = failing
             let lines = RecLog.lines.count
             var delivered = 0
-            let tap = try SystemAudioTap(hardware: hardware, queue: DispatchQueue(label: "test"), deliver: { _ in delivered += 1 }, outputChanged: {})
+            let tap = try SystemAudioTap(hardware: hardware, clock: .builtInOutput, queue: DispatchQueue(label: "test"), deliver: { _ in delivered += 1 }, outputChanged: {})
             expect(hardware.journal.all.contains("start"), "\(failing) fails: started all the same")
             expect(RecLog.lines.dropFirst(lines).contains { $0.contains("input streams stay on") }, "\(failing) fails: logged: \(RecLog.lines.suffix(2))")
             var asbd = tapFormat(interleaved: true)
@@ -354,26 +376,35 @@ func systemAudioTests() async {
         }
     }
 
-    await test("system audio tap: once the output device changes its rate, nothing more is handed on") {
+    await test("system audio tap: once its rate changes or its clock goes away, nothing more is handed on") {
+        for clock in [TapClock.builtInOutput, .none, .defaultOutput] {
+            let hardware = FakeTapHardware(Journal(), format: tapFormat(interleaved: true))
+            hardware.deviceRate = 48000
+            var delivered = 0
+            var changes = 0
+            let tap = try SystemAudioTap(hardware: hardware, clock: clock, queue: DispatchQueue(label: "test"), deliver: { _ in delivered += 1 }, outputChanged: { changes += 1 })
+            var asbd = tapFormat(interleaved: true)
+            let pcm = try require(AVAudioPCMBuffer(pcmFormat: try require(AVAudioFormat(streamDescription: &asbd), "format"), frameCapacity: 64), "pcm")
+            pcm.frameLength = 64
+            hardware.runIO(pcm.audioBufferList, host: hostTicks())
+            expectEqual(delivered, 1, "\(clock): handed on at the rate it was built for")
+            hardware.notifyWatchers()
+            expectEqual(changes, 0, "\(clock): a notification that changed nothing does not rebuild")
+            // AirPods switching to their call mode: half the rate, which the buffers would still be labelled with
+            hardware.deviceRate = 24000
+            hardware.notifyWatchers()
+            expect(changes > 0, "\(clock): the rebuild is asked for")
+            hardware.runIO(pcm.audioBufferList, host: hostTicks())
+            expectEqual(delivered, 1, "\(clock): and from that moment on nothing goes on with the old rate on it")
+            expect(hardware.runIO(pcm.audioBufferList, host: hostTicks()), "\(clock): the output is still cleared")
+            tap.stop()
+        }
         let hardware = FakeTapHardware(Journal(), format: tapFormat(interleaved: true))
-        hardware.deviceRate = 48000
-        var delivered = 0
         var changes = 0
-        let tap = try SystemAudioTap(hardware: hardware, queue: DispatchQueue(label: "test"), deliver: { _ in delivered += 1 }, outputChanged: { changes += 1 })
-        var asbd = tapFormat(interleaved: true)
-        let pcm = try require(AVAudioPCMBuffer(pcmFormat: try require(AVAudioFormat(streamDescription: &asbd), "format"), frameCapacity: 64), "pcm")
-        pcm.frameLength = 64
-        hardware.runIO(pcm.audioBufferList, host: hostTicks())
-        expectEqual(delivered, 1, "handed on at the rate it was built for")
-        // AirPods switching to their call mode: half the rate, which the buffers would still be labelled with
-        hardware.deviceRate = 24000
-        hardware.watched?()
-        expectEqual(changes, 1, "the rebuild is asked for")
-        hardware.runIO(pcm.audioBufferList, host: hostTicks())
-        hardware.runIO(pcm.audioBufferList, host: hostTicks())
-        expectEqual(delivered, 1, "and from that moment on nothing goes on with the old rate on it")
-        let cleared = hardware.runIO(pcm.audioBufferList, host: hostTicks())
-        expect(cleared, "the output is still cleared")
+        let tap = try SystemAudioTap(hardware: hardware, clock: .builtInOutput, queue: DispatchQueue(label: "test"), deliver: { _ in }, outputChanged: { changes += 1 })
+        hardware.alive = false
+        hardware.notifyWatchers()
+        expect(changes > 0, "a clock device that went away asks for the rebuild too")
         tap.stop()
     }
 
@@ -383,7 +414,7 @@ func systemAudioTests() async {
             let format = tapFormat(interleaved: interleaved)
             let hardware = FakeTapHardware(journal, format: format)
             var delivered = [CMSampleBuffer]()
-            let tap = try SystemAudioTap(hardware: hardware, queue: DispatchQueue(label: "test"), deliver: { delivered.append($0) }, outputChanged: {})
+            let tap = try SystemAudioTap(hardware: hardware, clock: .builtInOutput, queue: DispatchQueue(label: "test"), deliver: { delivered.append($0) }, outputChanged: {})
             var asbd = format
             let pcm = try require(AVAudioPCMBuffer(pcmFormat: try require(AVAudioFormat(streamDescription: &asbd), "format"), frameCapacity: 512), "pcm")
             pcm.frameLength = 512
@@ -413,7 +444,7 @@ func systemAudioTests() async {
         let hardware = FakeTapHardware(journal, format: format)
         hardware.deviceRate = 44100
         var delivered = [CMSampleBuffer]()
-        let tap = try SystemAudioTap(hardware: hardware, queue: DispatchQueue(label: "test"), deliver: { delivered.append($0) }, outputChanged: {})
+        let tap = try SystemAudioTap(hardware: hardware, clock: .builtInOutput, queue: DispatchQueue(label: "test"), deliver: { delivered.append($0) }, outputChanged: {})
         expectEqual(tap.format.mSampleRate, 44100, "the aggregate device's rate, which the tap is brought to")
         expect(RecLog.lines.contains { $0.contains("the device's rate is used") }, "and the difference is logged")
         // A main device with an input stream of its own comes first in the aggregate device's input
@@ -519,43 +550,43 @@ func systemAudioTests() async {
         }
     }
 
-    await test("system audio selection: the tap first, ScreenCaptureKit when it cannot be used, never both") {
+    await test("system audio selection: the tap with the stream's audio as its backup, ScreenCaptureKit alone when the tap cannot be used") {
         var tries = 0
         let tap = SystemAudioSelection.choose(wanted: true, permission: .granted) { tries += 1 }
         expectEqual(tap, .tap, "the tap when it starts")
-        expect(!tap.streamCapturesAudio, "and then the stream captures no audio: nothing is recorded twice")
+        expect(SystemAudioSelection.usesTap(wanted: true, permission: .granted), "and the writer gets a track for the backup")
         expect(SystemAudioSelection.notice(for: tap) == nil, "nothing to tell")
         expectEqual(SystemAudioSelection.choose(wanted: true, permission: .unknown) { tries += 1 }, .tap, "tried when the permission cannot be read")
+        expect(SystemAudioSelection.usesTap(wanted: true, permission: .unknown), "with its backup")
         expectEqual(tries, 2, "the tap was tried twice")
 
-        let failed = SystemAudioSelection.choose(wanted: true, permission: .granted) { throw SystemAudioTapError("Creating the process tap", -50) }
-        guard case .screenCaptureKit(let reason, let tapFailed) = failed else { return expect(false, "a tap that fails falls back to the stream") }
-        expect(reason.contains("Creating the process tap failed"), "saying why: \(reason)")
+        let failed = SystemAudioSelection.choose(wanted: true, permission: .granted) { throw SystemAudioTapError("The system audio format is not available") }
+        guard case .screenCaptureKit(let reason, let tapFailed) = failed else { return expect(false, "a tap that cannot run at all falls back to the stream") }
+        expect(reason.contains("format is not available"), "saying why: \(reason)")
         expect(tapFailed, "because the tap failed")
-        expect(failed.streamCapturesAudio, "the stream records the system audio instead")
         let notice = try require(SystemAudioSelection.notice(for: failed), "the user is told")
         expect(notice.contains("FaceTime") && notice.contains("phone calls"), "that call audio is not included: \(notice)")
 
         let denied = SystemAudioSelection.choose(wanted: true, permission: .denied) { tries += 1 }
-        expect(denied.streamCapturesAudio, "no permission: the stream records it")
+        expect(!SystemAudioSelection.usesTap(wanted: true, permission: .denied), "no permission: the stream records it, without a backup")
         expect(SystemAudioSelection.notice(for: denied)?.contains("System Audio Recording Only") == true, "and the notice says where to allow it")
-        expect(SystemAudioSelection.choose(wanted: true, permission: .notDetermined) { tries += 1 }.streamCapturesAudio, "not answered: the stream records it")
+        guard case .screenCaptureKit = SystemAudioSelection.choose(wanted: true, permission: .notDetermined, startTap: { tries += 1 }) else { return expect(false, "not answered: the stream records it") }
+        expect(!SystemAudioSelection.usesTap(wanted: true, permission: .notDetermined), "without a backup")
         expectEqual(tries, 2, "without trying the tap")
 
         let none = SystemAudioSelection.choose(wanted: false, permission: .granted) { tries += 1 }
         expectEqual(none, .none, "no system audio wanted, none recorded")
-        expect(!none.streamCapturesAudio && tries == 2, "by neither source")
-        expectEqual([SystemAudioRoute.none, .tap, failed].map(\.name), ["off", "on, process tap", "on, screen capture"], "for the log")
+        expect(!SystemAudioSelection.usesTap(wanted: false, permission: .granted) && tries == 2, "by neither source")
+        expectEqual([SystemAudioRoute.none, .tap, failed].map(\.name), ["off", "on, process tap with screen capture as its backup", "on, screen capture"], "for the log")
 
         let once = NoticeOnce()
         expectEqual([once.take(), once.take(), once.take()], [true, false, false], "the notice is shown once")
 
-        // Without the tap, failed or not allowed: one notification while the app runs. A recording whose tap failed
-        // although it was allowed also shows it while it runs; one that is not allowed (the user's answer) does not.
+        // Without the tap, failed or not allowed: one notification while the app runs. Only a tap that cannot run at
+        // all is a warning; one that cannot be built yet is repaired by its source while the backup records.
         let launch = NoticeOnce()
         expectEqual([failed, failed, denied, failed].map { SystemAudioSelection.notifies($0, once: launch) }, [true, false, false, false], "once while the app runs")
-        expectEqual(SystemAudioSelection.warning(for: failed), "Call audio is not being recorded", "a failed tap is the recording's warning")
-        expectEqual([denied, failed].map { SystemAudioSelection.notifies($0, once: NoticeOnce()) }, [true, true], "whichever comes first is notified")
+        expectEqual(SystemAudioSelection.warning(for: failed), "Call audio is not being recorded", "a tap that cannot run is the recording's warning")
         expect(SystemAudioSelection.warning(for: denied) == nil, "not allowed: no warning on screen")
         expect(!SystemAudioSelection.notifies(tap, once: NoticeOnce()) && SystemAudioSelection.warning(for: tap) == nil, "with the tap: nothing to tell")
         expect(!SystemAudioSelection.notifies(none, once: NoticeOnce()) && SystemAudioSelection.warning(for: none) == nil, "nor without system audio")
@@ -573,8 +604,8 @@ func systemAudioTests() async {
         }
         try source.start()
         let tap = try require(fakes.taps.first, "a tap")
-        expect(fakes.watching, "the devices are followed")
-        expect(RecLog.lines.contains("System audio: process tap on \"Speakers\" (48000 Hz, 2 ch, float32 interleaved)"), "the log says where the system audio comes from: \(RecLog.lines)")
+        expectEqual(tap.clock, .builtInOutput, "clocked by the built-in output first")
+        expect(RecLog.lines.contains("System audio: process tap with the built-in output (48000 Hz, 2 ch, float32 interleaved)"), "the log says where the system audio comes from: \(RecLog.lines)")
         tap.deliver(try tapBuffer(tapFormat(interleaved: true), frames: 480, at: time(20)))
         tap.deliver(try tapBuffer(tapFormat(interleaved: false), frames: 480, at: time(20.01)))
         expect(await waitUntil { received.count("sample") == 2 }, "both are handed on")
@@ -588,43 +619,103 @@ func systemAudioTests() async {
         var stopped = false
         source.stop { stopped = true }
         expect(await waitUntil { stopped }, "stopped")
-        expectEqual(fakes.journal.all, ["tap1.make on Speakers", "unwatch devices", "tap1.stop"], "the devices are no longer followed and the tap is torn down")
+        expectEqual(fakes.journal.all, ["tap1.make: builtInOutput", "tap1.stop"], "the tap is torn down")
         tap.deliver(try tapBuffer(tapFormat(interleaved: true), frames: 480, at: time(20.02)))
         try? await Task.sleep(nanoseconds: 50_000_000)
         expectEqual(received.count("sample"), 2, "nothing is handed on after the stop")
     }
 
-    await test("system audio source: a tap that cannot be made leaves nothing running") {
+    await test("system audio source: a tap that cannot be built at the start is built again in the background, and a stop ends that") {
         let fakes = FakeTapFactory()
         fakes.fails = 1
-        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap")) { _ in }
-        let message = await expectThrows("the start fails") { try source.start() }
-        expect(message.contains("!hog"), "with Core Audio's reason: \(message)")
-        expect(!fakes.watching, "no devices are followed")
+        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap"), stallSeconds: 0.5, checkInterval: 0.02, waitScale: 0.02) { _ in }
+        try source.start()
+        expect(RecLog.lines.contains { $0.contains("could not be built") && $0.contains("the backup records meanwhile") }, "the start goes on, and the log says why: \(RecLog.lines)")
+        expect(await waitUntil { fakes.taps.count == 1 }, "built on the next attempt, at once")
+        expectEqual(fakes.journal.all, ["make failed: builtInOutput", "tap1.make: builtInOutput"], "the same construction once more")
         source.stopNow()
-        expectEqual(fakes.journal.all, ["make failed"], "nothing to tear down")
-        let route = SystemAudioSelection.choose(wanted: true, permission: .granted) { try SystemAudioSource(factory: fakes.factory, sampleQueue: DispatchQueue(label: "x")) { _ in }.start() }
-        expect(route == .tap, "the next recording tries again and gets it")
+        // A stop while it waits ends the attempts
+        let later = FakeTapFactory()
+        later.fails = 1000
+        let waiting = SystemAudioSource(factory: later.factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap"), checkInterval: 0.02, waitScale: 0.02) { _ in }
+        try waiting.start()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        waiting.stopNow()
+        let attempts = later.journal.all.count
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        expectEqual(later.journal.all.count, attempts, "nothing is tried after the stop")
+        expect(later.taps.isEmpty, "and no tap is made")
     }
 
-    await test("system audio source: a new output device rebuilds the tap once, and nothing of the old one comes after the new") {
+    await test("system audio source: a tap that hands on nothing is rebuilt at once, the next construction after two failures") {
+        let fakes = FakeTapFactory()
+        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap"), stallSeconds: 0.1, checkInterval: 0.02, waitScale: 0.02) { _ in }
+        try source.start()
+        // No tap delivers anything: each is dead a tenth of a second after it was built
+        expect(await waitUntil { fakes.taps.count >= 6 }, "rebuilt again and again")
+        let made = fakes.taps.prefix(6).map(\.clock)
+        expectEqual(made, [.builtInOutput, .builtInOutput, .none, .none, .defaultOutput, .defaultOutput], "each construction twice, in order")
+        expect(fakes.journal.all.starts(with: ["tap1.make: builtInOutput", "tap1.stop", "tap2.make: builtInOutput", "tap2.stop", "tap3.make: none"]), "the dead tap torn down before the next is made: \(fakes.journal.all)")
+        expect(RecLog.lines.contains { $0.contains("failed (its IOProc handed on nothing for") }, "each failure is logged: \(RecLog.lines)")
+        // Then the order again from the top, for as long as the recording runs
+        expect(await waitUntil { fakes.taps.count >= 8 }, "and around again")
+        expectEqual(fakes.taps[6].clock, .builtInOutput, "after the last the first")
+        // One that delivers stays
+        let count = fakes.taps.count
+        let live = try LiveTap(try require(fakes.taps.last, "the newest tap"))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let kept = fakes.taps.count
+        expect(kept <= count + 1, "at most the one being built when it began to deliver")
+        let alive = try LiveTap(try require(fakes.taps.last, "the tap that is kept"))
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        expectEqual(fakes.taps.count, kept, "a tap that delivers is never rebuilt")
+        source.stopNow()
+        live.stop()
+        alive.stop()
+        expect(RecLog.lines.last?.contains("process tap stopped") == true, "the stop is logged with the count: \(RecLog.lines.suffix(2))")
+    }
+
+    await test("system audio source: a construction that cannot be built is passed over, and the failures wait longer and longer") {
+        let fakes = FakeTapFactory()
+        fakes.refused = [.builtInOutput]
+        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap"), stallSeconds: 0.5, checkInterval: 0.02, waitScale: 0.02) { _ in }
+        try source.start()
+        expect(await waitUntil { fakes.taps.count == 1 }, "built")
+        expectEqual(fakes.journal.all, ["make failed: builtInOutput", "make failed: builtInOutput", "tap1.make: none"], "the built-in output twice, then no sub-device")
+        source.stopNow()
+
+        var repair = TapRepair()
+        let order: [TapClock] = [.builtInOutput, .none, .defaultOutput]
+        var tried = [TapClock]()
+        var waits = [Double]()
+        for _ in 0..<9 {
+            let next = try require(repair.next(in: order), "a construction")
+            tried.append(next)
+            repair.trying(next)
+            repair.failed()
+            waits.append(repair.wait)
+        }
+        expectEqual(tried, [.builtInOutput, .builtInOutput, .none, .none, .defaultOutput, .defaultOutput, .builtInOutput, .builtInOutput, .none], "each twice, around and around")
+        expectEqual(waits, [0, 0.5, 1, 2, 4, 8, 10, 10, 10], "at once, then doubling up to 10 s")
+        repair.healthy()
+        expectEqual(repair.wait, 0, "a tap that delivered long enough starts the count anew")
+        expectEqual(repair.next(in: order), TapClock.none, "and keeps its construction")
+        expectEqual(repair.next(in: [TapClock.none]), TapClock.none, "the order can change: what is left of it")
+        expect(TapRepair().next(in: []) == nil, "nothing to build without any construction")
+    }
+
+    await test("system audio source: a rate change rebuilds at once, and nothing of an old tap comes after the new one") {
         let fakes = FakeTapFactory()
         let queue = DispatchQueue(label: "HoldfastTests.tap")
         var times = [Double]()
-        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, settleDelay: 0.05, retryDelay: 0.05) { times.append(CMTimeGetSeconds($0.pts)) }
+        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, stallSeconds: 5, checkInterval: 0.02, waitScale: 0.02) { times.append(CMTimeGetSeconds($0.pts)) }
         try source.start()
         let first = try require(fakes.taps.first, "the first tap")
-        let announce = try require(fakes.announce, "the devices are followed")
         first.deliver(try tapBuffer(tapFormat(interleaved: true), frames: 480, at: time(30)))
-        // A burst of changes: the AirPods connect and become the default output
-        first.isCurrent = false
-        fakes.device = "AirPods"
-        announce("the audio devices changed")
-        announce("the default output device changed")
-        announce("the audio devices changed")
+        first.outputChanged()
         expect(await waitUntil { fakes.taps.count == 2 }, "rebuilt")
-        try? await Task.sleep(nanoseconds: 150_000_000)
-        expectEqual(fakes.journal.all, ["tap1.make on Speakers", "tap1.stop", "tap2.make on AirPods"], "once, the old tap torn down before the new one is made")
+        expectEqual(fakes.journal.all, ["tap1.make: builtInOutput", "tap1.stop", "tap2.make: builtInOutput"], "the old tap torn down before the new one is made")
+        expect(RecLog.lines.contains { $0.contains("its device changed its rate or went away") }, "logged: \(RecLog.lines)")
         let second = try require(fakes.taps.last, "the second tap")
         second.deliver(try tapBuffer(tapFormat(interleaved: true), frames: 480, at: time(31)))
         // The old IOProc's last call, late: it must not follow the new tap's audio
@@ -633,84 +724,36 @@ func systemAudioTests() async {
         second.deliver(try tapBuffer(tapFormat(interleaved: true), frames: 480, at: time(31.01)))
         expect(await waitUntil { times.count >= 3 }, "the new tap's audio arrives")
         queue.sync {}
-        expectEqual(times, [30, 31, 31.01], "nothing of the old device after the new one started")
-        expect(RecLog.lines.contains("System audio: rebuilding the process tap (the audio devices changed)"), "the rebuild is logged: \(RecLog.lines)")
-        expect(RecLog.lines.contains("System audio: process tap rebuilt on \"AirPods\" (48000 Hz, 2 ch, float32 interleaved)"), "and where it is now")
-
-        // Holdfast's own aggregate device coming and going changes the device list too: a tap that is still on
-        // the default output stays
-        announce("the audio devices changed")
-        try? await Task.sleep(nanoseconds: 150_000_000)
-        expectEqual(fakes.taps.count, 2, "a tap on the default output is kept")
-        // The output device changes its rate (AirPods switching to their call mode): rebuilt although still current
-        second.outputChanged()
-        expect(await waitUntil { fakes.taps.count == 3 }, "rebuilt for the device's own change")
+        expectEqual(times, [30, 31, 31.01], "nothing of the old tap after the new one started")
         source.stopNow()
-        expectEqual(fakes.journal.all.suffix(3), ["tap3.make on AirPods", "unwatch devices", "tap3.stop"], "and torn down at the stop")
     }
 
-    await test("system audio source: a rebuild that fails is retried, and a stop ends it") {
-        let fakes = FakeTapFactory()
-        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap"), settleDelay: 0.02, retryDelay: 0.02) { _ in }
-        try source.start()
-        let first = try require(fakes.taps.first, "the first tap")
-        let announce = try require(fakes.announce, "the devices are followed")
-        first.isCurrent = false
-        fakes.fails = 2
-        announce("the default output device changed")
-        expect(await waitUntil { fakes.taps.count == 2 }, "made on the third try")
-        expectEqual(fakes.journal.all, ["tap1.make on Speakers", "tap1.stop", "make failed", "make failed", "tap2.make on Speakers"], "tried again after each failure")
-        expectEqual(RecLog.lines.filter { $0.contains("rebuilding the process tap failed") }.count, 2, "each failure is logged")
-
-        fakes.fails = 10
-        let second = try require(fakes.taps.last, "the second tap")
-        second.isCurrent = false
-        announce("the default output device changed")
-        try? await Task.sleep(nanoseconds: 400_000_000)
-        expectEqual(fakes.journal.count("make failed"), 2 + 1 + SystemAudioSource.retries, "given up after \(SystemAudioSource.retries) retries")
-        // Without a tap the next device change tries again, and a stop while it waits ends that
-        fakes.fails = 0
-        announce("the audio devices changed")
-        source.stopNow()
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        expectEqual(fakes.taps.count, 2, "no tap is made after the stop")
-        expect(!fakes.watching, "and the devices are not followed any more")
-    }
-
-    await test("system audio source: a tap that fails on an output is not rebuilt for its own device-list changes") {
-        let fakes = FakeTapFactory()
-        fakes.failureChangesDevices = true
-        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap"), settleDelay: 0.02, retryDelay: 0.04) { _ in }
-        try source.start()
-        let first = try require(fakes.taps.first, "the first tap")
-        let announce = try require(fakes.announce, "the devices are followed")
-        // An output on which the aggregate device never starts (held by another app): each failed build creates
-        // and destroys an aggregate device, which changes the device list
-        first.isCurrent = false
-        fakes.fails = 1000
-        fakes.device = "Hogged"
-        announce("the default output device changed")
-        try? await Task.sleep(nanoseconds: 700_000_000)
-        expectEqual(fakes.journal.count("make failed"), 1 + SystemAudioSource.retries, "tried once and retried \(SystemAudioSource.retries) times, not for ever")
-        // Other devices coming and going on the same output do not start it again either
-        announce("the audio devices changed")
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        expectEqual(fakes.journal.count("make failed"), 1 + SystemAudioSource.retries, "nor does a device-list change on the same output")
-        // A forced change still counts: the output device changed its format
-        first.outputChanged()
-        try? await Task.sleep(nanoseconds: 400_000_000)
-        expectEqual(fakes.journal.count("make failed"), 2 * (1 + SystemAudioSource.retries), "a format change is tried again, as often")
-        // Another output device: built there
-        fakes.fails = 0
-        fakes.device = "Headphones"
-        announce("the default output device changed")
-        expect(await waitUntil { fakes.taps.count == 2 }, "built on the next output device")
-        expectEqual(fakes.journal.all.last, "tap2.make on Headphones", "on the new output")
-        // Its own aggregate device changes the list once more: the tap that works stays
-        announce("the audio devices changed")
-        try? await Task.sleep(nanoseconds: 150_000_000)
-        expectEqual(fakes.taps.count, 2, "and stays")
-        source.stopNow()
+    await test("system audio source: the order and the fallback with the real tap on fake hardware") {
+        func run(_ setUp: (FakeTapHardware) -> Void, deliver: Bool = true) async throws -> FakeTapHardware {
+            let hardware = FakeTapHardware(Journal(), format: tapFormat(interleaved: true))
+            hardware.output = TapOutputDevice(id: 41, uid: "airpods-uid", name: "AirPods")
+            setUp(hardware)
+            let factory = SystemAudioSource.Factory(constructions: {
+                TapClock.order(builtIn: hardware.builtInOutputDevice(), defaultOutput: try? hardware.defaultOutputDevice())
+            }, makeTap: { clock, queue, deliver, changed in
+                try SystemAudioTap(hardware: hardware, clock: clock, queue: queue, deliver: deliver, outputChanged: changed)
+            })
+            let source = SystemAudioSource(factory: factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap"), stallSeconds: deliver ? 5 : 0.1, checkInterval: 0.02, waitScale: 0.02) { _ in }
+            try source.start()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            source.stopNow()
+            return hardware
+        }
+        expectEqual(try await run { _ in }.mains, ["builtin-uid"], "the built-in output, while the default output is the AirPods")
+        expectEqual(try await run { $0.refusedClocks = ["builtin-uid"] }.mains, ["builtin-uid", "builtin-uid", nil], "then no sub-device")
+        expectEqual(try await run { $0.refusedClocks = ["builtin-uid", nil] }.mains, ["builtin-uid", "builtin-uid", nil, nil, "airpods-uid"], "the default output last")
+        expectEqual(try await run { $0.builtIn = nil }.mains, [nil], "a Mac without a built-in output starts without a sub-device")
+        expectEqual(try await run({ $0.output = TapOutputDevice(id: 30, uid: "builtin-uid", name: "MacBook Pro Speakers"); $0.refusedClocks = ["builtin-uid", nil] }).mains.prefix(5),
+                    ["builtin-uid", "builtin-uid", nil, nil, "builtin-uid"], "the built-in output as the default output is not tried as such again")
+        // A tap whose IOProc is never called, as today's AirPods were: dead within the stall time, the next one built
+        let dead = try await run({ _ in }, deliver: false)
+        expect(dead.mains.prefix(3) == ["builtin-uid", "builtin-uid", nil], "an IOProc that is never called is rebuilt, then the next construction: \(dead.mains)")
+        expect(dead.journal.all.filter { $0 == "destroyTap" }.count >= 2, "and each dead tap is torn down")
     }
 
     await test("system audio source: the writer records the tap's audio like ScreenCaptureKit's") {

@@ -10,10 +10,9 @@ import Synchronization
 
 /// A running tap as `SystemAudioSource` uses it (`SystemAudioTap`; the tests have their own)
 protocol SystemAudioTapping: AnyObject {
-    var deviceName: String { get }
+    /// What clocks it, for the log
+    var clockText: String { get }
     var formatText: String { get }
-    /// Whether it is still built on the default output device, and that device is there
-    var isCurrent: Bool { get }
     /// Stops the device and destroys the IOProc, the aggregate device and the tap, in that order; once
     func stop()
 }
@@ -22,23 +21,18 @@ protocol SystemAudioTapping: AnyObject {
 enum SystemAudioRoute: Equatable {
     /// The recording has no system audio
     case none
-    /// A Core Audio process tap, which hears call audio too
+    /// A Core Audio process tap, which hears call audio too, with ScreenCaptureKit's system audio recorded as a
+    /// backup next to it for the whole recording
     case tap
     /// ScreenCaptureKit's system audio, which leaves out FaceTime and phone calls; why the tap is not used, and
     /// whether it was tried and failed (rather than not allowed)
     case screenCaptureKit(reason: String, tapFailed: Bool)
 
-    /// Whether the stream captures audio. Never with the tap: the recording would have the system audio twice.
-    var streamCapturesAudio: Bool {
-        if case .screenCaptureKit = self { return true }
-        return false
-    }
-
     /// For the log
     var name: String {
         switch self {
         case .none: return "off"
-        case .tap: return "on, process tap"
+        case .tap: return "on, process tap with screen capture as its backup"
         case .screenCaptureKit: return "on, screen capture"
         }
     }
@@ -57,12 +51,19 @@ enum SystemAudioSelection {
     /// A recording without the tap is notified once while the app runs, whether the tap failed or was not allowed;
     /// every recording without the tap says why in the log
     static let callAudioNotice = NoticeOnce()
-    /// The status line and on-screen warning of a recording whose tap failed
+    /// The status line and on-screen warning of a recording whose tap could not be set up at all
     static let tapFailedWarning = "Call audio is not being recorded"
 
+    /// Whether a recording that `wants` system audio gets it from the tap (with the backup), as `choose` decides
+    /// for the same permission. Decided before the writer is made, which gives the backup its track.
+    static func usesTap(wanted: Bool, permission: TapPermission) -> Bool {
+        return wanted && (permission == .granted || permission == .unknown)
+    }
+
     /// Decides where the system audio of a recording that `wants` it comes from. The tap is tried first (`startTap`
-    /// builds and starts it, and throws when it cannot); without the permission, or when it fails, ScreenCaptureKit
-    /// records the system audio instead, so a recording that wants system audio always gets it when either works.
+    /// starts its source, and throws only when it cannot run at all: a tap that cannot be built yet is retried by
+    /// the source for the whole recording while the backup records); without the permission, or when it throws,
+    /// ScreenCaptureKit records the system audio instead, so a recording that wants system audio always gets it.
     static func choose(wanted: Bool, permission: TapPermission, startTap: () throws -> Void) -> SystemAudioRoute {
         guard wanted else { return .none }
         switch permission {
@@ -88,16 +89,16 @@ enum SystemAudioSelection {
     }
 
     /// Whether the notice is posted for this recording, which runs on `route`: only when it records without the tap,
-    /// and then once while the app runs (`once`). A recording whose tap failed also shows it for as long as it runs
-    /// (`warning`), so later ones are not missed without a notification of their own.
+    /// and then once while the app runs (`once`). A recording whose tap could not run at all also shows it for as
+    /// long as it runs (`warning`), so later ones are not missed without a notification of their own.
     static func notifies(_ route: SystemAudioRoute, once: NoticeOnce) -> Bool {
         guard case .screenCaptureKit = route else { return false }
         return once.take()
     }
 
     /// What the recording shows for as long as it runs, in its status line and on screen like a track warning, when
-    /// its tap failed; nil otherwise. A notification alone is easily missed: macOS holds banners back while the
-    /// screen is shared, and a full-screen meeting hides the menu bar.
+    /// its tap could not run at all; nil otherwise. A tap that only fails to build, or dies, is not a warning: its
+    /// source keeps rebuilding it and the backup records meanwhile.
     static func warning(for route: SystemAudioRoute) -> String? {
         guard case .screenCaptureKit(_, true) = route else { return nil }
         return tapFailedWarning
@@ -115,50 +116,96 @@ final class NoticeOnce {
     }
 }
 
-/// The system audio of one recording through a Core Audio process tap. It builds the tap at the start (`start`),
-/// rebuilds it when the output changes (the default output device, the list of devices, the tap's own device going
-/// or changing its rate), and tears it down at the stop. Every buffer is handed on as a `CaptureSample` of kind
-/// `.audio`, on the sample queue, in ScreenCaptureKit's system audio format (`SystemAudioConverter`), to the same
-/// `onSample` the stream's buffers go to: the writer and the monitor cannot tell where it came from.
-///
-/// Threads: building, rebuilding and tearing down run one at a time on `control`. The IOProc only checks that its
-/// tap is the current one (`delivering`, an atomic) before it queues a buffer. On the sample queue a buffer of an
-/// earlier tap than one already handed on is dropped, so nothing of an old device follows the new one, whatever
-/// order the old IOProc's last call and the new one's first end up in.
-final class SystemAudioSource {
-    /// Makes the taps: the real ones (`coreAudio`), or the tests' fakes
-    struct Factory {
-        /// Builds and starts a tap on the current default output device. `deliver` gets each of its buffers on the
-        /// IO thread; `outputChanged` is called when its device changes rate or goes away.
-        var makeTap: (_ queue: DispatchQueue, _ deliver: @escaping (CMSampleBuffer) -> Void, _ outputChanged: @escaping () -> Void) throws -> SystemAudioTapping
-        /// Calls `changed` on `queue`, with what changed, when the default output device or the device list
-        /// changes; returns what stops watching
-        var watchDevices: (_ queue: DispatchQueue, _ changed: @escaping (String) -> Void) -> () -> Void
-        /// The UID of the current default output device, nil when there is none
-        var defaultOutput: () -> String?
+/// How a recording's tap is repaired: which construction (`TapClock`) is built next, and after how long. A failure
+/// is a build that throws, or a tap that stopped delivering. The same construction is tried again once; after its
+/// second failure in a row the next one in the order is, and after the last the first again. The first attempt after
+/// a failure is at once, then the wait doubles from 0.5 s up to `longestWait`, for as long as the recording runs. A
+/// tap that has delivered for `healthySeconds` starts the count anew.
+struct TapRepair: Equatable {
+    static let failuresPerConstruction = 2
+    static let longestWait: Double = 10
+    static let healthySeconds: Double = 10
 
-        static var coreAudio: Factory {
-            let hardware = CoreAudioTapHardware()
-            return Factory(makeTap: { queue, deliver, outputChanged in
-                try SystemAudioTap(hardware: hardware, queue: queue, deliver: deliver, outputChanged: outputChanged)
-            }, watchDevices: { queue, changed in
-                let system = AudioObjectID(kAudioObjectSystemObject)
-                let output = hardware.watch(system, [kAudioHardwarePropertyDefaultOutputDevice], queue: queue) { changed("the default output device changed") }
-                let devices = hardware.watch(system, [kAudioHardwarePropertyDevices], queue: queue) { changed("the audio devices changed") }
-                return {
-                    if let output = output { hardware.unwatch(output) }
-                    if let devices = devices { hardware.unwatch(devices) }
-                }
-            }, defaultOutput: { (try? hardware.defaultOutputDevice())?.uid })
+    /// The construction tried last, and how often it failed in a row
+    private(set) var current: TapClock?
+    private(set) var failuresHere = 0
+    /// Failures in a row, whatever the construction
+    private(set) var failuresInRow = 0
+
+    /// The construction to build next, of `order` (best first)
+    func next(in order: [TapClock]) -> TapClock? {
+        guard let first = order.first else { return nil }
+        guard let current, let index = order.firstIndex(of: current) else { return first }
+        return failuresHere >= TapRepair.failuresPerConstruction ? order[(index + 1) % order.count] : current
+    }
+
+    /// `clock` is being built
+    mutating func trying(_ clock: TapClock) {
+        if clock != current {
+            current = clock
+            failuresHere = 0
         }
     }
 
-    /// How long after a device change the tap is rebuilt: changes come in bursts
-    static let settleDelay: Double = 0.5
-    /// A rebuild that failed is tried again this often, this far apart, before the next change of the default output
-    /// device (or of its format)
-    static let retries = 3
-    static let retryDelay: Double = 2
+    mutating func failed() {
+        failuresHere += 1
+        failuresInRow += 1
+    }
+
+    /// The tap has delivered for `healthySeconds`
+    mutating func healthy() {
+        failuresHere = 0
+        failuresInRow = 0
+    }
+
+    /// How long to wait before the next attempt
+    var wait: Double {
+        guard failuresInRow > 1 else { return 0 }
+        return min(TapRepair.longestWait, 0.5 * pow(2, Double(failuresInRow - 2)))
+    }
+}
+
+/// The system audio of one recording through a Core Audio process tap. It builds the tap at the start (`start`),
+/// rebuilds it whenever it stops delivering, and tears it down at the stop. Every buffer is handed on as a
+/// `CaptureSample` of kind `.audio`, on the sample queue, in ScreenCaptureKit's system audio format
+/// (`SystemAudioConverter`), to the same `onSample` the stream's buffers go to.
+///
+/// Self-repair: a tap whose IOProc has handed on nothing for `stallSeconds` (1 s) is dead. On the owner's Mac an
+/// aggregate device clocked by AirPods in call mode stopped calling its IOProc 27 s into a meeting and never again,
+/// with nothing in Core Audio saying so; only the silence tells. It is torn down and built again at once, logged,
+/// with the next construction after the same one failed twice (`TapRepair`), and tried again with a growing wait
+/// for as long as the recording runs. Nobody is asked to do anything, and nothing is shown: the backup track
+/// (ScreenCaptureKit's system audio) records meanwhile, and the mix takes it where the tap was dead. A change of the
+/// clock device's rate, or the device going away, is a failure too (`SystemAudioTap`'s listener). Which device is
+/// the default output does not matter any more: the tap follows the processes, not the device.
+///
+/// Threads: building, rebuilding, the stall check and tearing down run one at a time on `control`. The IOProc only
+/// checks that its tap is the current one (`delivering`, an atomic) and notes the time before it queues a buffer.
+/// On the sample queue a buffer of an earlier tap than one already handed on is dropped, so nothing of an old tap
+/// follows the new one, whatever order the old IOProc's last call and the new one's first end up in.
+final class SystemAudioSource {
+    /// Makes the taps: the real ones (`coreAudio`), or the tests' fakes
+    struct Factory {
+        /// The constructions to try, best first (`TapClock.order`)
+        var constructions: () -> [TapClock]
+        /// Builds and starts a tap with `clock`. `deliver` gets each of its buffers on the IO thread;
+        /// `outputChanged` is called when its rate changes or its clock's device goes away.
+        var makeTap: (_ clock: TapClock, _ queue: DispatchQueue, _ deliver: @escaping (CMSampleBuffer) -> Void, _ outputChanged: @escaping () -> Void) throws -> SystemAudioTapping
+
+        static var coreAudio: Factory {
+            let hardware = CoreAudioTapHardware()
+            return Factory(constructions: {
+                TapClock.order(builtIn: hardware.builtInOutputDevice(), defaultOutput: try? hardware.defaultOutputDevice())
+            }, makeTap: { clock, queue, deliver, outputChanged in
+                try SystemAudioTap(hardware: hardware, clock: clock, queue: queue, deliver: deliver, outputChanged: outputChanged)
+            })
+        }
+    }
+
+    /// How long a tap may hand on nothing before it counts as dead
+    static let stallSeconds: Double = 1
+    /// How often that is checked
+    static let checkInterval: Double = 0.25
 
     /// The sources that have a tap running, so quitting can tear down any that is left (`stopAll`)
     private static let live = Mutex([ObjectIdentifier: Weak]())
@@ -168,32 +215,31 @@ final class SystemAudioSource {
     private let factory: Factory
     private let sampleQueue: DispatchQueue
     private let onSample: (CaptureSample) -> Void
-    private let settleDelay: Double
-    private let retryDelay: Double
+    private let stallSeconds: Double
+    private let checkInterval: Double
+    /// Seconds to wait before an attempt, from the repair's own; the tests shorten it
+    private let waitScale: Double
     /// The host clock, read on the IO thread when a buffer is handed on: its arrival time, against which the writer
     /// checks the buffer's own time (`ArrivalCheck`). The tests give their own.
     private let clock: () -> CMTime
     static let hostClock: () -> CMTime = { CMClockMakeHostTimeFromSystemUnits(mach_absolute_time()) }
     /// The generation of the tap whose buffers are handed on; 0 while none is
     private let delivering = Atomic<Int>(0)
+    /// When the current tap last handed a buffer on, in uptime nanoseconds; 0 before its first
+    private let lastDelivery = Atomic<UInt64>(0)
 
     // On `control`
     private var tap: SystemAudioTapping?
     private var generation = 0
-    private var stopWatching: (() -> Void)?
+    /// When the current tap was built, and since when it has delivered without a stall (uptime nanoseconds)
+    private var builtAt: UInt64 = 0
+    private var repair = TapRepair()
     private var pending: DispatchWorkItem?
-    private var retriesLeft = 0
-    /// Whether the rebuild that is waiting replaces a tap that is still on the default output device
-    private var forcePending = false
-    /// The default output device the last rebuild failed on; nil once one worked
-    private var failedOn: Failure?
-    private struct Failure {
-        /// Its UID, nil when there was no output device
-        let output: String?
-    }
+    private var timer: DispatchSourceTimer?
     private var stopped = false
-    /// How often the tap was rebuilt, for the log
+    /// How often a tap was built again, and attempts that failed, for the log
     private(set) var rebuilds = 0
+    private(set) var failedAttempts = 0
 
     // On the sample queue
     private var latestGeneration = 0
@@ -201,13 +247,14 @@ final class SystemAudioSource {
     private(set) var buffersHandedOn = 0
     private(set) var buffersDropped = 0
 
-    init(factory: Factory, sampleQueue: DispatchQueue, settleDelay: Double = SystemAudioSource.settleDelay,
-         retryDelay: Double = SystemAudioSource.retryDelay, clock: @escaping () -> CMTime = SystemAudioSource.hostClock,
-         onSample: @escaping (CaptureSample) -> Void) {
+    init(factory: Factory, sampleQueue: DispatchQueue, stallSeconds: Double = SystemAudioSource.stallSeconds,
+         checkInterval: Double = SystemAudioSource.checkInterval, waitScale: Double = 1,
+         clock: @escaping () -> CMTime = SystemAudioSource.hostClock, onSample: @escaping (CaptureSample) -> Void) {
         self.factory = factory
         self.sampleQueue = sampleQueue
-        self.settleDelay = settleDelay
-        self.retryDelay = retryDelay
+        self.stallSeconds = stallSeconds
+        self.checkInterval = checkInterval
+        self.waitScale = waitScale
         self.clock = clock
         self.onSample = onSample
         converter = SystemAudioConverter()
@@ -218,15 +265,19 @@ final class SystemAudioSource {
         tearDown()
     }
 
-    /// Builds and starts the first tap and begins to follow the devices. Throws when the tap cannot be made; then
-    /// nothing is left running. Not on `control`.
+    /// Builds and starts the first tap and begins to watch it. A tap that cannot be built now is logged and tried
+    /// again in the background, the backup recording meanwhile; this throws only when no tap can ever run (no
+    /// converter to ScreenCaptureKit's format), and then nothing is left running. Not on `control`.
     func start() throws {
         guard converter != nil else { throw SystemAudioTapError("The system audio format is not available") }
         try control.sync {
             guard !stopped else { throw SystemAudioTapError("The system audio tap was stopped before it started") }
-            try build()
-            RecLog.write("System audio: process tap on \"\(tap?.deviceName ?? "?")\" (\(tap?.formatText ?? "?"))")
-            stopWatching = factory.watchDevices(control) { [weak self] reason in self?.devicesChanged(reason, force: false) }
+            attempt(reason: nil)
+            let timer = DispatchSource.makeTimerSource(queue: control)
+            timer.schedule(deadline: .now() + checkInterval, repeating: checkInterval, leeway: .milliseconds(20))
+            timer.setEventHandler { [weak self] in self?.check() }
+            self.timer = timer
+            timer.resume()
         }
         SystemAudioSource.live.withLock { $0[ObjectIdentifier(self)] = Weak(source: self) }
     }
@@ -252,97 +303,111 @@ final class SystemAudioSource {
 
     // MARK: - Control queue
 
-    /// Stops following the devices, stops handing buffers on and tears the tap down. Once.
+    private static func uptime() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    /// Stops watching, stops handing buffers on and tears the tap down. Once.
     private func tearDown() {
         if !stopped {
             stopped = true
             pending?.cancel()
             pending = nil
-            stopWatching?()
-            stopWatching = nil
+            timer?.cancel()
+            timer = nil
             delivering.store(0, ordering: .releasing)
-            if let tap = tap {
-                tap.stop()
-                RecLog.write("System audio: process tap stopped (\(rebuilds) rebuilds)")
-            }
+            tap?.stop()
             tap = nil
+            if generation > 0 {
+                RecLog.write("System audio: process tap stopped (\(rebuilds) rebuilds, \(failedAttempts) failed attempts)")
+            }
         }
         SystemAudioSource.live.withLock { _ = $0.removeValue(forKey: ObjectIdentifier(self)) }
     }
 
-    /// Makes a tap of the next generation, whose buffers are handed on from its first
-    private func build() throws {
+    /// Builds a tap of the next construction, whose buffers are handed on from its first. `reason` is why the one
+    /// before had to go, nil for the first.
+    private func attempt(reason: String?) {
+        guard !stopped, tap == nil else { return }
+        let order = factory.constructions()
+        guard let clock = repair.next(in: order) else { return }
+        repair.trying(clock)
         generation += 1
         let mine = generation
+        lastDelivery.store(0, ordering: .releasing)
         delivering.store(mine, ordering: .releasing)
         do {
-            tap = try factory.makeTap(control, { [weak self] buffer in
+            let made = try factory.makeTap(clock, control, { [weak self] buffer in
                 self?.deliver(buffer, generation: mine)
             }, { [weak self] in
                 guard let self = self else { return }
-                self.control.async { self.devicesChanged("the output device changed its format or went away", force: true) }
+                self.control.async { self.failed(generation: mine, "its device changed its rate or went away") }
             })
+            tap = made
+            builtAt = SystemAudioSource.uptime()
+            if reason == nil {
+                RecLog.write("System audio: process tap with \(made.clockText) (\(made.formatText))")
+            } else {
+                rebuilds += 1
+                if logs { RecLog.write("System audio: process tap rebuilt with \(made.clockText) (\(made.formatText))") }
+            }
         } catch {
             delivering.store(0, ordering: .releasing)
-            throw error
+            failedAttempts += 1
+            repair.failed()
+            if logs {
+                RecLog.write("System audio: the process tap with \(clock.name) could not be built: \(error.localizedDescription); tried again \(waitText), the backup records meanwhile")
+            }
+            schedule()
         }
     }
 
-    /// A device change: the tap is rebuilt once the burst of changes is over. `force` rebuilds a tap that is
-    /// still on the default output device, whose format changed under it.
-    private func devicesChanged(_ reason: String, force: Bool) {
-        guard !stopped, force || !failedOnSameOutput else { return }
-        retriesLeft = SystemAudioSource.retries
-        // A forced rebuild that is waiting stays forced
-        schedule(after: settleDelay, reason: reason, force: force || (pending != nil && forcePending))
-    }
+    /// Whether this failure in a row is logged: the first ones, then one in thirty, so a tap that cannot be built
+    /// for an hour does not fill the log
+    private var logs: Bool { repair.failuresInRow <= 6 || repair.failuresInRow % 30 == 0 }
 
-    private func schedule(after delay: Double, reason: String, force: Bool) {
+    private var waitText: String { repair.wait == 0 ? "at once" : String(format: "in %.1f s", repair.wait) }
+
+    /// The next attempt, after the repair's wait
+    private func schedule() {
         pending?.cancel()
-        forcePending = force
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.pending = nil
-            self.forcePending = false
-            self.rebuild(reason: reason, force: force)
+            self.attempt(reason: "retry")
         }
         pending = work
-        control.asyncAfter(deadline: .now() + delay, execute: work)
+        control.asyncAfter(deadline: .now() + repair.wait * waitScale, execute: work)
     }
 
-    /// Replaces the tap by one on the current default output device. A tap that is still on it is kept unless
-    /// `force`: the device list also changes when Holdfast's own aggregate device comes and goes.
-    private func rebuild(reason: String, force: Bool) {
-        guard !stopped else { return }
-        if !force, let tap = tap, tap.isCurrent { return }
-        if !force, failedOnSameOutput { return }
-        RecLog.write("System audio: rebuilding the process tap (\(reason))")
+    /// The tap of `generation` failed: torn down, and the next attempt scheduled
+    private func failed(generation failing: Int, _ why: String) {
+        guard !stopped, failing == generation, let current = tap else { return }
         // From here on nothing of the old tap is handed on
         delivering.store(0, ordering: .releasing)
-        tap?.stop()
+        current.stop()
         tap = nil
-        do {
-            try build()
-            failedOn = nil
-            rebuilds += 1
-            RecLog.write("System audio: process tap rebuilt on \"\(tap?.deviceName ?? "?")\" (\(tap?.formatText ?? "?"))")
-        } catch {
-            RecLog.write("System audio: rebuilding the process tap failed: \(error.localizedDescription)")
-            failedOn = Failure(output: factory.defaultOutput())
-            guard retriesLeft > 0 else { return }
-            retriesLeft -= 1
-            schedule(after: retryDelay, reason: "retry", force: true)
+        failedAttempts += 1
+        repair.failed()
+        if logs {
+            RecLog.write("System audio: the process tap with \(current.clockText) failed (\(why)); rebuilding \(waitText), the backup records meanwhile")
         }
+        schedule()
     }
 
-    /// Whether there is no tap because the last rebuild failed, and the default output device is still the one it
-    /// failed on: a change of the device list is then no reason to build again, only its retries are. A build that
-    /// fails after creating its aggregate device destroys it, and that changes the device list in this process; taken
-    /// for a new device, it would build and tear down a tap that cannot start on this output about twice a second
-    /// for the rest of the recording.
-    private var failedOnSameOutput: Bool {
-        guard tap == nil, let failed = failedOn else { return false }
-        return failed.output == factory.defaultOutput()
+    /// Every `checkInterval`: a tap that has handed nothing on for `stallSeconds` is dead; one that has delivered
+    /// for `TapRepair.healthySeconds` is healthy
+    private func check() {
+        guard !stopped, tap != nil else { return }
+        let now = SystemAudioSource.uptime()
+        let last = lastDelivery.load(ordering: .acquiring)
+        let since = max(builtAt, last)
+        guard now > since else { return }
+        let silent = Double(now - since) / 1_000_000_000
+        if silent > stallSeconds {
+            failed(generation: generation, String(format: "its IOProc handed on nothing for %.1f s", silent))
+        } else if repair.failuresInRow > 0, last > 0, Double(now - builtAt) / 1_000_000_000 >= TapRepair.healthySeconds {
+            repair.healthy()
+            RecLog.write("System audio: the process tap with \(tap?.clockText ?? "?") has delivered for \(Int(TapRepair.healthySeconds)) s")
+        }
     }
 
     // MARK: - IO thread
@@ -351,6 +416,7 @@ final class SystemAudioSource {
     /// been replaced or stopped
     private func deliver(_ buffer: CMSampleBuffer, generation: Int) {
         guard delivering.load(ordering: .acquiring) == generation else { return }
+        lastDelivery.store(DispatchTime.now().uptimeNanoseconds, ordering: .releasing)
         let arrival = clock()
         sampleQueue.async { [weak self] in self?.handOn(buffer, generation: generation, arrival: arrival) }
     }
@@ -363,7 +429,7 @@ final class SystemAudioSource {
             return
         }
         if generation != latestGeneration {
-            // Another device: its timeline and format start anew
+            // Another tap: its timeline and format start anew
             latestGeneration = generation
             converter.reset()
         }

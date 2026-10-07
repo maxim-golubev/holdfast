@@ -43,9 +43,9 @@ final class TestRecording {
     /// says otherwise, so only the tests about the present see it.
     var present = 1_000_000.0
 
-    init(folder: String, audioOnly: Bool = false, microphone: Bool = true, settings: [String: Any] = [:]) throws {
+    init(folder: String, audioOnly: Bool = false, microphone: Bool = true, settings: [String: Any] = [:], tap: Bool = false) throws {
         let directory = try Suite.folder(folder).path
-        recording = withSettings(settings) { RecordingContext(audioOnly: audioOnly, recordMic: microphone, fastStart: false, saveDirectory: directory) }
+        recording = withSettings(settings) { RecordingContext(audioOnly: audioOnly, recordMic: microphone, fastStart: false, saveDirectory: directory, tap: tap) }
         writer = MovieWriter(recording: recording, micConverter: microphone ? try require(MicConverter(), "converter") : nil)
         writer.events.failed = { [unowned self] in self.failures.append($0) }
         writer.events.sessionStarted = { [unowned self] in self.sessions += 1 }

@@ -43,8 +43,10 @@ struct MicrophoneChoice {
 
 /// The capture of one recording: what ScreenCaptureKit captures (`filter(for:content:)`), how
 /// (`configuration(for:target:filter:microphoneDeviceID:capturesAudio:)`), the stream with its delegate and outputs,
-/// and the process tap that records the system audio when one could be started (`systemAudio`; the stream captures
-/// it otherwise). Screen, system audio and microphone are all handed on as `CaptureSample`s on the queue it was given.
+/// and the process tap that records the system audio when it is used (`systemAudio`). The stream captures system
+/// audio whenever the recording has it: as the system audio without the tap, as its backup with it
+/// (`streamAudioIsBackup`). Screen, system audio, its backup and microphone are all handed on as `CaptureSample`s on
+/// the queue it was given.
 ///
 /// One is created for every recording, and its threads are these. `RecorderController.record` creates it, adds its
 /// outputs and starts it off the main thread while the session is `starting`. The main thread stops it, releases its
@@ -66,18 +68,22 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     private var stream: SCStream?
     /// The system audio when a process tap records it, nil when the stream does (or nothing does)
     private var systemAudio: SystemAudioSource?
+    /// Whether the stream's system audio is the backup of the tap's (`CaptureSample.Kind.backupAudio`)
+    private let streamAudioIsBackup: Bool
     private let queue: DispatchQueue
     private let onSample: (CaptureSample) -> Void
     private let onStop: (CaptureSource, Error) -> Void
 
     /// `onSample` gets every buffer of every output, on `queue`; `systemAudio` is the running tap, which hands its
-    /// buffers to the same `onSample`. `onStop` is called, on a queue of the stream's, when the stream ends without
-    /// having been asked to.
+    /// buffers to the same `onSample`. The stream's system audio is handed on as the backup when the recording has a
+    /// track for it (`RecordingContext.systemAudioBackup`). `onStop` is called, on a queue of the stream's, when the
+    /// stream ends without having been asked to.
     init(filter: SCContentFilter, configuration: SCStreamConfiguration, recording: RecordingContext, microphone: MicrophoneChoice?,
          systemAudio: SystemAudioSource?, queue: DispatchQueue, onSample: @escaping (CaptureSample) -> Void,
          onStop: @escaping (CaptureSource, Error) -> Void) {
         self.configuration = configuration
         self.systemAudio = systemAudio
+        self.streamAudioIsBackup = recording.systemAudioBackup
         self.recordsMic = recording.recordMic
         self.micSelection = microphone?.selection ?? "default"
         self.micSelectionName = microphone?.selectionName ?? "default"
@@ -178,7 +184,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
 
     /// The stream configuration of `recording`: picture size and format, system audio, microphone and frame rate.
     /// `microphoneDeviceID` is the device to capture, nil for the system default input. `capturesAudio` is whether
-    /// the stream records the system audio (`SystemAudioRoute.streamCapturesAudio`): not when a process tap does.
+    /// the stream records system audio: whenever the recording has it, as the backup of the process tap or alone.
     static func configuration(for recording: RecordingContext, target: CaptureTarget, filter: SCContentFilter, microphoneDeviceID: String?, capturesAudio: Bool) -> SCStreamConfiguration {
         let audioOnly = recording.audioOnly
         // HDR uses the local display preset; see https://developer.apple.com/videos/play/wwdc2024/10088/?time=191 for the canonical display alternative
@@ -205,6 +211,8 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         }
 
         conf.capturesAudio = capturesAudio
+        // Like the tap, which leaves Holdfast's own process out
+        conf.excludesCurrentProcessAudio = true
         conf.sampleRate = 48000
         conf.channelCount = 2
         // The microphone is captured by ScreenCaptureKit as well. A nil device ID means the system default input.
@@ -291,7 +299,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
             }
             kind = .screen(complete: complete)
         case .audio:
-            kind = .audio
+            kind = streamAudioIsBackup ? .backupAudio : .audio
         case .microphone:
             kind = .microphone
             // Microphone timestamps are expected on the stream's clock like the other outputs. Should they ever not be,

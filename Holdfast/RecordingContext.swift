@@ -20,6 +20,10 @@ struct RecordingContext {
     /// Whether this recording captures system audio. The "recordWinSound" setting alone does not decide that
     /// either: a hotkey start and an audio-only recording always do.
     let systemAudio: Bool
+    /// Whether the system audio comes from the process tap, with ScreenCaptureKit's system audio recorded next to it
+    /// as a backup for the whole recording (its own track, or file); decided with the route before the start
+    /// (`SystemAudioSelection.usesTap`)
+    let systemAudioBackup: Bool
     let remuxAudio: Bool
     let preventSleep: Bool
     let showPreview: Bool
@@ -52,15 +56,17 @@ struct RecordingContext {
 
     /// Reads the settings kept for the recording from `AppSettings`. What depends on how this recording
     /// was started is handed in: `recordMic` is whether it got a microphone, `saveDirectory` the folder
-    /// `RecorderController.start` has checked.
-    init(audioOnly: Bool, recordMic: Bool, fastStart: Bool, saveDirectory: String) {
+    /// `RecorderController.start` has checked, `tap` whether its system audio is to come from the process tap.
+    init(audioOnly: Bool, recordMic: Bool, fastStart: Bool, saveDirectory: String, tap: Bool = false) {
         let systemAudio = RecordingContext.wantsSystemAudio(audioOnly: audioOnly, fastStart: fastStart)
+        let systemAudioBackup = systemAudio && tap
         let remuxAudio = AppSettings.remuxAudio
         let videoFormat = AppSettings.videoFormat
         let audioFormat = AppSettings.audioFormat
         self.audioOnly = audioOnly
         self.recordMic = recordMic
         self.systemAudio = systemAudio
+        self.systemAudioBackup = systemAudioBackup
         self.remuxAudio = remuxAudio
         self.preventSleep = AppSettings.preventSleep
         self.showPreview = AppSettings.showPreview
@@ -73,7 +79,7 @@ struct RecordingContext {
 
         files = RecordingFiles(base: RecordingFileStore(directory: saveDirectory).newBase(), audioOnly: audioOnly,
                                recordMic: recordMic, systemAudio: systemAudio, remuxAudio: remuxAudio,
-                               videoEnding: videoFormat.rawValue, audioFormat: audioFormat)
+                               videoEnding: videoFormat.rawValue, audioFormat: audioFormat, systemAudioBackup: systemAudioBackup)
     }
 }
 

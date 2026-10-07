@@ -13,7 +13,10 @@ struct CaptureSample {
     enum Kind {
         /// `complete` is false for a frame that carries no new picture (idle, blank, suspended)
         case screen(complete: Bool)
+        /// System audio: the process tap's, or ScreenCaptureKit's when the tap is not used
         case audio
+        /// ScreenCaptureKit's system audio while the tap is used: the backup, written to a track of its own
+        case backupAudio
         case microphone
     }
     let kind: Kind
@@ -49,6 +52,16 @@ final class MovieWriter {
         var microphoneWritten: (CMTime, Float) -> Void = { _, _ in }
         /// System audio that was delivered (not silence put in its place) was written up to that time
         var systemAudioWritten: (CMTime) -> Void = { _ in }
+        /// The same for the backup of the system audio
+        var backupAudioWritten: (CMTime) -> Void = { _ in }
+    }
+
+    /// The titles of the audio tracks of a video recording, which players show and the mix tells the tracks by
+    enum TrackTitle {
+        static let system = "System audio"
+        static let tap = "System audio (tap)"
+        static let backup = "System audio (backup)"
+        static let microphone = "Microphone"
     }
 
     /// What is left for the stop path once the inputs are finished
@@ -73,11 +86,16 @@ final class MovieWriter {
     var events = Events()
 
     private var writer: AVAssetWriter?
-    private var videoInput, audioInput, micInput: AVAssetWriterInput?
-    /// The system audio file of an audio-only recording
-    private var audioFile: AVAudioFile?
-    /// What this writer created at `recording.rawURL` (the file or the package), which `cancel` removes; nil until then
+    private var videoInput, micInput: AVAssetWriterInput?
+    /// The system audio track (or file, for an audio-only recording), and its backup when the tap is used
+    private var system: SystemTrack?
+    private var backup: SystemTrack?
+    /// Where the tap delivered, written next to the recording while it runs; nil without the backup
+    private var tapSpans: TapSpanLog?
+    /// What this writer created at `recording.rawURL` (the file or the package), which `cancel` removes; nil until
+    /// then. The backup file of an audio-only recording without a package, and the tap's spans, are removed with it.
     private var created: URL?
+    private var createdAlongside = [URL]()
     /// True from just before the capture is started until the recording is stopped or has failed
     private(set) var isCapturing = false
     private(set) var isPaused = false
@@ -95,9 +113,9 @@ final class MovieWriter {
     /// present time on the buffers' clock from it while nothing arrives.
     private(set) var clockAnchor: (raw: CMTime, uptime: UInt64)?
     /// End of the system audio appended so far, silence included
-    private(set) var audioEndPTS: CMTime?
-    /// Format of the system audio delivered last
-    private var audioFormatDescription: CMAudioFormatDescription?
+    var audioEndPTS: CMTime? { system?.end }
+    /// End of the backup of the system audio appended so far, silence included
+    var backupEndPTS: CMTime? { backup?.end }
     /// Time of the last video frame appended, and that frame, which is written again while no new one arrives
     private(set) var videoPTS: CMTime?
     private var lastVideoFrame: CMSampleBuffer?
@@ -110,8 +128,8 @@ final class MovieWriter {
     /// `ArrivalCheck.ahead` after it. The tests and the simulation give a clock of their own; one that returns an
     /// invalid time turns the checks against the present off.
     var presentClock: () -> CMTime = { CMClockGetHostTimeClock().time }
-    /// Audio buffers given their arrival time because their own could not be believed, per source, for the log
-    private var systemRestamps = Restamps(name: "System audio", behind: ArrivalCheck.behind)
+    /// Microphone buffers given their arrival time because their own could not be believed, for the log (system
+    /// audio counts its own in its `SystemTrack`)
     private var microphoneRestamps = Restamps(name: "Microphone", behind: ArrivalCheck.microphoneBehind)
     /// Buffers left out because they end beyond the present, and ends the timeline did not take for that reason
     private var futureBuffers = 0
@@ -122,7 +140,8 @@ final class MovieWriter {
     /// End time of the last frame taken; a frame that does not end after it is left out
     private var lastFrameEnd: CMTime?
 
-    var hasSystemAudio: Bool { audioInput != nil || audioFile != nil }
+    var hasSystemAudio: Bool { system != nil }
+    var hasBackupAudio: Bool { backup != nil }
     var hasMicrophoneTrack: Bool { micInput != nil }
 
     init(recording: RecordingContext, micConverter: MicConverter?) {
@@ -188,30 +207,57 @@ final class MovieWriter {
         writer.add(videoInput)
 
         // Only tracks that are fed: the writer puts a fragment on disk once every track has data for it, so a single
-        // track that never gets any would leave the whole file unreadable until it is closed
-        var audioInput: AVAssetWriterInput?
-        if recording.systemAudio {
+        // track that never gets any would leave the whole file unreadable until it is closed. In this order, which
+        // the mix also goes by when a file has no titles: system audio, its backup, the microphone.
+        func audioInput(_ title: String, failure: String) throws -> AVAssetWriterInput {
             let input = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
             input.expectsMediaDataInRealTime = true
-            guard writer.canAdd(input) else { throw RecordingError("The audio settings are not supported by this file format.") }
+            input.metadata = [MovieWriter.titleItem(title)]
+            guard writer.canAdd(input) else { throw RecordingError(failure) }
             writer.add(input)
-            audioInput = input
+            return input
         }
-
+        var system: SystemTrack?
+        var backup: SystemTrack?
+        if recording.systemAudio {
+            let title = recording.systemAudioBackup ? TrackTitle.tap : TrackTitle.system
+            system = SystemTrack(name: "System audio", input: try audioInput(title, failure: "The audio settings are not supported by this file format."))
+            if recording.systemAudioBackup {
+                backup = SystemTrack(name: "System audio backup", input: try audioInput(TrackTitle.backup, failure: "The audio settings are not supported by this file format."))
+            }
+        }
         var micInput: AVAssetWriterInput?
         if recording.recordMic {
             // MicConverter delivers 48 kHz stereo whatever the device's own format is
-            let input = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
-            input.expectsMediaDataInRealTime = true
-            guard writer.canAdd(input) else { throw RecordingError("The microphone track cannot be written in this file format.") }
-            writer.add(input)
-            micInput = input
+            micInput = try audioInput(TrackTitle.microphone, failure: "The microphone track cannot be written in this file format.")
         }
         guard writer.startWriting() else { throw writer.error ?? RecordingError("The video file could not be created.") }
         created = recording.rawURL
         self.videoInput = videoInput
-        self.audioInput = audioInput
+        self.system = system
+        self.backup = backup
         self.micInput = micInput
+        try startTapSpans()
+    }
+
+    /// A title for a track, which QuickTime Player and the mix read
+    static func titleItem(_ title: String) -> AVMetadataItem {
+        let item = AVMutableMetadataItem()
+        item.identifier = .commonIdentifierTitle
+        item.value = title as NSString
+        item.extendedLanguageTag = "und"
+        return item
+    }
+
+    /// Begins the file of the tap's spans when the recording has the backup: empty until the tap delivers, so an
+    /// empty file says that it never did
+    private func startTapSpans() throws {
+        guard recording.systemAudioBackup, let url = recording.tapSpansURL else { return }
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw RecordingError(String(format: "A file named \"%@\" is already in the save folder.", url.lastPathComponent))
+        }
+        tapSpans = try TapSpanLog(url: url)
+        createdAlongside.append(url)
     }
 
     /// Creates the files of an audio-only recording. When it throws, the caller discards what was created (`cancel`).
@@ -238,7 +284,16 @@ final class MovieWriter {
             guard writer.startWriting() else { throw writer.error ?? RecordingError("The microphone file could not be created.") }
             self.micInput = micInput
         }
-        audioFile = try AVAudioFile(forWriting: systemAudioURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        system = SystemTrack(name: "System audio", file: try AVAudioFile(forWriting: systemAudioURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false))
+        if let backupURL = recording.backupAudioURL {
+            // In the package, or next to the file under a name of its own; never over another file
+            guard !FileManager.default.fileExists(atPath: backupURL.path) else {
+                throw RecordingError(String(format: "A file named \"%@\" is already in the save folder.", backupURL.lastPathComponent))
+            }
+            if recording.micAudioURL == nil { createdAlongside.append(backupURL) }
+            backup = SystemTrack(name: "System audio backup", file: try AVAudioFile(forWriting: backupURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false))
+        }
+        try startTapSpans()
     }
 
     /// The encoder settings of an audio track. `videoFormat` is the container of a video recording, nil for an audio
@@ -325,10 +380,15 @@ final class MovieWriter {
     /// For a start that failed before anything was recorded. Also deletes what the writer created, and nothing else.
     func cancel() {
         isCapturing = false
-        audioFile = nil
+        system?.file = nil
+        backup?.file = nil
+        tapSpans?.close()
+        tapSpans = nil
         writer?.cancelWriting()
         if let created = created { try? FileManager.default.removeItem(at: created) }
+        for url in createdAlongside { try? FileManager.default.removeItem(at: url) }
         created = nil
+        createdAlongside = []
     }
 
     /// The writer never writes over a file: AVAudioFile would truncate it, and a failed start would remove it.
@@ -489,7 +549,12 @@ final class MovieWriter {
             kind = "video"
         case .audio:
             kind = "system audio"
-            rawPTS = systemRestamps.start(rawPTS, duration: duration, arrival: sample.arrival)
+            guard let system else { return }
+            rawPTS = system.restamps.start(rawPTS, duration: duration, arrival: sample.arrival)
+        case .backupAudio:
+            kind = "system audio backup"
+            guard let backup else { return }
+            rawPTS = backup.restamps.start(rawPTS, duration: duration, arrival: sample.arrival)
         case .microphone:
             kind = "microphone"
             isMicrophone = true
@@ -509,11 +574,14 @@ final class MovieWriter {
         case .screen(let complete):
             if recording.audioOnly || !complete { return }
             writeFrame(sampleBuffer, from: pts, to: endPTS)
-        case .audio:
+        case .audio, .backupAudio:
+            let isBackup: Bool
+            if case .backupAudio = sample.kind { isBackup = true } else { isBackup = false }
+            guard let track = isBackup ? backup : system else { return }
             if recording.audioOnly {
-                writeAudioToFile(sampleBuffer, from: pts, to: endPTS)
+                writeAudioToFile(sampleBuffer, track: track, from: pts, to: endPTS)
             } else {
-                writeAudioToTrack(sampleBuffer, from: pts, to: endPTS)
+                writeAudioToTrack(sampleBuffer, track: track, from: pts, to: endPTS)
             }
         case .microphone:
             guard sessionStart != nil, !isMicrophoneMuted, let micInput = micInput, let converter = micConverter else { return }
@@ -558,50 +626,63 @@ final class MovieWriter {
         }
     }
 
-    /// System audio of an audio-only recording, which goes straight into its file
-    private func writeAudioToFile(_ sampleBuffer: CMSampleBuffer, from pts: CMTime, to endPTS: CMTime) {
-        // The first system audio starts the session of the microphone file, if there is one
+    /// System audio of an audio-only recording, which goes straight into its file. The first buffer of either
+    /// system audio file starts the session (and that of the microphone file, if there is one): a tap that delivers
+    /// nothing from the start must not keep the backup from being recorded.
+    private func writeAudioToFile(_ sampleBuffer: CMSampleBuffer, track: SystemTrack, from pts: CMTime, to endPTS: CMTime) {
         if sessionStart == nil { guard beginSession(at: pts) else { return } }
-        guard let samples = sampleBuffer.asPCMBuffer else { return }
+        guard let samples = sampleBuffer.asPCMBuffer, let sessionStart else { return }
         // The file has no timestamps: audio that did not arrive is written as silence, or everything after it
         // would be early, and audio that arrives after silence was written in its place is left out, or
-        // everything after it would be late
-        guard let start = placeSystemAudio(from: pts, to: endPTS) else { return }
+        // everything after it would be late. Its first sample is the session's start, also for the file whose
+        // source began later.
+        guard let start = placeSystemAudio(track, from: pts, to: endPTS, end: track.end ?? sessionStart) else { return }
         do {
-            try audioFile?.write(from: samples)
-            let end = CMTimeAdd(start, CMTimeSubtract(endPTS, pts))
-            audioEndPTS = end
-            events.systemAudioWritten(end)
+            try track.file?.write(from: samples)
+            delivered(track, from: start, to: CMTimeAdd(start, CMTimeSubtract(endPTS, pts)))
         } catch {
             fail(MovieWriter.writeFailure(error))
         }
     }
 
-    private func writeAudioToTrack(_ sampleBuffer: CMSampleBuffer, from pts: CMTime, to endPTS: CMTime) {
-        guard sessionStart != nil, let audioInput = audioInput else { return }
-        audioFormatDescription = sampleBuffer.formatDescription
+    private func writeAudioToTrack(_ sampleBuffer: CMSampleBuffer, track: SystemTrack, from pts: CMTime, to endPTS: CMTime) {
+        guard sessionStart != nil, let input = track.input else { return }
+        track.format = sampleBuffer.formatDescription
         // The writer plays audio buffers back to back whatever their timestamps say. The buffer goes at the end
         // of what was written, and only once that end is where the buffer belongs.
-        guard let start = placeSystemAudio(from: pts, to: endPTS) else { return }
+        guard let start = placeSystemAudio(track, from: pts, to: endPTS, end: track.end) else { return }
         // From the buffer's own timestamp, which is not `pts` when it was given its arrival time
         guard let buffer = MovieWriter.retime(sampleBuffer, by: CMTimeSubtract(sampleBuffer.presentationTimeStamp, start)) else { return }
-        if append(buffer, to: audioInput) {
-            let end = CMTimeAdd(start, CMTimeSubtract(endPTS, pts))
-            audioEndPTS = end
-            events.systemAudioWritten(end)
+        if append(buffer, to: input) {
+            delivered(track, from: start, to: CMTimeAdd(start, CMTimeSubtract(endPTS, pts)))
         }
     }
 
-    /// Where a system audio buffer that covers `pts` to `endPTS` goes: at the end of the system audio written so far.
-    /// Nil when it must not be written: it lies before that end (silence was already written in its place), or the
-    /// silence for a hole in front of it could not be written yet. That end is counted from what was written, not
-    /// read from the timestamps, so a buffer the writer did not take leaves a hole that is still there for the next
-    /// buffer to see. Holes add up and are filled with silence once they exceed `gapTolerance`; a buffer that
-    /// overlaps the end is written whole, which puts the audio late by less than one buffer and no more.
-    private func placeSystemAudio(from pts: CMTime, to endPTS: CMTime) -> CMTime? {
-        return SystemAudioPlacement.place(from: pts, to: endPTS, end: audioEndPTS, tolerance: MovieWriter.gapTolerance) { time in
-            fillSystemAudio(upTo: time)
-            return audioEndPTS
+    /// Audio of a source went into `track` from `start` to `end`: its end moves on, the monitor hears of it, and
+    /// for the tap's track its spans grow
+    private func delivered(_ track: SystemTrack, from start: CMTime, to end: CMTime) {
+        track.end = end
+        if track === backup {
+            events.backupAudioWritten(end)
+        } else {
+            events.systemAudioWritten(end)
+            if let tapSpans, let sessionStart {
+                tapSpans.delivered(from: CMTimeGetSeconds(CMTimeSubtract(start, sessionStart)), to: CMTimeGetSeconds(CMTimeSubtract(end, sessionStart)))
+            }
+        }
+    }
+
+    /// Where a system audio buffer that covers `pts` to `endPTS` goes in `track`: at the end of what was written
+    /// to it so far (`end`). Nil when it must not be written: it lies before that end (silence was already written
+    /// in its place), or the silence for a hole in front of it could not be written yet. That end is counted from
+    /// what was written, not read from the timestamps, so a buffer the writer did not take leaves a hole that is
+    /// still there for the next buffer to see. Holes add up and are filled with silence once they exceed
+    /// `gapTolerance`; a buffer that overlaps the end is written whole, which puts the audio late by less than one
+    /// buffer and no more. The backup is placed exactly like the system audio, so the two share one timeline.
+    private func placeSystemAudio(_ track: SystemTrack, from pts: CMTime, to endPTS: CMTime, end: CMTime?) -> CMTime? {
+        return SystemAudioPlacement.place(from: pts, to: endPTS, end: end, tolerance: MovieWriter.gapTolerance) { time in
+            fill(track, upTo: time)
+            return track.end
         }
     }
 
@@ -626,11 +707,20 @@ final class MovieWriter {
     /// or to the system audio file of an audio-only recording, which has no timestamps and would otherwise come out
     /// shorter than the microphone file next to it. Never beyond a second after the present.
     func fillSystemAudio(upTo time: CMTime) {
+        if let system { fill(system, upTo: time) }
+    }
+
+    /// The same for the backup of the system audio
+    func fillBackupAudio(upTo time: CMTime) {
+        if let backup { fill(backup, upTo: time) }
+    }
+
+    private func fill(_ track: SystemTrack, upTo time: CMTime) {
         let time = notAfterLimit(time)
-        guard let from = audioEndPTS ?? sessionStart else { return }
-        let file = audioFile
-        let input = audioInput
-        var description = audioFormatDescription
+        guard let from = track.end ?? sessionStart else { return }
+        let file = track.file
+        let input = track.input
+        var description = track.format
         var format: AVAudioFormat?
         if let file = file {
             format = file.processingFormat
@@ -645,6 +735,8 @@ final class MovieWriter {
         guard let format = format, format.sampleRate > 0 else { return }
         let scale = CMTimeScale(format.sampleRate)
         var (position, left) = SystemAudioPlacement.silence(from: from, upTo: time, scale: scale)
+        // Silence in the tap's track: whatever the tap delivered before it is one span
+        if left > 0, track === system { tapSpans?.interrupted() }
         while left > 0 {
             let count = min(left, Int64(scale / 2))
             guard let pcm = AudioSilence.pcm(format: format, frames: count) else { return }
@@ -662,7 +754,7 @@ final class MovieWriter {
             }
             position = CMTimeAdd(position, CMTime(value: count, timescale: scale))
             left -= count
-            audioEndPTS = position
+            track.end = position
             noteEnd(position)
         }
     }
@@ -712,13 +804,18 @@ final class MovieWriter {
             input.markAsFinished()
         }
         if let converter = micConverter { RecLog.write(converter.summary) }
-        for line in [systemRestamps.summary, microphoneRestamps.summary] { if let line = line { RecLog.write(line) } }
+        for line in [system?.restamps.summary, backup?.restamps.summary, microphoneRestamps.summary] { if let line = line { RecLog.write(line) } }
         if futureBuffers > 0 || futureEnds > 0 {
             RecLog.write("Left out for lying beyond the present: \(futureBuffers) buffers, \(futureEnds) ends")
         }
         videoInput?.markAsFinished()
-        audioInput?.markAsFinished()
-        audioFile = nil // close audio file
+        system?.input?.markAsFinished()
+        backup?.input?.markAsFinished()
+        // Closes the audio files
+        system?.file = nil
+        backup?.file = nil
+        tapSpans?.close()
+        tapSpans = nil
         if !sessionStarted {
             // Nothing was appended, so there is nothing to close, and an empty file is not a recording. Once the
             // inputs are finished `cancelWriting` leaves the file behind, so `cancel` removes what was created.
@@ -727,7 +824,8 @@ final class MovieWriter {
         let frame = firstFrame
         self.writer = nil
         videoInput = nil
-        audioInput = nil
+        system = nil
+        backup = nil
         micInput = nil
         firstFrame = nil
         lastVideoFrame = nil
@@ -815,6 +913,24 @@ final class MovieWriter {
         return NSImage(cgImage: rendered, size: .zero)
     }
 
+    /// One track of system audio as it is written: the input of a video's track or the file of an audio-only
+    /// recording, where its audio ends (silence included), the format it was last delivered in, and the buffers it
+    /// gave their arrival time. The system audio has one; with the process tap its backup has another, written the
+    /// same way.
+    private final class SystemTrack {
+        let input: AVAssetWriterInput?
+        var file: AVAudioFile?
+        var end: CMTime?
+        var format: CMAudioFormatDescription?
+        var restamps: Restamps
+
+        init(name: String, input: AVAssetWriterInput? = nil, file: AVAudioFile? = nil) {
+            self.input = input
+            self.file = file
+            restamps = Restamps(name: name, behind: ArrivalCheck.behind)
+        }
+    }
+
     /// Returns the buffer with `offset` subtracted from its timestamps, or the buffer itself when there is nothing to shift
     static func retime(_ sample: CMSampleBuffer, by offset: CMTime) -> CMSampleBuffer? {
         guard offset.isValid else { return nil }
@@ -836,6 +952,60 @@ extension CMSampleBuffer {
             guard let absd = self.formatDescription?.audioStreamBasicDescription else { return nil }
             guard let format = AVAudioFormat(standardFormatWithSampleRate: absd.mSampleRate, channels: absd.mChannelsPerFrame) else { return nil }
             return AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: audioBufferList.unsafePointer)
+        }
+    }
+}
+
+/// Writes where the process tap delivered (`TapSpans`) to the file next to the recording while it is recorded, a
+/// line each time a stretch begins or ends, so a recording that is never closed has them too. Times are seconds on
+/// the file's timeline. Sample queue, like the writer that owns it.
+final class TapSpanLog {
+    let url: URL
+    private var handle: FileHandle?
+    /// Where the stretch that is going on began, and where the tap's audio last ended
+    private var openSince: Double?
+    private var lastEnd: Double?
+    private var failed = false
+
+    /// Creates the file, empty
+    init(url: URL) throws {
+        self.url = url
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+            throw RecordingError(String(format: "The file \"%@\" could not be created.", url.lastPathComponent))
+        }
+        handle = try FileHandle(forWritingTo: url)
+    }
+
+    /// The tap's audio went into its track from `start` to `end`
+    func delivered(from start: Double, to end: Double) {
+        if openSince == nil {
+            openSince = max(0, start)
+            write(TapSpans.line(alive: max(0, start)))
+        }
+        lastEnd = end
+    }
+
+    /// Silence went into the tap's track: the stretch that was going on ended where its audio did
+    func interrupted() {
+        guard openSince != nil else { return }
+        openSince = nil
+        if let end = lastEnd { write(TapSpans.line(dead: end)) }
+    }
+
+    /// At the end of the recording
+    func close() {
+        interrupted()
+        try? handle?.close()
+        handle = nil
+    }
+
+    private func write(_ line: String) {
+        do {
+            try handle?.write(contentsOf: Data(line.utf8))
+        } catch {
+            // The mix then judges the sources by their sound alone where the file is missing lines
+            if !failed { RecLog.write("System audio: the tap's spans could not be written to \(url.lastPathComponent): \(error.localizedDescription)") }
+            failed = true
         }
     }
 }

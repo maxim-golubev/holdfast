@@ -12,9 +12,9 @@ import Synchronization
 
 // System audio through a Core Audio process tap (macOS 14.2+). ScreenCaptureKit's system audio leaves out what the
 // system process avconferenced plays, which is the audio of FaceTime calls and of iPhone calls taken on the Mac; a
-// tap of every process hears it. `SystemAudioTap` is one tap with its aggregate device and IOProc on one output
-// device; `SystemAudioSource` (SystemAudioSource.swift) keeps one running for a recording and rebuilds it when the
-// output device changes.
+// tap of every process hears it. `SystemAudioTap` is one tap with its aggregate device and IOProc; what clocks that
+// device is a `TapClock`. `SystemAudioSource` (SystemAudioSource.swift) keeps one running for a recording and
+// rebuilds it the moment it stops delivering.
 //
 // Nothing here is left behind when the process ends, a crash included: the tap is created private
 // (`CATapDescription.isPrivate`) and so is the aggregate device (`kAudioAggregateDeviceIsPrivateKey`), and Core
@@ -29,14 +29,17 @@ protocol TapHardware {
     func ownProcessObject() -> AudioObjectID?
     /// The current default output device
     func defaultOutputDevice() throws -> TapOutputDevice
+    /// The Mac's built-in output (its speakers), nil when it has none that is alive
+    func builtInOutputDevice() -> TapOutputDevice?
     /// Whether the device with this UID is connected and alive
     func isAlive(deviceUID: String) -> Bool
     /// A private global stereo tap of every process but `excluded`, which leaves what it taps audible
     func createTap(excluding excluded: [AudioObjectID]) throws -> (id: AudioObjectID, uid: String)
     /// `kAudioTapPropertyFormat`
     func tapFormat(_ tap: AudioObjectID) throws -> AudioStreamBasicDescription
-    /// A private aggregate device whose main sub-device is the output device `mainUID`, with the tap as its sub-tap
-    func createAggregateDevice(name: String, uid: String, mainUID: String, tapUID: String) throws -> AudioObjectID
+    /// A private aggregate device with the tap as its sub-tap, drift compensated, and the output device `mainUID` as
+    /// its main sub-device; with no sub-device at all when `mainUID` is nil
+    func createAggregateDevice(name: String, uid: String, mainUID: String?, tapUID: String) throws -> AudioObjectID
     /// The device's nominal sample rate, nil when it cannot be read
     func nominalSampleRate(_ device: AudioObjectID) -> Double?
     func createIOProc(_ device: AudioObjectID, _ block: @escaping AudioDeviceIOBlock) throws -> AudioDeviceIOProcID
@@ -91,14 +94,48 @@ struct SystemAudioTapError: LocalizedError {
     }
 }
 
-/// One process tap on one output device: the tap, a private aggregate device whose main sub-device is that output
-/// device (a tap that is the only device of an aggregate delivers nothing but zeros), and an IOProc that copies every
+/// What clocks the private aggregate device a tap is in. Measured on the owner's Mac (Tools/tapexp.swift, in a
+/// bundle with Holdfast's identity and permission): with the built-in output as the clock, with no sub-device at
+/// all, and with the default output (AirPods) as the clock, the tap delivered the same ~94 buffers a second and heard
+/// a sound played to the AirPods at the same level, also while another process held the AirPods' microphone with
+/// voice processing. The tap follows the processes, not the device that clocks it. The default output is a poor
+/// clock: AirPods change mode under a call (24 kHz), and an aggregate device clocked by them delivered nothing for a
+/// whole 47-minute meeting. So the order is the built-in output, then no sub-device, then the default output last.
+enum TapClock: String, Equatable, CaseIterable {
+    /// The Mac's built-in output (its speakers, there in clamshell mode too), whatever the default output is
+    case builtInOutput
+    /// No sub-device: the tap alone
+    case none
+    /// The current default output device, the last resort
+    case defaultOutput
+
+    /// For the log
+    var name: String {
+        switch self {
+        case .builtInOutput: return "the built-in output"
+        case .none: return "no sub-device"
+        case .defaultOutput: return "the default output"
+        }
+    }
+
+    /// The constructions to try, best first: the built-in output when there is one, no sub-device, and the default
+    /// output when it is another device than the built-in one
+    static func order(builtIn: TapOutputDevice?, defaultOutput: TapOutputDevice?) -> [TapClock] {
+        var order = [TapClock]()
+        if builtIn != nil { order.append(.builtInOutput) }
+        order.append(.none)
+        if let output = defaultOutput, output.uid != builtIn?.uid { order.append(.defaultOutput) }
+        return order
+    }
+}
+
+/// One process tap: the tap, a private aggregate device clocked as `TapClock` says, and an IOProc that copies every
 /// buffer into a `CMSampleBuffer` stamped on the host-time clock, the clock ScreenCaptureKit stamps its buffers with.
 /// Built and started by `init`, torn down by `stop` (and by `deinit`), each once.
 ///
-/// The IOProc uses only the tap's stream (`useTapStreamOnly`): the output device is in the aggregate device for its
-/// clock alone. The aggregate device runs from `AudioDeviceStart` on, delivering zeros while nothing plays, so the
-/// track is continuous from the first moment (it is not made to wait for the first sound, which
+/// The IOProc uses only the tap's stream (`useTapStreamOnly`): an output device in the aggregate device is there for
+/// its clock alone. The aggregate device runs from `AudioDeviceStart` on, delivering zeros while nothing plays, so
+/// the track is continuous from the first moment (it is not made to wait for the first sound, which
 /// `kAudioAggregateDeviceTapAutoStartKey` would do).
 ///
 /// Threads: `init` and `stop` run on the thread of the owner (`SystemAudioSource`'s queue). The IOProc runs on Core
@@ -108,33 +145,45 @@ final class SystemAudioTap: SystemAudioTapping {
     /// input device like any.
     static let deviceName = "Holdfast System Audio"
 
-    let output: TapOutputDevice
+    let clock: TapClock
+    /// The device that clocks it, nil for `TapClock.none`
+    let clockDevice: TapOutputDevice?
     /// What the IOProc delivers: the tap's format at the rate of the aggregate device
     let format: AudioStreamBasicDescription
     private let hardware: TapHardware
     private let tap: AudioObjectID
     private let aggregate: AudioObjectID
     private let proc: AudioDeviceIOProcID
-    private var listener: TapListener?
+    private var listeners = [TapListener]()
     private var stopped = false
 
-    /// Closed once the output device has changed its rate or gone away: from then on the IOProc hands nothing on
-    /// until the tap is rebuilt, since its buffers come at the new rate and `format` still says the old one
+    /// Closed once the aggregate device or the device that clocks it has changed its rate, or that device has gone
+    /// away: from then on the IOProc hands nothing on until the tap is rebuilt, since its buffers may come at the new
+    /// rate and `format` still says the old one
     final class Gate: Sendable {
         private let closed = Atomic<Bool>(false)
         var isOpen: Bool { !closed.load(ordering: .acquiring) }
         func close() { closed.store(true, ordering: .releasing) }
     }
 
-    /// Builds the tap on the current default output device and starts it. `deliver` gets every buffer, on the IO
-    /// thread; `outputChanged` is called when the output device's sample rate changes or it goes away (AirPods
-    /// switching to their call mode change their rate), which the tap must be rebuilt for. Throws, with everything
-    /// it created destroyed again, when any step fails.
-    init(hardware: TapHardware, queue: DispatchQueue, deliver: @escaping (CMSampleBuffer) -> Void, outputChanged: @escaping () -> Void) throws {
+    /// Builds the tap clocked as `clock` says and starts it. `deliver` gets every buffer, on the IO thread;
+    /// `outputChanged` is called when the rate changes or the clock's device goes away (AirPods switching to their
+    /// call mode change their rate), which the tap must be rebuilt for. Throws, with everything it created destroyed
+    /// again, when any step fails.
+    init(hardware: TapHardware, clock: TapClock, queue: DispatchQueue, deliver: @escaping (CMSampleBuffer) -> Void, outputChanged: @escaping () -> Void) throws {
         self.hardware = hardware
         let gate = Gate()
         let own = hardware.ownProcessObject()
-        let output = try hardware.defaultOutputDevice()
+        let clockDevice: TapOutputDevice?
+        switch clock {
+        case .builtInOutput:
+            guard let device = hardware.builtInOutputDevice() else { throw SystemAudioTapError("This Mac has no built-in output device") }
+            clockDevice = device
+        case .none:
+            clockDevice = nil
+        case .defaultOutput:
+            clockDevice = try hardware.defaultOutputDevice()
+        }
         let tap = try hardware.createTap(excluding: own.map { [$0] } ?? [])
         // Undone in reverse order when a later step fails
         var undo: [() -> Void] = [{ _ = hardware.destroyTap(tap.id) }]
@@ -148,7 +197,7 @@ final class SystemAudioTap: SystemAudioTapping {
         do {
             let tapFormat = try hardware.tapFormat(tap.id)
             let uid = "\(Bundle.main.bundleIdentifier ?? "Holdfast").systemaudio.\(UUID().uuidString)"
-            aggregate = try hardware.createAggregateDevice(name: SystemAudioTap.deviceName, uid: uid, mainUID: output.uid, tapUID: tap.uid)
+            aggregate = try hardware.createAggregateDevice(name: SystemAudioTap.deviceName, uid: uid, mainUID: clockDevice?.uid, tapUID: tap.uid)
             undo.append { _ = hardware.destroyAggregateDevice(aggregate) }
             format = try SystemAudioBuffers.ioFormat(tap: tapFormat, deviceRate: hardware.nominalSampleRate(aggregate))
             if format.mSampleRate != tapFormat.mSampleRate {
@@ -171,7 +220,8 @@ final class SystemAudioTap: SystemAudioTapping {
         } catch {
             throw fail(error)
         }
-        self.output = output
+        self.clock = clock
+        self.clockDevice = clockDevice
         self.format = format
         self.tap = tap.id
         self.aggregate = aggregate
@@ -179,13 +229,21 @@ final class SystemAudioTap: SystemAudioTapping {
         // Only a real change is passed on: a notification that changed nothing must not rebuild the tap, which would
         // notify again. A real one stops the buffers at once, not only once the rebuild comes: AirPods switching to
         // their call mode deliver at half the rate, which `format` would label as the old one (double speed).
-        let outputRate = hardware.nominalSampleRate(output.id)
-        listener = hardware.watch(output.id, [kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyDeviceIsAlive], queue: queue) {
-            if hardware.nominalSampleRate(output.id) != outputRate || !hardware.isAlive(deviceUID: output.uid) {
+        let aggregateRate = hardware.nominalSampleRate(aggregate)
+        let clockRate = clockDevice.flatMap { hardware.nominalSampleRate($0.id) }
+        let changed = {
+            let rateChanged = { (device: AudioObjectID, built: Double?) -> Bool in
+                guard let now = hardware.nominalSampleRate(device), let built else { return false }
+                return now != built
+            }
+            let gone = clockDevice.map { !hardware.isAlive(deviceUID: $0.uid) } ?? false
+            if rateChanged(aggregate, aggregateRate) || clockDevice.map({ rateChanged($0.id, clockRate) }) == true || gone {
                 gate.close()
                 outputChanged()
             }
         }
+        let selectors = [kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyDeviceIsAlive]
+        listeners = ([aggregate] + (clockDevice.map { [$0.id] } ?? [])).compactMap { hardware.watch($0, selectors, queue: queue, changed) }
     }
 
     /// Which of the aggregate device's streams its IOProc uses: of the input streams only the last, the tap's (the
@@ -214,14 +272,8 @@ final class SystemAudioTap: SystemAudioTapping {
         stop()
     }
 
-    var deviceName: String { output.name }
-    var deviceUID: String { output.uid }
-
-    /// Whether the tap is still built on the default output device, and that device is there
-    var isCurrent: Bool {
-        guard let current = try? hardware.defaultOutputDevice() else { return false }
-        return current.uid == output.uid && hardware.isAlive(deviceUID: output.uid)
-    }
+    /// What clocks it, for the log: `the built-in output "MacBook Pro Speakers"`, `no sub-device`
+    var clockText: String { clockDevice.map { "\(clock.name) \"\($0.name)\"" } ?? clock.name }
 
     var formatText: String { SystemAudioBuffers.describe(format) }
 
@@ -230,8 +282,8 @@ final class SystemAudioTap: SystemAudioTapping {
     func stop() {
         guard !stopped else { return }
         stopped = true
-        if let listener = listener { hardware.unwatch(listener) }
-        listener = nil
+        listeners.forEach { hardware.unwatch($0) }
+        listeners = []
         let steps: [(String, () -> OSStatus)] = [
             ("Stopping the device", { [hardware, aggregate, proc] in hardware.stopDevice(aggregate, proc) }),
             ("Destroying the IOProc", { [hardware, aggregate, proc] in hardware.destroyIOProc(aggregate, proc) }),
@@ -492,6 +544,24 @@ struct CoreAudioTapHardware: TapHardware {
         return TapOutputDevice(id: device, uid: uid, name: CoreAudioTapHardware.string(device, kAudioObjectPropertyName) ?? uid)
     }
 
+    func builtInOutputDevice() -> TapOutputDevice? {
+        var address = CoreAudioTapHardware.address(kAudioHardwarePropertyDevices)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(CoreAudioTapHardware.system, &address, 0, nil, &size) == noErr, size > 0 else { return nil }
+        var devices = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(CoreAudioTapHardware.system, &address, 0, nil, &size, &devices) == noErr else { return nil }
+        var found = [TapOutputDevice]()
+        for device in devices {
+            var transport: UInt32 = 0
+            guard CoreAudioTapHardware.read(device, kAudioDevicePropertyTransportType, &transport) == noErr, transport == kAudioDeviceTransportTypeBuiltIn,
+                  ((try? streamCount(device, input: false)) ?? 0) > 0,
+                  let uid = CoreAudioTapHardware.string(device, kAudioDevicePropertyDeviceUID), isAlive(deviceUID: uid) else { continue }
+            found.append(TapOutputDevice(id: device, uid: uid, name: CoreAudioTapHardware.string(device, kAudioObjectPropertyName) ?? uid))
+        }
+        // The speakers rather than a headphone jack, which comes and goes with the headphones
+        return found.first { $0.uid.localizedCaseInsensitiveContains("speaker") } ?? found.first { $0.name.localizedCaseInsensitiveContains("speaker") } ?? found.first
+    }
+
     func isAlive(deviceUID: String) -> Bool {
         var address = CoreAudioTapHardware.address(kAudioHardwarePropertyTranslateUIDToDevice)
         var uid = deviceUID as CFString
@@ -528,18 +598,20 @@ struct CoreAudioTapHardware: TapHardware {
         return format
     }
 
-    func createAggregateDevice(name: String, uid: String, mainUID: String, tapUID: String) throws -> AudioObjectID {
-        let description: [String: Any] = [
+    func createAggregateDevice(name: String, uid: String, mainUID: String?, tapUID: String) throws -> AudioObjectID {
+        var description: [String: Any] = [
             kAudioAggregateDeviceNameKey: name,
             kAudioAggregateDeviceUIDKey: uid,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
-            kAudioAggregateDeviceMainSubDeviceKey: mainUID,
-            kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: mainUID]],
             // No kAudioAggregateDeviceTapAutoStartKey: with it the start waits for the first sound a tapped process
             // plays, and a recording started in silence would get no system audio until then
             kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: tapUID, kAudioSubTapDriftCompensationKey: true]],
         ]
+        if let mainUID {
+            description[kAudioAggregateDeviceMainSubDeviceKey] = mainUID
+            description[kAudioAggregateDeviceSubDeviceListKey] = [[kAudioSubDeviceUIDKey: mainUID]]
+        }
         var device = AudioObjectID(kAudioObjectUnknown)
         let status = AudioHardwareCreateAggregateDevice(description as CFDictionary, &device)
         guard status == noErr, device != AudioObjectID(kAudioObjectUnknown) else { throw SystemAudioTapError("Creating the aggregate device", status) }

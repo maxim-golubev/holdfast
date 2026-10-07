@@ -16,8 +16,10 @@ import Foundation
 /// and shown on screen, so that a call app taking the microphone for a few seconds interrupts nobody. A problem ends
 /// only once its source has delivered steadily again for `steadySeconds`, so a source that keeps dropping out and
 /// coming back for a moment is one problem, counted from its first gap, not many short ones that are never
-/// notified. Everything here is only used on the sample queue; the methods the session calls and the timer trap
-/// elsewhere.
+/// notified. System audio recorded with the process tap has a backup (ScreenCaptureKit's system audio, on a track of
+/// its own): both tracks are continued, and system audio is a problem only while neither delivers. A tap that stops
+/// while the backup goes on is only logged: the recording has the sound, and the tap's source is rebuilding it.
+/// Everything here is only used on the sample queue; the methods the session calls and the timer trap elsewhere.
 final class RecordingMonitor {
     static let interval: Double = 0.5
     /// How long a source may deliver nothing before its track is continued without it. The tracks are filled up to
@@ -77,8 +79,13 @@ final class RecordingMonitor {
     private var micHeard: CMTime?
     private var micSound: CMTime?
     private var micPeak: Float = 0
-    /// End of the last system audio that ScreenCaptureKit delivered and that was written
+    /// End of the last system audio that its source delivered and that was written, and the same for its backup.
+    /// With the backup, system audio is missing only while neither delivers: a process tap that stops while the
+    /// backup goes on is only logged (`tapQuiet`), since the recording has the sound.
     private var audioHeard: CMTime?
+    private var backupHeard: CMTime?
+    /// Whether the log says that the tap is quiet while the backup records
+    private var tapQuiet = false
     private var micProblem: Problem?
     private var audioProblem: Problem?
     private var shown = Display()
@@ -123,6 +130,8 @@ final class RecordingMonitor {
         micSound = nil
         micPeak = 0
         audioHeard = nil
+        backupHeard = nil
+        tapQuiet = false
         micProblem = nil
         audioProblem = nil
         update(Display())
@@ -143,6 +152,10 @@ final class RecordingMonitor {
 
     func systemAudioWritten(upTo end: CMTime) {
         audioHeard = end
+    }
+
+    func backupAudioWritten(upTo end: CMTime) {
+        backupHeard = end
     }
 
     private func seconds(from start: CMTime, to end: CMTime) -> Double {
@@ -206,6 +219,9 @@ final class RecordingMonitor {
         if hasSystemAudio, seconds(from: writer.audioEndPTS ?? sessionStart, to: target) >= 0.5 {
             writer.fillSystemAudio(upTo: target)
         }
+        if writer.hasBackupAudio, seconds(from: writer.backupEndPTS ?? sessionStart, to: target) >= 0.5 {
+            writer.fillBackupAudio(upTo: target)
+        }
         writer.repeatVideoFrame(at: now)
         guard writer.isCapturing else { return }
 
@@ -241,7 +257,21 @@ final class RecordingMonitor {
             micPeak = 0
         }
         if hasSystemAudio {
-            let heard = audioHeard ?? sessionStart
+            let tapHeard = audioHeard ?? sessionStart
+            var heard = tapHeard
+            if writer.hasBackupAudio {
+                let backup = backupHeard ?? sessionStart
+                if backup > heard { heard = backup }
+                // The tap's own silence is the log's business only: the backup has the sound
+                let tapUnheard = seconds(from: tapHeard, to: now)
+                if !tapQuiet && tapUnheard > silentSeconds && seconds(from: backup, to: now) <= RecordingMonitor.steadyGap {
+                    tapQuiet = true
+                    RecLog.write(String(format: "System audio: the process tap has delivered nothing for %d s; the backup (screen capture) records the system audio meanwhile", Int(tapUnheard)))
+                } else if tapQuiet && tapUnheard <= RecordingMonitor.steadyGap {
+                    tapQuiet = false
+                    RecLog.write("System audio: the process tap delivers again")
+                }
+            }
             let unheard = seconds(from: heard, to: now)
             var failing: Failing?
             if unheard > silentSeconds {

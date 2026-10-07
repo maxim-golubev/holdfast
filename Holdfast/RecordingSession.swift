@@ -53,6 +53,17 @@ protocol RecordingWriter: AnyObject {
     func currentPicture() -> CMSampleBuffer?
     func finish() -> MovieWriter.Finished
     func cancel()
+    /// The backup of the system audio, recorded while the process tap is the source: its track's end, and its fill
+    var backupEndPTS: CMTime? { get }
+    var hasBackupAudio: Bool { get }
+    func fillBackupAudio(upTo time: CMTime)
+}
+
+extension RecordingWriter {
+    /// A writer without the backup
+    var backupEndPTS: CMTime? { nil }
+    var hasBackupAudio: Bool { false }
+    func fillBackupAudio(upTo time: CMTime) {}
 }
 
 extension MovieWriter: RecordingWriter {}
@@ -189,6 +200,7 @@ final class RecordingSession: @unchecked Sendable {
         }
         writer.events.microphoneWritten = { [monitor] end, peak in monitor.microphoneWritten(upTo: end, peak: peak) }
         writer.events.systemAudioWritten = { [monitor] end in monitor.systemAudioWritten(upTo: end) }
+        writer.events.backupAudioWritten = { [monitor] end in monitor.backupAudioWritten(upTo: end) }
         queue.sync { queueWriter = writer }
     }
 

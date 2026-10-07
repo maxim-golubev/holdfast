@@ -66,8 +66,13 @@ enum RecordingSaver {
                 }
             }
         } else {
-            // The files are as complete as they will get: they leave their temporary name
+            // The files are as complete as they will get: they leave their temporary name, and so does the backup of
+            // the system audio when it is a file of its own
             let kept = recording.closedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
+            if recording.micAudioURL == nil, let written = recording.backupAudioURL, let closedBackup = recording.backupClosedURL,
+               fd.fileExists(atPath: written.path) {
+                _ = RecordingFileStore.keep(written: written, as: closedBackup)
+            }
             if recording.recordMic, let writer = writer, !closed {
                 // The microphone file did not close: the package is kept as it is and is not mixed
                 var body = earlyReason ?? ""
@@ -75,17 +80,23 @@ enum RecordingSaver {
                 body += (body.isEmpty ? "" : " ") + keptNote(kept, "The microphone file could not be closed. The recording was kept with separate audio files: %@")
                 UserNotice.reportFailure(title: failureTitle, message: body)
             } else {
-                // The package is only read now that the microphone file is complete
+                // The package is only read now that the microphone file is complete. With the tap, its system audio
+                // is first made one file from the tap's and the backup's.
+                await mergeSystemAudio(recording, at: kept)
                 await finishAudioRecording(recording, at: kept, earlyReason: earlyReason)
             }
         }
+        // The final files are written: the tap's spans have served
+        RecordingFileStore.removeTapSpans(recording.tapSpansURL)
         SleepPreventer.shared.allowSleep()
     }
 
     /// Mixes the audio tracks of a finished video recording and presents the result. Returns when the recording has
     /// its final name. The recording as it was written is only removed or renamed after the mix has been written
     /// completely, checked against it and moved to the final name; whatever goes wrong before that, it is kept
-    /// under its "(unmixed, 2 audio tracks)" name and the user is told. The work itself runs off the main thread.
+    /// under its "(unmixed, N audio tracks)" name and the user is told. The work itself runs off the main thread.
+    /// With the process tap the system audio of the mix comes stretch by stretch from the tap or its backup, by the
+    /// tap's spans written while recording (`RecordingFiles.tapSpansURL`).
     private static func mix(_ session: RecordingSession, recording: RecordingContext, frame: NSImage?, earlyReason: String?) async {
         guard let mixURL = recording.mixURL, let unmixedURL = recording.unmixedURL else { return }
         let raw = recording.rawURL
@@ -99,11 +110,13 @@ enum RecordingSaver {
         } else {
             session.mixProgressed(0)
             let settings = recording.audioSettings
+            let spans = recording.tapSpansURL.flatMap { TapSpans.read($0) }
             do {
-                try await RecordingMixer.mix(source: raw, output: mixURL, fileType: recording.fileType, audioSettings: settings) { fraction in
+                let plan = try await RecordingMixer.mix(source: raw, output: mixURL, fileType: recording.fileType, audioSettings: settings,
+                                                        tapSpans: spans, separateMicrophone: recording.separatesMicrophone) { fraction in
                     DispatchQueue.main.async { session.mixProgressed(fraction) }
                 }
-                try await RecordingMixer.verify(source: raw, output: mixURL)
+                try await RecordingMixer.verify(source: raw, output: mixURL, plan: plan)
                 // A rename within the folder: the final name appears with the complete file or not at all
                 try fd.moveItem(at: mixURL, to: final)
             } catch {
@@ -120,7 +133,8 @@ enum RecordingSaver {
                 UserNotice.reportFailure(title: "Audio Mix Failed", message: early + String(format: "Mixing the audio failed: %@", failure) + " " + movedNote(for: raw))
                 return
             }
-            let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept with system audio and microphone as two separate audio tracks in: %@", failure, kept.path)
+            let tracks = recording.systemAudioBackup ? "with each audio track as it was recorded (system audio from the process tap, its backup from screen capture, the microphone)" : "with system audio and microphone as two separate audio tracks"
+            let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept %@ in: %@", failure, tracks, kept.path)
             UserNotice.reportFailure(title: "Audio Mix Failed", message: body)
             if recording.showPreview { showPreview(url: kept, image: frame) }
             return
@@ -142,6 +156,45 @@ enum RecordingSaver {
         let note = leftover.map { String(format: "Its unmixed copy could not be renamed or removed and is still at: %@", $0.path) }
         if let note { RecLog.write(note) }
         present(final, image: frame, recording: recording, earlyReason: earlyReason, note: note)
+    }
+
+    /// The system audio of a sound-only recording made with the process tap, which has two files once it is closed
+    /// (`kept`: the file, or the package): the tap's and the backup's. They are merged into one, stretch by stretch
+    /// from the source the tap's spans and the sound say (`RecordingMixer.mergeSystemAudio`), written under a
+    /// staging name and checked, and only then does it take the tap's file's name; the two files are kept beside it
+    /// with "Keep the Unmixed Recording" (in the package `sys-tap` and `sys-backup`, else "(system audio tap)" and
+    /// "(system audio backup)"), deleted otherwise. A merge that fails leaves the files as they are, the tap's as
+    /// the recording's system audio, and is reported.
+    private static func mergeSystemAudio(_ recording: RecordingContext, at kept: URL) async {
+        guard recording.systemAudioBackup, let written = recording.systemAudioURL, let backupClosed = recording.backupClosedURL,
+              let tapKept = recording.tapKeptURL else { return }
+        let inPackage = recording.micAudioURL != nil
+        // Inside whatever the package is called now
+        let tap = inPackage ? kept.appendingPathComponent(written.lastPathComponent) : kept
+        let backup = inPackage ? kept.appendingPathComponent(backupClosed.lastPathComponent)
+            : (fd.fileExists(atPath: backupClosed.path) ? backupClosed : (recording.backupAudioURL ?? backupClosed))
+        let keptTap = inPackage ? kept.appendingPathComponent(tapKept.lastPathComponent) : tapKept
+        guard fd.fileExists(atPath: tap.path), fd.fileExists(atPath: backup.path) else {
+            RecLog.write("System audio: the tap's or the backup's file is missing, nothing to merge")
+            return
+        }
+        let staged = RecordingFileStore.stagingURL(for: tap)
+        let spans = recording.tapSpansURL.flatMap { TapSpans.read($0) }
+        let settings = recording.audioSettings
+        do {
+            try RecordingFileStore.checkFree(staging: staged)
+            guard RecordingFileStore.hasRoomForCopy(of: tap) else { throw RecordingError("Not enough free disk space to merge the system audio.") }
+            try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    done.resume(with: Result { _ = try RecordingMixer.mergeSystemAudio(tap: tap, backup: backup, spans: spans, to: staged, settings: settings) })
+                }
+            }
+            try RecordingFileStore.adoptMergedSystemAudio(merged: staged, tap: tap, keptTap: keptTap, backup: backup, keepSources: recording.keepUnmixed)
+        } catch {
+            try? fd.removeItem(at: staged)
+            let body = String(format: "The system audio from the process tap and from its backup could not be merged: %@ The recording keeps the system audio of the process tap; what screen capture recorded as its backup is next to it: %@", error.localizedDescription, backup.path)
+            UserNotice.reportFailure(title: "System Audio Not Merged", message: body)
+        }
     }
 
     /// What follows an audio-only recording once its files are closed and `file` (the audio file or the package) has

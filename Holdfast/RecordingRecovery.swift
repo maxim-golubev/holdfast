@@ -44,7 +44,7 @@ final class RecordingRecovery {
         // A token of its own: the sleep assertion of SleepPreventer belongs to the recording that may run meanwhile
         let activity = ProcessInfo.processInfo.beginActivity(options: .idleSystemSleepDisabled, reason: "Finishing a recording from an earlier run")
         Task.detached {
-            let lines = await RecordingRecovery.recover(found, audioSettings: settings) { fraction in
+            let lines = await RecordingRecovery.recover(found, audioSettings: settings, separateMicrophone: !AppSettings.remuxAudio) { fraction in
                 DispatchQueue.main.async {
                     guard self.isRunning else { return }
                     self.progress = fraction
@@ -69,8 +69,10 @@ final class RecordingRecovery {
     /// Deals with every leftover and returns one paragraph about each for the report. What an interrupted mix or
     /// conversion wrote goes out of the way first: it says nothing about the recording it was made from (the mix of a
     /// recording that was never closed is written under the same marker), and it would be in the way of a new mix.
-    /// `audioSettings` are those to mix a video of each ending with.
-    nonisolated static func recover(_ found: [RecordingFileStore.Leftover], audioSettings: [String: [String: Any]], progress: @escaping (Double) -> Void) async -> [String] {
+    /// `audioSettings` are those to mix a video of each ending with; `separateMicrophone` keeps the microphone of a
+    /// recording made with the process tap as a track of its own ("Mix Microphone into the Main Track" off).
+    nonisolated static func recover(_ found: [RecordingFileStore.Leftover], audioSettings: [String: [String: Any]], separateMicrophone: Bool = false,
+                                    progress: @escaping (Double) -> Void) async -> [String] {
         var lines = [String]()
         for leftover in found where leftover.isMix {
             lines.append(rename(leftover, RecoveryNames.incompleteMix, "\"%@\" is what an interrupted audio mix or MP3 conversion had written. The recording it was made from is kept separately; this file can be deleted."))
@@ -79,8 +81,10 @@ final class RecordingRecovery {
             if leftover.isAudio {
                 lines.append(await recoverAudio(leftover))
             } else {
-                lines.append(await recover(leftover, audioSettings: audioSettings[leftover.ending] ?? [:], progress: progress))
+                lines.append(await recover(leftover, audioSettings: audioSettings[leftover.ending] ?? [:], separateMicrophone: separateMicrophone, progress: progress))
             }
+            // Its final names are given: the tap's spans next to it have served
+            RecordingFileStore.removeTapSpans(RecordingFileStore.tapSpansURL(base: leftover.base))
         }
         return lines
     }
@@ -141,11 +145,14 @@ final class RecordingRecovery {
     /// A file that does not open becomes `X (damaged)`. One that opens is mixed under the rules of `RecordingSaver.mix`:
     /// the mix is written to `X.mixing`, checked, and only then renamed, and the recording itself is only ever renamed.
     /// - Closed before the app went away (it is not in fragments any more): it is complete. Mix `X`, recording
-    ///   `X (unmixed, 2 audio tracks)`. Only the file itself says so; a `.mixing` file next to it does not, because
+    ///   `X (unmixed, N audio tracks)`. Only the file itself says so; a `.mixing` file next to it does not, because
     ///   the recovery mix of an unclosed recording leaves one too when it is interrupted.
-    /// - Never closed: it plays up to its last seconds. Mix `X (recovered)`, recording `X (recovered, unmixed, 2 audio tracks)`.
-    /// - The mix fails: recording `X (unmixed, 2 audio tracks)` when complete, `X (recovered)` when not.
-    nonisolated static func recover(_ leftover: RecordingFileStore.Leftover, audioSettings: [String: Any], progress: @escaping (Double) -> Void) async -> String {
+    /// - Never closed: it plays up to its last seconds. Mix `X (recovered)`, recording `X (recovered, unmixed, N audio tracks)`.
+    /// - The mix fails: recording `X (unmixed, N audio tracks)` when complete, `X (recovered)` when not.
+    /// A recording made with the process tap is mixed by the tap's spans it left next to it (`TapSpans`), like
+    /// after a stop.
+    nonisolated static func recover(_ leftover: RecordingFileStore.Leftover, audioSettings: [String: Any], separateMicrophone: Bool = false,
+                                    progress: @escaping (Double) -> Void) async -> String {
         let raw = leftover.url
         let base = leftover.base
         let ending = leftover.ending
@@ -157,12 +164,15 @@ final class RecordingRecovery {
         let what = complete
             ? String(format: "is a complete recording (%@) whose audio had not been mixed yet when the app went away.", length(seconds))
             : unfinished(seconds)
-        let separate = "It plays, with system audio and microphone as two separate audio tracks (many players only play the first, which is system audio)."
+        let tracks = max(2, info.audioTracks)
+        let separate = tracks > 2
+            ? "It plays, with its \(tracks) audio tracks as they were recorded (system audio from the process tap, its backup from screen capture, the microphone); many players only play the first."
+            : "It plays, with system audio and microphone as two separate audio tracks (many players only play the first, which is system audio)."
         let mixURL = RecordingFileStore.temporaryURL(base: base, marker: RecordingFileStore.mixMarker, ending: ending)
         let final = RecordingFileStore.freeURL(base: base, label: RecoveryNames.mix(complete: complete), ending: ending)
         var failure: String?
         if !info.mixable {
-            failure = "It does not have one video and two audio tracks."
+            failure = "It does not have one video and two or three audio tracks."
         } else if FileManager.default.fileExists(atPath: mixURL.path) {
             // What the interrupted mix wrote could not be moved away; it is not overwritten
             failure = "The file of the interrupted mix is in the way."
@@ -170,8 +180,10 @@ final class RecordingRecovery {
             failure = "Not enough free disk space to mix the audio tracks."
         } else {
             do {
-                try await RecordingMixer.mix(source: raw, output: mixURL, fileType: ending.lowercased() == "mov" ? .mov : .mp4, audioSettings: audioSettings, progress: progress)
-                try await RecordingMixer.verify(source: raw, output: mixURL, unfinished: !complete)
+                let spans = TapSpans.read(RecordingFileStore.tapSpansURL(base: base))
+                let plan = try await RecordingMixer.mix(source: raw, output: mixURL, fileType: ending.lowercased() == "mov" ? .mov : .mp4, audioSettings: audioSettings,
+                                                        tapSpans: spans, separateMicrophone: separateMicrophone, progress: progress)
+                try await RecordingMixer.verify(source: raw, output: mixURL, unfinished: !complete, plan: plan)
                 try FileManager.default.moveItem(at: mixURL, to: final)
             } catch {
                 print("Failed to mix the leftover \(raw.lastPathComponent): \(error)")
@@ -182,10 +194,10 @@ final class RecordingRecovery {
         }
         if let failure = failure {
             let line = "\"%@\" " + what + " " + String(format: "Mixing its audio now failed: %@", failure).replacingOccurrences(of: "%", with: "%%") + " " + separate
-            return rename(leftover, RecoveryNames.recording(complete: complete, mixed: false), line)
+            return rename(leftover, RecoveryNames.recording(complete: complete, mixed: false, tracks: tracks), line)
         }
         let mixed = String(format: "\"%@\" ", final.lastPathComponent) + what + " " + "Its audio was mixed now."
-        let kept = "The recording as it was written, with system audio and microphone as separate audio tracks, is kept as \"%@\"."
-        return rename(leftover, RecoveryNames.recording(complete: complete, mixed: true), mixed.replacingOccurrences(of: "%", with: "%%") + " " + kept)
+        let kept = "The recording as it was written, with its audio tracks separate, is kept as \"%@\"."
+        return rename(leftover, RecoveryNames.recording(complete: complete, mixed: true, tracks: tracks), mixed.replacingOccurrences(of: "%", with: "%%") + " " + kept)
     }
 }

@@ -17,7 +17,9 @@ final class MonitorWriter: RecordingWriter {
     var sessionStart: CMTime? = time(0)
     var clockAnchor: (raw: CMTime, uptime: UInt64)?
     var audioEndPTS: CMTime?
+    var backupEndPTS: CMTime?
     let hasSystemAudio: Bool
+    var hasBackupAudio = false
     let hasMicrophoneTrack: Bool
     var isMicrophoneMuted = false
     /// "microphone", "system audio" and "video", in the order the monitor filled them
@@ -37,6 +39,7 @@ final class MonitorWriter: RecordingWriter {
     func timelineTime(_ raw: CMTime) -> CMTime { raw }
     func fillMicrophone(upTo time: CMTime) { fills.append("microphone") }
     func fillSystemAudio(upTo time: CMTime) { fills.append("system audio"); audioEndPTS = time }
+    func fillBackupAudio(upTo time: CMTime) { fills.append("backup"); backupEndPTS = time }
     func repeatVideoFrame(at now: CMTime) { fills.append("video") }
     func currentPicture() -> CMSampleBuffer? { nil }
     func finish() -> MovieWriter.Finished { MovieWriter.Finished(writer: nil, frame: nil, sessionStarted: true) }
@@ -59,8 +62,9 @@ final class MonitorRun {
     /// An uptime far from zero, as the system's is
     private let zero: UInt64 = 1_000_000_000_000
 
-    init(_ name: String, microphone: Bool = true, systemAudio: Bool = false) throws {
+    init(_ name: String, microphone: Bool = true, systemAudio: Bool = false, backup: Bool = false) throws {
         writer = MonitorWriter(folder: try Suite.folder(name), microphone: microphone, systemAudio: systemAudio)
+        writer.hasBackupAudio = backup
         monitor = RecordingMonitor(queue: queue)
         writer.clockAnchor = (time(0), zero)
         monitor.notify = { [unowned self] title, text in notified.append(title); lastText = text }
@@ -92,6 +96,13 @@ final class MonitorRun {
         queue.sync {
             writer.audioEndPTS = time(seconds)
             monitor.systemAudioWritten(upTo: time(seconds))
+        }
+    }
+
+    func backup(upTo seconds: Double) {
+        queue.sync {
+            writer.backupEndPTS = time(seconds)
+            monitor.backupAudioWritten(upTo: time(seconds))
         }
     }
 
@@ -188,6 +199,34 @@ func monitorTests() async {
         expectEqual(run.onScreen, systemWarning, "then it is on screen too")
         run.ticks(after: 18, through: 23.5) { run.systemAudio(upTo: $0) }
         expectEqual(run.notified, [systemTitle, "System Audio Is Back"], "and its return, once it has been back for 5 s")
+        expectEqual(run.warning, nil, "the warning goes")
+    }
+
+    await test("monitor: with the backup, system audio is a problem only while neither source delivers; a quiet tap is only logged") {
+        let run = try MonitorRun("monitor-backup", microphone: false, systemAudio: true, backup: true)
+        run.ticks(after: 0, through: 5) { run.systemAudio(upTo: $0); run.backup(upTo: $0) }
+        // Today's case: the tap stops delivering, the backup goes on
+        run.ticks(after: 5, through: 40) { run.backup(upTo: $0) }
+        expectEqual(run.warning, nil, "no warning while the backup records")
+        expectEqual(run.notified, [], "no notification")
+        expectEqual(run.onScreen, nil, "nothing on screen")
+        expect(run.fills("system audio") > 0, "the tap's track is continued with silence")
+        expectEqual(run.fills("backup"), 0, "the backup's needs nothing")
+        expectEqual(RecLog.lines.filter { $0.contains("the process tap has delivered nothing") }.count, 1, "the log says so once: \(RecLog.lines)")
+        run.ticks(after: 40, through: 45) { run.systemAudio(upTo: $0); run.backup(upTo: $0) }
+        expect(RecLog.lines.contains("System audio: the process tap delivers again"), "and when it is back")
+        // FaceTime: only the tap hears the call; the backup that stops is no problem either
+        run.ticks(after: 45, through: 70) { run.systemAudio(upTo: $0) }
+        expectEqual(run.warning, nil, "no warning while the tap records")
+        expect(run.fills("backup") > 0, "the backup's track is continued with silence")
+        // Both stop: the warning, as for any silent track
+        run.ticks(after: 70, through: 75.5)
+        expectEqual(run.warning, systemWarning, "both silent for more than 5 s is a problem")
+        run.ticks(after: 75.5, through: 85)
+        expectEqual(run.notified, [systemTitle], "notified after 15 s")
+        expectEqual(run.onScreen, systemWarning, "and shown on screen")
+        run.ticks(after: 85, through: 91) { run.backup(upTo: $0) }
+        expectEqual(run.notified, [systemTitle, "System Audio Is Back"], "either source coming back ends it")
         expectEqual(run.warning, nil, "the warning goes")
     }
 

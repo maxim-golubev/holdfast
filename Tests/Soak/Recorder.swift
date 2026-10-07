@@ -47,7 +47,10 @@ final class SimulatedClockWriter: RecordingWriter {
     var isResume: Bool { real.isResume }
     var sessionStart: CMTime? { real.sessionStart }
     var audioEndPTS: CMTime? { real.audioEndPTS }
+    var backupEndPTS: CMTime? { real.backupEndPTS }
     var hasSystemAudio: Bool { real.hasSystemAudio }
+    var hasBackupAudio: Bool { real.hasBackupAudio }
+    func fillBackupAudio(upTo time: CMTime) { real.fillBackupAudio(upTo: time) }
     var hasMicrophoneTrack: Bool { real.hasMicrophoneTrack }
     var isMicrophoneMuted: Bool { real.isMicrophoneMuted }
     func startCapturing() { real.startCapturing() }
@@ -69,6 +72,9 @@ struct RunStats {
     var events = 0
     var frames = 0
     var systemBuffers = 0
+    var backupBuffers = 0
+    /// Tap buffers not delivered: the outage
+    var tapSkipped = 0
     var micBuffers = 0
     var ticks = 0
     /// Times the feed waited for a writer input that was not ready, and for how long in all
@@ -77,6 +83,7 @@ struct RunStats {
     /// Buffers delivered while the recording was taking them that the writer's input did not take
     var framesNotTaken = 0
     var systemNotTaken = 0
+    var backupNotTaken = 0
     var notifications = [(time: Double, title: String)]()
     var failures = [String]()
     var sessionStart: Double?
@@ -113,10 +120,12 @@ final class SimulatedRecording {
     private var inputs = [AVAssetWriterInput]()
     private var pixelPool: CVPixelBufferPool?
     private var systemSignal = SplitMix(seed: 0x5353_4947)
+    private var backupSignal = SplitMix(seed: 0x4253_4947)
     private var micSignal = SplitMix(seed: 0x4D53_4947)
 
     init(folder: URL) throws {
-        recording = RecordingContext(audioOnly: false, recordMic: true, fastStart: false, saveDirectory: folder.path)
+        // System audio from the process tap, with the backup on a track of its own
+        recording = RecordingContext(audioOnly: false, recordMic: true, fastStart: false, saveDirectory: folder.path, tap: true)
         guard let converter = MicConverter() else { throw SoakError("no microphone converter") }
         writer = MovieWriter(recording: recording, micConverter: converter)
         // The present the writer checks the buffers' times against is the simulated one
@@ -128,15 +137,21 @@ final class SimulatedRecording {
     /// Creates the file as `record()` does, and wires the writer to the monitor as `RecordingSession.install` does
     func prepare() throws {
         try writer.prepareVideo(width: Plan.width, height: Plan.height)
-        // The writer's inputs, to wait for them the way a machine that keeps up in real time never has to
-        inputs = Mirror(reflecting: writer).children.compactMap { child in
-            guard let label = child.label, label.hasSuffix("Input") else { return nil }
-            return child.value as? AVAssetWriterInput
+        // The writer's inputs, to wait for them the way a machine that keeps up in real time never has to: its video
+        // and microphone inputs, and those of its two system audio tracks
+        func inputs(of subject: Any) -> [AVAssetWriterInput] {
+            return Mirror(reflecting: subject).children.flatMap { child -> [AVAssetWriterInput] in
+                if let input = child.value as? AVAssetWriterInput { return [input] }
+                guard let label = child.label, label == "system" || label == "backup" || label == "some" else { return [] }
+                return inputs(of: child.value)
+            }
         }
-        guard inputs.count == 3 else { throw SoakError("expected three writer inputs, found \(inputs.count)") }
+        self.inputs = inputs(of: writer)
+        guard self.inputs.count == 4 else { throw SoakError("expected four writer inputs, found \(self.inputs.count)") }
         writer.events.failed = { [unowned self] reason in stats.failures.append(String(format: "%.3f s: ", RecLog.now) + reason) }
         writer.events.microphoneWritten = { [monitor] end, peak in monitor.microphoneWritten(upTo: end, peak: peak) }
         writer.events.systemAudioWritten = { [monitor] end in monitor.systemAudioWritten(upTo: end) }
+        writer.events.backupAudioWritten = { [monitor] end in monitor.backupAudioWritten(upTo: end) }
         monitor.notify = { [unowned self] title, _ in stats.notifications.append((RecLog.now, title)) }
         let attributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -195,14 +210,16 @@ final class SimulatedRecording {
         return buffer
     }
 
-    private func systemBuffer(_ buffer: SystemBuffer) throws -> CMSampleBuffer {
+    /// The sound the Mac plays, as the tap (`backup` false) or ScreenCaptureKit hears it: the same tones, each with
+    /// noise of its own
+    private func systemBuffer(_ buffer: SystemBuffer, backup: Bool = false) throws -> CMSampleBuffer {
         let first = buffer.index * Plan.systemFrames
         return try pcmBuffer(rate: Plan.systemRate, channels: 2, frames: Plan.systemFrames, at: Plan.stamp(buffer.pts)) { data in
             for i in 0..<Plan.systemFrames {
                 let t = Double(first + i) / Plan.systemRate
                 let tone = Plan.tone(at: t, first: 10, frequencyBase: 1000)
-                data[0][i] = tone + Plan.systemNoise * systemSignal.noise()
-                data[1][i] = tone + Plan.systemNoise * systemSignal.noise()
+                data[0][i] = tone + Plan.systemNoise * (backup ? backupSignal.noise() : systemSignal.noise())
+                data[1][i] = tone + Plan.systemNoise * (backup ? backupSignal.noise() : systemSignal.noise())
             }
         }
     }
@@ -222,11 +239,12 @@ final class SimulatedRecording {
     // MARK: - The run
 
     private enum Next {
-        case frame(VideoFrame), system(SystemBuffer), mic(MicBuffer), tick(Double), control(Double, String)
+        case frame(VideoFrame), system(SystemBuffer), backup(SystemBuffer), mic(MicBuffer), tick(Double), control(Double, String)
         var time: Double {
             switch self {
             case .frame(let f): return f.arrival
             case .system(let s): return s.arrival
+            case .backup(let s): return s.arrival
             case .mic(let m): return m.arrival
             case .tick(let t): return t
             case .control(let t, _): return t
@@ -257,6 +275,7 @@ final class SimulatedRecording {
         let started = Date()
         var video = VideoSchedule()
         var system = SystemSchedule()
+        var backup = SystemSchedule(seed: 0x6261_636B)
         var mic = MicSchedule()
         var tickRandom = SplitMix(seed: 0x7469_636B)
         var tickIndex = 1
@@ -266,6 +285,7 @@ final class SimulatedRecording {
         ]
         var nextFrame = video.next()
         var nextSystem = system.next()
+        var nextBackup = backup.next()
         var nextMic = mic.next()
         var nextTick = 0.5 * Double(tickIndex) + tickRandom.range(0, 0.002)
         var paceStart: Date?
@@ -274,7 +294,7 @@ final class SimulatedRecording {
         writer.startCapturing()
         monitor.watch(clockWriter, from: Plan.uptime(0))
         while true {
-            var candidates: [Next] = [.frame(nextFrame), .system(nextSystem), .tick(nextTick)]
+            var candidates: [Next] = [.frame(nextFrame), .system(nextSystem), .backup(nextBackup), .tick(nextTick)]
             if let m = nextMic { candidates.append(.mic(m)) }
             if let c = controls.first { candidates.append(.control(c.0, c.1)) }
             guard let next = candidates.min(by: { $0.time < $1.time }), next.time <= stop else { break }
@@ -311,11 +331,22 @@ final class SimulatedRecording {
                     stats.frames += 1
                     nextFrame = video.next()
                 case .system(let buffer):
-                    let before = writer.audioEndPTS
-                    clockWriter.deliver(CaptureSample(kind: .audio, buffer: try systemBuffer(buffer), pts: Plan.stamp(buffer.pts)), at: uptime)
-                    if taking && writer.audioEndPTS == before { stats.systemNotTaken += 1 }
-                    stats.systemBuffers += 1
+                    if buffer.pts >= Plan.tapOutage.start && buffer.pts < Plan.tapOutage.end {
+                        // The tap is dead: its IOProc delivers nothing until it is rebuilt
+                        stats.tapSkipped += 1
+                    } else {
+                        let before = writer.audioEndPTS
+                        clockWriter.deliver(CaptureSample(kind: .audio, buffer: try systemBuffer(buffer), pts: Plan.stamp(buffer.pts)), at: uptime)
+                        if taking && writer.audioEndPTS == before { stats.systemNotTaken += 1 }
+                        stats.systemBuffers += 1
+                    }
                     nextSystem = system.next()
+                case .backup(let buffer):
+                    let before = writer.backupEndPTS
+                    clockWriter.deliver(CaptureSample(kind: .backupAudio, buffer: try systemBuffer(buffer, backup: true), pts: Plan.stamp(buffer.pts)), at: uptime)
+                    if taking && writer.backupEndPTS == before { stats.backupNotTaken += 1 }
+                    stats.backupBuffers += 1
+                    nextBackup = backup.next()
                 case .mic(let buffer):
                     let dropped = writer.micConverter?.buffersDropped ?? 0
                     clockWriter.deliver(CaptureSample(kind: .microphone, buffer: try micBuffer(buffer), pts: Plan.stamp(buffer.pts), arrival: Plan.stamp(now)), at: uptime)

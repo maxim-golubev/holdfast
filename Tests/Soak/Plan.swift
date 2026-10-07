@@ -54,7 +54,16 @@ enum Plan {
     static let pause = (start: 3000.0, end: 3120.0)
     static let mute = (start: 4010.0, end: 4070.0)
 
-    // System audio: 48 kHz stereo float, 1024 frames a buffer, low noise with a tone burst every minute
+    // System audio from the process tap, and the same sound from ScreenCaptureKit as its backup: 48 kHz stereo
+    // float, 1024 frames a buffer, low noise with a tone burst every minute. The tap delivers nothing for 30 s, as
+    // today's AirPods-clocked tap did, and is then repaired; the backup delivers throughout.
+    static let tapOutage = (start: 2215.0, end: 2245.0)
+    /// Where the tap's audio stops and starts again: at the edges of the buffers it delivered (those that start in
+    /// the outage are not delivered)
+    static var tapSilence: (start: Double, end: Double) {
+        func edge(_ t: Double) -> Double { (t * systemRate / Double(systemFrames)).rounded(.up) * Double(systemFrames) / systemRate }
+        return (edge(tapOutage.start), edge(tapOutage.end))
+    }
     static let systemRate = 48000.0
     static let systemFrames = 1024
     static let systemNoise: Float = 0.0173      // uniform, RMS 0.01 (-40 dBFS)
@@ -158,9 +167,11 @@ struct SystemBuffer {
     let arrival: Double
 }
 
-/// System audio: 1024-frame buffers on the stream's own clock, arriving 5 to 25 ms after their end
+/// System audio: 1024-frame buffers on the stream's own clock, arriving 5 to 25 ms after their end. The tap's and
+/// the backup's have their own arrivals (`seed`).
 struct SystemSchedule {
-    private var random = SplitMix(seed: 0x7379_7374)
+    private var random: SplitMix
+    init(seed: UInt64 = 0x7379_7374) { random = SplitMix(seed: seed) }
     private var index = 0
     private var lastArrival = 0.0
 
