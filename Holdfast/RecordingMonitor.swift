@@ -18,7 +18,10 @@ import Foundation
 /// coming back for a moment is one problem, counted from its first gap, not many short ones that are never
 /// notified. System audio recorded with the process tap has a backup (ScreenCaptureKit's system audio, on a track of
 /// its own): both tracks are continued, and system audio is a problem only while neither delivers. A tap that stops
-/// while the backup goes on is only logged: the recording has the sound, and the tap's source is rebuilding it.
+/// while the backup goes on is only logged at first: the recording has the sound, and the tap's source is rebuilding
+/// it. One that has put nothing into its track for `tapLostSeconds` is shown, as a notice and not as a warning: by
+/// then every way of building the tap has failed more than once, and the backup does not hear a FaceTime or phone
+/// call, so the other side of one is not being recorded and nothing else would say so.
 /// Everything here is only used on the sample queue; the methods the session calls and the timer trap elsewhere.
 final class RecordingMonitor {
     static let interval: Double = 0.5
@@ -36,6 +39,9 @@ final class RecordingMonitor {
     /// `steadyGap` of the present on every tick (for the microphone, audio that is not digital silence)
     static let steadySeconds: Double = 5
     static let steadyGap: Double = 2
+    /// How long the process tap may put nothing into its track, while its backup records, before the recording
+    /// shows that call audio is not being recorded
+    static let tapLostSeconds: Double = 15
 
     /// What the status item and the on-screen warning show
     struct Display: Equatable {
@@ -45,6 +51,9 @@ final class RecordingMonitor {
         var onScreen: String?
         /// Nil without a microphone track; true while it delivers nothing or digital silence
         var micSilent: Bool?
+        /// Shown like a warning while there is none: the process tap has delivered nothing for `tapLostSeconds`
+        /// while its backup records, so call audio is missing
+        var notice: String?
     }
 
     /// A problem that is up: its status line, and whether it was notified
@@ -86,6 +95,8 @@ final class RecordingMonitor {
     private var backupHeard: CMTime?
     /// Whether the log says that the tap is quiet while the backup records
     private var tapQuiet = false
+    /// Whether the tap has been quiet for `tapLostSeconds`: the recording shows that call audio is missing
+    private var tapLost = false
     private var micProblem: Problem?
     private var audioProblem: Problem?
     private var shown = Display()
@@ -132,6 +143,7 @@ final class RecordingMonitor {
         audioHeard = nil
         backupHeard = nil
         tapQuiet = false
+        tapLost = false
         micProblem = nil
         audioProblem = nil
         update(Display())
@@ -271,6 +283,15 @@ final class RecordingMonitor {
                     tapQuiet = false
                     RecLog.write("System audio: the process tap delivers again")
                 }
+                // Still nothing after every construction of the tap has failed more than once: what the backup does
+                // not hear, a FaceTime or phone call, is being lost, and that is shown until the tap is back
+                if !tapLost && tapUnheard > RecordingMonitor.tapLostSeconds {
+                    tapLost = true
+                    RecLog.write(String(format: "Call audio is not being recorded: the process tap has delivered nothing for %d s", Int(tapUnheard)))
+                } else if tapLost && tapUnheard <= RecordingMonitor.steadyGap {
+                    tapLost = false
+                    RecLog.write("Call audio is being recorded again")
+                }
             }
             let unheard = seconds(from: heard, to: now)
             var failing: Failing?
@@ -282,7 +303,9 @@ final class RecordingMonitor {
                                   intermittent: "System audio has kept dropping out for %d seconds. The recording continues with silence in its place while it is missing.",
                                   backTitle: "System Audio Is Back", backBody: "System audio is being recorded again.")
         }
-        update(display([micProblem, audioProblem], micSilent: micSilent))
+        var current = display([micProblem, audioProblem], micSilent: micSilent)
+        if tapLost { current.notice = SystemAudioSelection.tapFailedWarning }
+        update(current)
     }
 
     /// What is wrong with a source on this tick: since when (where its audio last reached, on the timeline), and

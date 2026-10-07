@@ -177,7 +177,7 @@ final class RecordingRecovery {
             // What the interrupted mix wrote could not be moved away; it is not overwritten
             failure = "The file of the interrupted mix is in the way."
         } else if !RecordingFileStore.hasRoomForCopy(of: raw) {
-            failure = "Not enough free disk space to mix the audio tracks."
+            failure = DiskSpace.noRoom(to: "mix the audio tracks")
         } else {
             do {
                 let spans = TapSpans.read(RecordingFileStore.tapSpansURL(base: base))

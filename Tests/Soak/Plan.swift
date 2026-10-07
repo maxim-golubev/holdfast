@@ -61,7 +61,7 @@ enum Plan {
     /// Where the tap's audio stops and starts again: at the edges of the buffers it delivered (those that start in
     /// the outage are not delivered)
     static var tapSilence: (start: Double, end: Double) {
-        func edge(_ t: Double) -> Double { (t * systemRate / Double(systemFrames)).rounded(.up) * Double(systemFrames) / systemRate }
+        func edge(_ t: Double) -> Double { (t * tapRate / Double(systemFrames)).rounded(.up) * Double(systemFrames) / tapRate }
         return (edge(tapOutage.start), edge(tapOutage.end))
     }
     /// What the time stamps of the tap's device do while its audio keeps coming, as they did around call events on
@@ -73,6 +73,11 @@ enum Plan {
         return t + (tapClockJumps.first { t >= $0.start && t < $0.end }?.by ?? 0)
     }
     static let systemRate = 48000.0
+    /// The device that clocks the tap runs this much slow against the stream's clock: the tap delivers its 48,000
+    /// samples in a little more than a second, 0.27 s of audio less than time passes in the 90 minutes
+    static let tapClockError = 50e-6
+    /// The samples the tap really delivers in a second of the stream's clock
+    static let tapRate = systemRate * (1 - tapClockError)
     static let systemFrames = 1024
     static let systemNoise: Float = 0.0173      // uniform, RMS 0.01 (-40 dBFS)
 
@@ -184,16 +189,19 @@ struct SystemBuffer {
 struct SystemSchedule {
     private var random: SplitMix
     private var ioRandom: SplitMix
-    init(seed: UInt64 = 0x7379_7374) {
+    /// The samples a second the source really delivers: the tap's device has a clock of its own (`Plan.tapRate`)
+    private let rate: Double
+    init(seed: UInt64 = 0x7379_7374, rate: Double = Plan.systemRate) {
         random = SplitMix(seed: seed)
         ioRandom = SplitMix(seed: seed ^ 0x696F_7072)
+        self.rate = rate
     }
     private var index = 0
     private var lastArrival = 0.0
 
     mutating func next() -> SystemBuffer {
-        let pts = Double(index * Plan.systemFrames) / Plan.systemRate
-        let end = Double((index + 1) * Plan.systemFrames) / Plan.systemRate
+        let pts = Double(index * Plan.systemFrames) / rate
+        let end = Double((index + 1) * Plan.systemFrames) / rate
         let arrival = max(lastArrival, end + random.range(0.005, 0.025))
         lastArrival = arrival
         defer { index += 1 }

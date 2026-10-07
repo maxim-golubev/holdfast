@@ -109,7 +109,7 @@ enum RecordingSaver {
         // The mix writes a second file of about the same size next to the recording. On a nearly full disk the
         // recording is kept as it is rather than put at risk.
         if !RecordingFileStore.hasRoomForCopy(of: raw) {
-            failure = "Not enough free disk space to mix the audio tracks."
+            failure = DiskSpace.noRoom(to: "mix the audio tracks")
         } else {
             session.mixProgressed(0)
             let settings = recording.audioSettings
@@ -186,7 +186,7 @@ enum RecordingSaver {
         let settings = recording.audioSettings
         do {
             try RecordingFileStore.checkFree(staging: staged)
-            guard RecordingFileStore.hasRoomForCopy(of: tap) else { throw RecordingError("Not enough free disk space to merge the system audio.") }
+            guard RecordingFileStore.hasRoomForCopy(of: tap) else { throw RecordingError(DiskSpace.noRoom(to: "merge the system audio")) }
             try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
                 DispatchQueue.global(qos: .userInitiated).async {
                     done.resume(with: Result { _ = try RecordingMixer.mergeSystemAudio(tap: tap, backup: backup, spans: spans, to: staged, settings: settings) })
@@ -308,7 +308,7 @@ enum RecordingSaver {
         }
         // The mix is about as large as one of the two files, and an MP3 is made from it next to it
         guard RecordingFileStore.hasRoomForCopy(of: package, in: output.deletingLastPathComponent()) else {
-            throw RecordingError("Not enough free disk space to mix the audio tracks.")
+            throw RecordingError(DiskSpace.noRoom(to: "mix the audio tracks"))
         }
         let mixed = RecordingFileStore.stagingURL(for: output, ending: info.mixEnding)
         try RecordingFileStore.checkFree(staging: mixed)
@@ -341,7 +341,7 @@ enum RecordingSaver {
     /// name confirmed in the save panel). `source` is only read.
     nonisolated static func convertToMP3(_ source: URL, to output: URL, bitrate: Int, replacing: Bool = false) async throws {
         guard RecordingFileStore.hasRoomForCopy(of: source, in: output.deletingLastPathComponent()) else {
-            throw RecordingError("Not enough free disk space to convert the recording to MP3.")
+            throw RecordingError(DiskSpace.noRoom(to: "convert the recording to MP3"))
         }
         let staged = RecordingFileStore.stagingURL(for: output)
         // The encoder appends to a file that exists

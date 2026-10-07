@@ -186,6 +186,97 @@ func logicTests() async {
         }
     }
 
+    await test("placement: a tap buffer goes back to back within 0.1 s of where it arrived, a hole is filled first, and only a time that is taken leaves it out") {
+        let tolerance = 0.1
+        func place(_ from: Double, end: Double?, floor: Double = 0, fills: CMTime? = nil, filled: inout [CMTime]) -> CMTime? {
+            var asked = [CMTime]()
+            let placed = SystemAudioPlacement.placeArrived(from: time(from), to: time(from + 0.02), end: end.map { time($0) }, floor: time(floor), tolerance: tolerance) { upTo in
+                asked.append(upTo)
+                return fills
+            }
+            filled = asked
+            return placed
+        }
+        var filled = [CMTime]()
+        expectEqual(place(10, end: 10, filled: &filled), time(10), "at the end of the track")
+        expectEqual(place(10.1, end: 10, filled: &filled), time(10), "up to 0.1 s after the end: back to back, the hole not worth silence")
+        expect(filled.isEmpty, "and nothing filled")
+        expectEqual(place(9.9, end: 10, filled: &filled), time(10), "arrived before the end, by up to 0.1 s: still at the end, not left out")
+        expectEqual(place(9.88, end: 10, filled: &filled), time(10), "also when it ends 0.1 s before it")
+        expect(place(9.87, end: 10, filled: &filled) == nil, "ending more than 0.1 s before the track's end, its time is taken: left out")
+        expect(place(-1090, end: 10, filled: &filled) == nil, "however far")
+        expect(filled.isEmpty, "without any silence")
+        expect(SystemAudioPlacement.isTaken(time(9.89), end: time(10), tolerance: tolerance), "taken: more than the tolerance beyond its end")
+        expect(!SystemAudioPlacement.isTaken(time(9.9), end: time(10), tolerance: tolerance), "not at the tolerance")
+        expect(!SystemAudioPlacement.isTaken(time(10.5), end: time(10), tolerance: tolerance), "nor after the end")
+        // A hole of more than the tolerance: silence up to the buffer first
+        expectEqual(place(10.5, end: 10, fills: time(10.5), filled: &filled), time(10.5), "after the silence that fills a real hole")
+        expectEqual(filled, [time(10.5)], "silence asked for up to the buffer")
+        expectEqual(place(10.5, end: 10, fills: time(10.45), filled: &filled), time(10.45), "silence that ends within the tolerance will do")
+        expect(place(10.5, end: 10, fills: time(10.2), filled: &filled) == nil, "not written while the silence could not be: it would be early")
+        expect(place(10.5, end: 10, fills: nil, filled: &filled) == nil, "nor when there is none at all")
+        // Before anything is in the track: the buffer that reaches into the recording begins it
+        expectEqual(place(4.99, end: nil, floor: 5, filled: &filled), time(4.99), "the first buffer that ends after the recording's start is taken, at its own time")
+        expect(place(4.98, end: nil, floor: 5, filled: &filled) == nil, "one that ends at the start is not")
+        expect(place(3, end: nil, floor: 5, filled: &filled) == nil, "nor one before it")
+        // The stream's rule is another: what lies before the end is left out, which for the tap would lose 0.1 s
+        // each time its converter's timeline starts anew
+        expect(SystemAudioPlacement.place(from: time(9.9), to: time(9.92), end: time(10), tolerance: tolerance) { _ in nil } == nil, "the stream's buffer before the end is left out")
+    }
+
+    await test("tap drift: the track is brought back a frame at a time once it is 10 ms from the arrivals, until it is within 2 ms") {
+        expectEqual([TapDrift.begins, TapDrift.ends, TapDrift.window, TapDrift.spacing], [0.010, 0.002, 2.0, 0.1], "the thresholds")
+        let frame = 1.0 / 48000
+        let length = 1024 * frame
+        // Arrivals that jitter by milliseconds around the track's end are not drift
+        var jitter = TapDrift()
+        var asked = 0
+        for index in 0..<2000 { asked += abs(jitter.next(offset: index % 2 == 0 ? 0.008 : -0.008, duration: length)) }
+        expectEqual(asked, 0, "jitter of 8 ms either way moves nothing")
+        var once = TapDrift()
+        expectEqual(once.next(offset: 0.09, duration: length), 0, "nor does a single buffer 90 ms late")
+        expect(!once.isCorrecting, "which is not a run")
+        // A device 50 parts in a million slow or fast, for an hour and a half
+        for direction in [1.0, -1.0] {
+            var drift = TapDrift()
+            var offset = 0.0
+            var furthest = 0.0
+            var changes = 0
+            var sinceChange = 1.0
+            var closest = 1.0
+            for _ in 0..<Int(5400 / length) {
+                offset += direction * length * 50 / 1_000_000
+                let frames = drift.next(offset: offset, duration: length)
+                sinceChange += length
+                if frames != 0 {
+                    expectEqual(Double(frames), direction, "a frame added when the track is behind, taken out when it is ahead")
+                    drift.applied(frames, frame: frame)
+                    offset -= Double(frames) * frame
+                    changes += 1
+                    closest = min(closest, sinceChange)
+                    sinceChange = 0
+                }
+                furthest = max(furthest, abs(offset))
+            }
+            expect(furthest < 0.0125, "\(direction): never more than about 12 ms off: \(furthest) s")
+            expect(abs(offset) < 0.011, "\(direction): at the end too: \(offset) s")
+            expectClose(Double(changes), 5400 * 50 / 1_000_000 * 48000, within: 520, "\(direction): the frames the device's clock was off by, less what is still to do")
+            expect(closest >= TapDrift.spacing, "\(direction): no two frames closer than 0.1 s of audio: \(closest) s")
+            expect(drift.runs >= 10 && drift.runs <= 40, "\(direction): in runs, with the track left alone in between: \(drift.runs)")
+            expectEqual(direction > 0 ? drift.removed : drift.added, 0, "\(direction): never the other way")
+            expectClose(try require(drift.partsPerMillion, "its rate"), direction * 50, within: 5, "\(direction): the summary's figure is the device's")
+        }
+        // Silence written up to the buffer: the track is where the arrivals are again
+        var drift = TapDrift()
+        for _ in 0..<400 { _ = drift.next(offset: 0.03, duration: length) }
+        expect(drift.isCorrecting && drift.behind > 0.02, "30 ms behind is being corrected")
+        drift.restart()
+        expect(!drift.isCorrecting && drift.behind == 0, "forgotten after silence")
+        expectEqual(drift.next(offset: .nan, duration: length), 0, "a time that is none asks for nothing")
+        expectEqual(drift.next(offset: 0.05, duration: 0), 0, "nor a buffer without length")
+        expect(TapDrift().partsPerMillion == nil, "no rate before any audio")
+    }
+
     await test("DiskSpace: start, stop and mix thresholds") {
         expectEqual(DiskSpace.startMinimum, 2_000_000_000, "start minimum")
         expectEqual(DiskSpace.stopMinimum, 500_000_000, "stop minimum")
@@ -198,6 +289,38 @@ func logicTests() async {
         expect(DiskSpace.hasRoom(forCopyOf: 1_000_000_000, free: 1_500_000_001), "a copy fits with 500 MB to spare")
         expect(!DiskSpace.hasRoom(forCopyOf: 1_000_000_000, free: 1_500_000_000), "not with exactly that")
         expect(!DiskSpace.hasRoom(forCopyOf: 3_000_000_000, free: 2_900_000_000), "not when the file is larger than the free space")
+    }
+
+    await test("DiskSpace: while a recording is starting or running, the mix of an earlier one must leave it the room it started with") {
+        expectEqual(DiskSpace.copyReserve(recording: false), DiskSpace.stopMinimum, "nothing running: 500 MB to spare")
+        expectEqual(DiskSpace.copyReserve(recording: true), DiskSpace.startMinimum, "a recording running: the 2 GB it was started with")
+        // 3 GB free, a 2 GB recording stopped and the next started at once
+        let folder = try Suite.folder("disk-beside")
+        let file = folder.appendingPathComponent("Recording at X.recording.mp4")
+        try Data(count: 2000).write(to: file)
+        let scale: Int64 = 1_000_000
+        func fits(free: Int64, recording: Bool) -> Bool {
+            // The file's 2000 bytes stand for 2 GB: the free space is told less what a real one would add
+            DiskSpace.hasRoomForCopy(of: file, recording: recording) { _ in free - 2000 * scale + 2000 }
+        }
+        expect(fits(free: 3000 * scale, recording: false), "alone, the mix fits: 2 GB beside 3 GB free leaves the 500 MB")
+        expect(!fits(free: 3000 * scale, recording: true), "beside a running recording it does not: it would leave it 1 GB, and stop it after 500 MB")
+        expect(!fits(free: 4000 * scale, recording: true), "nor with exactly 2 GB left over")
+        expect(fits(free: 4000 * scale + 1, recording: true), "with more than 2 GB left over it does")
+        expect(DiskSpace.hasRoomForCopy(of: folder.appendingPathComponent("missing.mp4"), recording: true) { _ in 0 }, "a file that cannot be measured does not stop the mix")
+        expect(DiskSpace.hasRoomForCopy(of: file, recording: true) { _ in nil }, "nor a volume that does not say")
+        // The recorder says when it has a recording
+        let first = NSObject(), second = NSObject()
+        let was = DiskSpace.isRecording
+        DiskSpace.setRecording(true, for: ObjectIdentifier(first))
+        DiskSpace.setRecording(true, for: ObjectIdentifier(second))
+        expect(DiskSpace.isRecording, "a recording is starting or running")
+        DiskSpace.setRecording(false, for: ObjectIdentifier(first))
+        expect(DiskSpace.isRecording, "still, while another recorder has one")
+        expect(DiskSpace.noRoom(to: "mix the audio tracks").contains("kept for the recording that is running"), "the failure says why the space is not used: \(DiskSpace.noRoom(to: "mix the audio tracks"))")
+        DiskSpace.setRecording(false, for: ObjectIdentifier(second))
+        expectEqual(DiskSpace.isRecording, was, "and when it is over")
+        expectEqual(DiskSpace.noRoom(to: "mix the audio tracks", recording: false), "Not enough free disk space to mix the audio tracks.", "without one, as before")
     }
 
     await test("DiskSpace: an open recording is followed when its folder moves, and found when it is deleted") {

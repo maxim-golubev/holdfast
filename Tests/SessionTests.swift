@@ -79,7 +79,9 @@ final class FakeWriter: RecordingWriter {
     }
     func write(_ sample: CaptureSample) { onQueue(); written += 1 }
     func checkWriter() -> Bool { onQueue(); return true }
-    func timelineTime(_ raw: CMTime) -> CMTime { onQueue(); return raw }
+    /// How often the monitor got as far as continuing the tracks
+    private(set) var monitored = 0
+    func timelineTime(_ raw: CMTime) -> CMTime { onQueue(); monitored += 1; return raw }
     func fillMicrophone(upTo time: CMTime) { onQueue() }
     func fillSystemAudio(upTo time: CMTime) { onQueue() }
     func repeatVideoFrame(at now: CMTime) { onQueue() }
@@ -583,6 +585,31 @@ func sessionTests() async {
         expectEqual(pictures().count, 2, "not even the stream's 2 x 2 frames")
         rig.controller.stop()
         expect(await rig.idle(), "idle")
+    }
+
+    await test("session: the monitor stops with the capture, not when the main thread gets round to taking the writer") {
+        let rig = try Rig("session-monitor-stop")
+        let run = try rig.start()
+        let queue = rig.controller.queue
+        queue.sync {
+            run.writer.sessionStart = time(0)
+            run.writer.clockAnchor = (time(0), DispatchTime.now().uptimeNanoseconds)
+        }
+        expect(await rig.wait { queue.sync { run.writer.monitored } >= 1 }, "the monitor continues the tracks while the recording runs")
+        run.capture.holdsStop = true
+        rig.controller.stop()
+        expect(await rig.wait { rig.journal.count("capture.stop") == 1 }, "the capture is asked to stop")
+        // The capture has stopped, and the main thread is held up before the stop goes on, as by the alert of the
+        // next start: the writer still counts as capturing, and the monitor's timer would fill its tracks with
+        // silence and warn about sources that have gone
+        run.capture.answer()
+        queue.sync {}
+        let before = queue.sync { run.writer.monitored }
+        Thread.sleep(forTimeInterval: 1.2)
+        expectEqual(queue.sync { run.writer.monitored }, before, "nothing is filled or judged after the capture has stopped")
+        expectEqual(rig.journal.count("writer.finish"), 0, "though the writer has not been taken yet")
+        expect(await rig.idle(), "the stop then goes on to the end")
+        expectEqual(rig.journal.count("writer.finish"), 1, "and the writer is finished")
     }
 
     await test("monitor: a muted microphone raises no warning, and takes down one that was up without calling it back") {

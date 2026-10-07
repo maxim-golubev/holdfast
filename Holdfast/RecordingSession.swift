@@ -86,8 +86,9 @@ final class RecordingSession: @unchecked Sendable {
         var warning: String?
         /// The part of `warning` that has lasted `RecordingMonitor.announceSeconds`: also shown on screen
         var onScreen: String?
-        /// A warning that stays for the whole recording (its system audio comes without call audio), shown when
-        /// `warning` is not
+        /// Shown when `warning` is not: call audio is not being recorded, for the whole recording when its process
+        /// tap could not run at all (`showNotice`), or while a tap that runs has delivered nothing for
+        /// `RecordingMonitor.tapLostSeconds`
         var notice: String?
         /// Nil without a microphone track; true while it delivers nothing or digital silence
         var micSilent: Bool?
@@ -134,6 +135,8 @@ final class RecordingSession: @unchecked Sendable {
     @MainActor private var timePassed: TimeInterval = 0
     /// A stop that was asked for while the capture was still starting, with its reason
     @MainActor private var pendingStop: PendingStop?
+    /// The notice that stays for the whole recording (`showNotice`)
+    @MainActor private var standingNotice: String?
     /// When the capture began to run. A stop right after it that recorded nothing is a cancelled start, not a failure.
     @MainActor private var enteredRecording: Date?
     /// What was set up for the running recording and is undone when it is stopped
@@ -179,6 +182,7 @@ final class RecordingSession: @unchecked Sendable {
                 self.health.warning = display.warning
                 self.health.onScreen = display.onScreen
                 self.health.micSilent = display.micSilent
+                self.health.notice = display.notice ?? self.standingNotice
                 self.statusChanged(self)
             }
         }
@@ -214,7 +218,8 @@ final class RecordingSession: @unchecked Sendable {
     /// Shows `notice` as this recording's warning for as long as it runs, whenever no track warning is up
     @MainActor
     func showNotice(_ notice: String) {
-        guard health.notice != notice else { return }
+        guard standingNotice != notice else { return }
+        standingNotice = notice
         health.notice = notice
         statusChanged(self)
     }
@@ -450,15 +455,23 @@ final class RecordingSession: @unchecked Sendable {
     }
 
     /// Returns when the stream has stopped delivering buffers. A stream that does not answer is given 5 seconds;
-    /// what it delivers after that is ignored, because the recording is no longer capturing by then.
+    /// what it delivers after that is ignored, because the recording is no longer capturing by then. The monitor
+    /// is stopped on the sample queue at that moment, not when the main thread gets round to taking the writer:
+    /// with the sources gone it would otherwise go on filling every track with silence, and warn about sources
+    /// that deliver nothing, for as long as anything keeps the main thread from continuing.
     @MainActor
     private func stopCapture(_ capture: RecordingCapture) async {
+        let captureOver = { [queue, monitor] in queue.async { monitor.stop() } }
         await completion { done in
             capture.stop { error in
                 if let error = error { print("Stopping the capture: \(error.localizedDescription)") }
+                captureOver()
                 done()
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { done() }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                captureOver()
+                done()
+            }
         }
     }
 

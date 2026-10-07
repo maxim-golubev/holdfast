@@ -59,6 +59,8 @@ final class MonitorRun {
     private(set) var warning: String?
     private(set) var onScreen: String?
     private(set) var silent: Bool?
+    /// What is shown while no warning is: call audio is not being recorded
+    private(set) var notice: String?
     /// An uptime far from zero, as the system's is
     private let zero: UInt64 = 1_000_000_000_000
 
@@ -68,7 +70,7 @@ final class MonitorRun {
         monitor = RecordingMonitor(queue: queue)
         writer.clockAnchor = (time(0), zero)
         monitor.notify = { [unowned self] title, text in notified.append(title); lastText = text }
-        monitor.show = { [unowned self] display in warning = display.warning; onScreen = display.onScreen; silent = display.micSilent }
+        monitor.show = { [unowned self] display in warning = display.warning; onScreen = display.onScreen; silent = display.micSilent; notice = display.notice }
         queue.sync { monitor.watch(writer, from: zero) }
     }
 
@@ -202,19 +204,32 @@ func monitorTests() async {
         expectEqual(run.warning, nil, "the warning goes")
     }
 
-    await test("monitor: with the backup, system audio is a problem only while neither source delivers; a quiet tap is only logged") {
+    await test("monitor: with the backup, system audio is a problem only while neither source delivers; a quiet tap is logged, and shown as missing call audio after 15 s") {
         let run = try MonitorRun("monitor-backup", microphone: false, systemAudio: true, backup: true)
         run.ticks(after: 0, through: 5) { run.systemAudio(upTo: $0); run.backup(upTo: $0) }
         // Today's case: the tap stops delivering, the backup goes on
-        run.ticks(after: 5, through: 40) { run.backup(upTo: $0) }
+        run.ticks(after: 5, through: 20) { run.backup(upTo: $0) }
+        expectEqual(run.warning, nil, "no warning while the backup records")
+        expectEqual(run.notice, nil, "and for 15 s, while the tap is rebuilt, nothing is shown at all")
+        expectEqual(RecLog.lines.filter { $0.hasPrefix("System audio: the process tap has delivered nothing") }.count, 1, "the log says so after 5 s: \(RecLog.lines)")
+        // Still dead after 15 s: every way of building it has failed twice, and a FaceTime call is being lost
+        run.tick(at: 20.5)
+        expectEqual(run.notice, "Call audio is not being recorded", "then the recording says that call audio is missing")
+        expectEqual(run.warning, nil, "which is not the warning: system audio is being recorded")
+        run.ticks(after: 20.5, through: 40) { run.backup(upTo: $0) }
         expectEqual(run.warning, nil, "no warning while the backup records")
         expectEqual(run.notified, [], "no notification")
-        expectEqual(run.onScreen, nil, "nothing on screen")
+        expectEqual(run.onScreen, nil, "no warning on screen")
+        expectEqual(run.notice, "Call audio is not being recorded", "the notice stays while the tap is dead")
         expect(run.fills("system audio") > 0, "the tap's track is continued with silence")
         expectEqual(run.fills("backup"), 0, "the backup's needs nothing")
-        expectEqual(RecLog.lines.filter { $0.contains("the process tap has delivered nothing") }.count, 1, "the log says so once: \(RecLog.lines)")
+        expectEqual(RecLog.lines.filter { $0.hasPrefix("System audio: the process tap has delivered nothing") }.count, 1, "the log says so once: \(RecLog.lines)")
+        expectEqual(RecLog.lines.filter { $0.hasPrefix("Call audio is not being recorded: the process tap has delivered nothing for 15 s") }.count, 1, "and once that call audio is missing: \(RecLog.lines)")
         run.ticks(after: 40, through: 45) { run.systemAudio(upTo: $0); run.backup(upTo: $0) }
         expect(RecLog.lines.contains("System audio: the process tap delivers again"), "and when it is back")
+        expectEqual(run.notice, nil, "the notice goes with the tap's first audio")
+        expect(RecLog.lines.contains("Call audio is being recorded again"), "logged: \(RecLog.lines)")
+        expectEqual(RecordingMonitor.tapLostSeconds, 15, "how long a tap may be dead before it is shown")
         // FaceTime: only the tap hears the call; the backup that stops is no problem either
         run.ticks(after: 45, through: 70) { run.systemAudio(upTo: $0) }
         expectEqual(run.warning, nil, "no warning while the tap records")

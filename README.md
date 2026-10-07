@@ -28,8 +28,9 @@ it.
   two simulated calls, 18,063 of 18,063 microphone buffers were written.
 - **The other side of the call is always there:** the sound the Mac plays comes
   from a Core Audio process tap, which hears FaceTime, and screen capture's
-  system audio is recorded beside it as a backup. A tap that stops delivering
-  is rebuilt within a second, and the backup fills the gap in the final file.
+  system audio is recorded beside it as a backup. A tap that has delivered
+  nothing for a second is rebuilt at once, and the backup fills the gap in the
+  final file.
 - **A crash costs seconds, not the meeting:** the file is written in
   10-second fragments. After a `kill -9` 35 s into a recording, the next launch
   found the file, recovered 30 s of it, and mixed it. Quitting during a
@@ -96,7 +97,7 @@ One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
 final file. A recording starts the moment it is asked for: one that was stopped
 goes on being closed and mixed by itself, under its own name, while the next
-one runs. 177 tests run in about a minute without the app, a screen, or
+one runs. 186 tests run in about a minute and a half without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 

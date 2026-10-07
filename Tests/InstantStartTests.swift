@@ -235,6 +235,7 @@ func instantStartTests() async {
         rig.controller.stop()
         let third = try rig.start(frequency: 2000)
         expect(rig.controller.session === third.session && rig.controller.finishing.count == 2, "the third runs, two are being saved")
+        expect(DiskSpace.isRecording, "and the mixes of the two are told to leave it room")
         expectEqual(Set([first.base, second.base, third.base]).count, 3, "three names")
         var display = StatusDisplay(rig.controller.statusInput)
         expectEqual(display.kind, .recording, "the item shows the running recording")

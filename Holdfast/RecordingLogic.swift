@@ -330,9 +330,10 @@ enum SystemAudioPlacement {
     /// host clock read in the IOProc, which only moves forward at the pace of real time; the track's end is the count
     /// of the samples written, tap audio and silence. The end passes a buffer by more than `tolerance` only when
     /// silence was written over the buffer's time before it reached the writer (the monitor fills a track that is 1.5 s
-    /// behind the present, so the buffer waited that long between the IOProc and the sample queue) or when the tap
-    /// delivered that much more audio than time has passed. Either way the track already holds that time. Nil also
-    /// while the silence for a hole in front of the buffer cannot be written, and before the recording begins.
+    /// behind the present, so the buffer waited that long between the IOProc and the sample queue). The tap's device
+    /// delivering a little more or less audio than time passes, its clock not being the host clock, does not get
+    /// that far: `TapDrift` takes it up a sample at a time. Nil also while the silence for a hole in front of the
+    /// buffer cannot be written, and before the recording begins.
     static func placeArrived(from pts: CMTime, to endPTS: CMTime, end: CMTime?, floor: CMTime, tolerance: Double, fill: (CMTime) -> CMTime?) -> CMTime? {
         guard let end = end else { return endPTS > floor ? pts : nil }
         if isTaken(endPTS, end: end, tolerance: tolerance) { return nil }
@@ -347,6 +348,82 @@ enum SystemAudioPlacement {
         let position = CMTimeConvertScale(from, timescale: scale, method: .roundTowardPositiveInfinity)
         let frames = CMTimeConvertScale(CMTimeSubtract(time, position), timescale: scale, method: .roundTowardNegativeInfinity).value
         return (position, frames)
+    }
+}
+
+/// Keeps the tap's track on the host clock while the tap's device runs on a clock of its own. The tap's buffers go
+/// back to back by their sample count (`SystemAudioPlacement.placeArrived`), and the count follows the crystal of the
+/// device that clocks the tap's aggregate device, not the host clock the rest of the recording is on. A device 50
+/// parts in a million slow delivers 0.1 s too little in 33 minutes. Left alone, the track would run early until the
+/// tolerance made it a hole of 0.1 s of silence in the middle of speech (and, in the mix, a stretch taken from the
+/// backup that repeats what was just heard); a fast device would have one buffer in fifty dropped from then on.
+///
+/// So the difference between where a buffer arrived and where it goes is smoothed over `window` seconds (single
+/// arrivals jitter by milliseconds), and once that is more than `begins` the track is brought back a frame at a
+/// time: one frame added to, or taken out of, a buffer every `spacing` seconds of audio, until less than `ends` is
+/// left. One frame in 4,800 follows a clock up to about 200 parts in a million off, more than any real device, and
+/// is not heard: the frame goes where the samples around it differ least (`MovieWriter.stretched`). What the
+/// smoothing cannot follow, a real hole, is still filled with silence by `placeArrived`.
+struct TapDrift {
+    /// Seconds the track may be from the arrivals, smoothed, before frames are added or taken out, and where that ends
+    static let begins = 0.010
+    static let ends = 0.002
+    /// Seconds of audio the difference is smoothed over
+    static let window = 2.0
+    /// Seconds of audio between two frames added or taken out
+    static let spacing = 0.1
+
+    /// How far behind its arrival the tap's audio goes into the track, smoothed, in seconds: positive when the
+    /// track is behind (the device delivers less audio than time passes), negative when it is ahead
+    private(set) var behind = 0.0
+    private(set) var isCorrecting = false
+    private var sinceFrame = 0.0
+    /// Frames added and taken out so far, the runs of them, and the seconds of the tap's audio they were for
+    private(set) var added = 0
+    private(set) var removed = 0
+    private(set) var runs = 0
+    private(set) var seconds = 0.0
+
+    /// A buffer `duration` seconds long goes at the end of its track, `offset` seconds before where it arrived
+    /// (negative: after). Returns the frames to add to it: 1, -1 to take one out, or 0. `applied` says it was done.
+    mutating func next(offset: Double, duration: Double) -> Int {
+        guard offset.isFinite, duration.isFinite, duration > 0 else { return 0 }
+        seconds += duration
+        behind += (offset - behind) * min(1, duration / TapDrift.window)
+        if !isCorrecting, abs(behind) > TapDrift.begins {
+            isCorrecting = true
+            runs += 1
+            sinceFrame = TapDrift.spacing
+        } else if isCorrecting, abs(behind) < TapDrift.ends {
+            isCorrecting = false
+        }
+        guard isCorrecting else { return 0 }
+        sinceFrame += duration
+        // Less a microsecond: buffers of exactly `spacing` must not miss it by the rounding of their length
+        guard sinceFrame >= TapDrift.spacing - 0.000_001 else { return 0 }
+        return behind > 0 ? 1 : -1
+    }
+
+    /// `frames` (1 or -1) were added to a buffer, each `frame` seconds long
+    mutating func applied(_ frames: Int, frame: Double) {
+        sinceFrame = 0
+        behind -= Double(frames) * frame
+        if frames > 0 { added += frames } else { removed -= frames }
+    }
+
+    /// Silence was written up to the buffer's arrival, or the track begins: the track is where the arrivals are
+    mutating func restart() {
+        behind = 0
+        isCorrecting = false
+        sinceFrame = 0
+    }
+
+    /// How much less (positive) or more audio than time passed the tap delivered, in parts per million: the frames
+    /// added and taken out, and what the track is still off by, against the audio they were for. Nil before any audio.
+    /// A figure for the log: silence written into the track in between starts the measure of what is left anew.
+    var partsPerMillion: Double? {
+        guard seconds > 0 else { return nil }
+        return (Double(added - removed) / 48000 + behind) / seconds * 1_000_000
     }
 }
 

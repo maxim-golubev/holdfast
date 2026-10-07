@@ -260,7 +260,8 @@ final class SimulatedRecording {
         let first = buffer.index * Plan.systemFrames
         return try pcmBuffer(rate: Plan.systemRate, channels: 2, frames: Plan.systemFrames, at: Plan.stamp(stamp ?? buffer.pts)) { data in
             for i in 0..<Plan.systemFrames {
-                let t = Double(first + i) / Plan.systemRate
+                // When the sample was played: the tap's device counts its samples by a clock of its own
+                let t = Double(first + i) / (backup ? Plan.systemRate : Plan.tapRate)
                 let tone = Plan.tone(at: t, first: 10, frequencyBase: 1000)
                 data[0][i] = tone + Plan.systemNoise * (backup ? backupSignal.noise() : systemSignal.noise())
                 data[1][i] = tone + Plan.systemNoise * (backup ? backupSignal.noise() : systemSignal.noise())
@@ -318,7 +319,7 @@ final class SimulatedRecording {
     private func feed(until stop: Double, realTimeFrom: Double?) throws {
         let started = Date()
         var video = VideoSchedule()
-        var system = SystemSchedule()
+        var system = SystemSchedule(rate: Plan.tapRate)
         var backup = SystemSchedule(seed: 0x6261_636B)
         var mic = MicSchedule()
         var tickRandom = SplitMix(seed: 0x7469_636B)

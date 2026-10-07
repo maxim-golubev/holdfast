@@ -13,7 +13,7 @@ import Foundation
 /// source is `(i % sawPeriod + 1) / 32768`, never zero, and exact in a lossless 16-bit file
 let sawPeriod = 20000
 
-func sawBuffer(first: Int, frames: Int = 480, at pts: CMTime) throws -> CMSampleBuffer {
+func sawPCM(first: Int, frames: Int = 480) throws -> AVAudioPCMBuffer {
     let format = try require(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2), "format")
     let pcm = try require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)), "pcm buffer")
     pcm.frameLength = AVAudioFrameCount(frames)
@@ -23,7 +23,31 @@ func sawBuffer(first: Int, frames: Int = 480, at pts: CMTime) throws -> CMSample
         data[0][frame] = value
         data[1][frame] = value
     }
-    return try require(AudioSilence.sampleBuffer(from: pcm, description: format.formatDescription, at: pts), "sample buffer")
+    return pcm
+}
+
+func sawBuffer(first: Int, frames: Int = 480, at pts: CMTime) throws -> CMSampleBuffer {
+    let pcm = try sawPCM(first: first, frames: frames)
+    return try require(AudioSilence.sampleBuffer(from: pcm, description: pcm.format.formatDescription, at: pts), "sample buffer")
+}
+
+/// What a file of `sawBuffer`s holds, counted: the samples that are sound, how many of them do not follow the sound
+/// before them (a piece missing, or a sample added or taken out), and the samples of silence between the first
+/// sound and the last
+func sawCount(in url: URL) throws -> (found: Int, breaks: Int, silent: Int) {
+    var found = 0, breaks = 0, zeros = 0, silent = 0
+    var last = 0
+    for value in try sawValues(in: url) {
+        if value == 0 {
+            if found > 0 { zeros += 1 }
+            continue
+        }
+        if found > 0, value != last % sawPeriod + 1 { breaks += 1 }
+        last = value
+        found += 1
+        silent = zeros
+    }
+    return (found, breaks, silent)
 }
 
 /// What a lossless audio file holds, as the numbers `sawBuffer` wrote (0 is silence), left channel
@@ -90,9 +114,9 @@ final class TapRig {
     }
 
     /// The tap's IOProc is called at `time` with a buffer its device stamped `stamp`
-    func io(first: Int, stamped stamp: Double, at time: Double) throws {
+    func io(first: Int, frames: Int = 480, stamped stamp: Double, at time: Double) throws {
         ioTime = time
-        try require(fakes.taps.last, "a tap").deliver(try sawBuffer(first: first, at: run.at(stamp)))
+        try require(fakes.taps.last, "a tap").deliver(try sawBuffer(first: first, frames: frames, at: run.at(stamp)))
         queue.sync {}
     }
 
@@ -210,6 +234,156 @@ func arrivalTests() async {
         expect(RecLog.lines.allSatisfy { !$0.contains("delivered nothing") && !$0.contains("left out") }, "and nothing left out: \(RecLog.lines)")
         let backup = try await TestMovie.seconds(of: try require(rig.run.recording.backupAudioURL, "backup file"))
         expectClose(backup, 12, within: 0.15, "the backup beside it is whole too")
+    }
+
+    await test("arrival: put together as in the app (the real tap's IOProc, its source without a clock, the writer), device time stamps 10 s behind and 5 s ahead lose nothing") {
+        let run = try TestRecording(folder: "arrival-ioproc", audioOnly: true, microphone: false, settings: ["recordWinSound": true, "audioFormat": "alac"], tap: true)
+        let queue = DispatchQueue(label: "HoldfastTests.arrival-ioproc")
+        try run.writer.prepareAudio()
+        // The host clock itself, as in the app: the buffers carry the time the IOProc read from it
+        run.writer.presentClock = { CMClockGetHostTimeClock().time }
+        run.writer.startCapturing()
+        let hardware = FakeTapHardware(Journal(), format: tapFormat(interleaved: false))
+        let factory = SystemAudioSource.Factory(constructions: { [.builtInOutput] }, makeTap: { clock, control, deliver, changed in
+            try SystemAudioTap(hardware: hardware, clock: clock, queue: control, deliver: deliver, outputChanged: changed)
+        })
+        let source = SystemAudioSource(factory: factory, sampleQueue: queue, stallSeconds: 60) { run.writer.write($0) }
+        try source.start()
+        // What the device stamps its buffers with against the time of the call: 10 s behind from the second second
+        // on (the direction that lost the meeting), right again, 5 s ahead, right again
+        func jump(_ t: Double) -> Double {
+            if t >= 1 && t < 2.5 { return -10 }
+            if t >= 3 && t < 3.5 { return 5 }
+            return 0
+        }
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let step = UInt64(10_000_000) * UInt64(timebase.denom) / UInt64(timebase.numer)
+        let buffers = 400
+        // The IOProc is called at the pace of real time, as Core Audio calls it: every 10 ms with 10 ms of audio
+        let began = mach_absolute_time()
+        for index in 0..<buffers {
+            mach_wait_until(began + UInt64(index) * step)
+            let pcm = try sawPCM(first: index * 480)
+            let stamp = jump(Double(index) / 100)
+            hardware.runIO(pcm.audioBufferList, host: hostTicks(stamp))
+        }
+        source.stopNow()
+        queue.sync {}
+        let finished = queue.sync { run.writer.finish() }
+        expect(finished.sessionStarted, "recorded")
+        expect(run.failures.isEmpty, "no failure: \(run.failures)")
+        let counted = try sawCount(in: try require(run.recording.systemAudioURL, "tap file"))
+        // A sample or two may be added or taken out where the test's own pace was off (`TapDrift`); a buffer left
+        // out is 480 at once, and the stamps trusted would leave out every one after the first second
+        expect(abs(counted.found - buffers * 480) <= 48, "every sample the IOProc was given is in the file: \(counted.found) of \(buffers * 480)")
+        expect(counted.breaks <= 48, "in order, nothing missing in between: \(counted.breaks) breaks")
+        expect(RecLog.lines.allSatisfy { !$0.contains("left out") && !$0.contains("is stamped") }, "nothing left out, and no stamp even looked at: \(RecLog.lines)")
+    }
+
+    await test("arrival: a tap buffer that reaches the writer after silence was written over its time is left out, once and counted, and the ones after it are recorded") {
+        let rig = try TapRig(folder: "arrival-taken")
+        rig.holds = true
+        rig.run.present = 10
+        // The IOProc hands on buffer `index` at `arrival`; what the source made of it
+        func handedOn(_ index: Int, at arrival: Double) throws -> CaptureSample {
+            try rig.io(first: index * 480, stamped: 0, at: arrival)
+            return try require(rig.held.popLast(), "the buffer handed on")
+        }
+        func write(_ sample: CaptureSample) { rig.queue.sync { rig.run.writer.write(sample) } }
+        for index in 0..<100 { write(try handedOn(index, at: Double(index + 1) / 100)) }
+        // The next one waits for the sample queue, and the monitor meanwhile continues the track with silence
+        let late = try handedOn(100, at: 1.01)
+        rig.queue.sync { rig.run.writer.fillSystemAudio(upTo: rig.run.at(1.6)) }
+        let before = rig.run.systemAudioEnd
+        write(late)
+        expectEqual(rig.run.systemAudioEnd, before, "its time is taken: not written a second time")
+        expect(RecLog.lines.contains { $0.contains("System audio: a buffer of the tap reached the recording when its track already held 0.59 s beyond it") && $0.contains("left out") },
+               "the log says so: \(RecLog.lines)")
+        // The tap's audio after the silence, each buffer as it arrives
+        for index in 101..<201 { write(try handedOn(index, at: 1.6 + Double(index - 100) / 100)) }
+        // One whose IOProc ran 30 ms early by the clock, so that it lies before the end of the track: within the
+        // tolerance a buffer of the tap goes back to back, whatever its arrival says
+        write(try handedOn(201, at: 2.6 - 0.02))
+        expectEqual(rig.run.systemAudioEnd, rig.run.at(2.61), "a buffer that arrived a little early is written at the end of the track all the same")
+        for index in 202..<250 { write(try handedOn(index, at: 1.6 + Double(index - 100) / 100)) }
+        let finished = rig.finish()
+        expect(finished.sessionStarted, "recorded")
+        expectEqual(RecLog.lines.filter { $0.contains("reached the recording when") }.count, 1, "logged once")
+        expect(RecLog.lines.contains("System audio: 1 buffer of the tap reached the recording after silence had been written over its time and was left out"),
+               "and counted in the summary: \(RecLog.lines)")
+        let counted = try sawCount(in: try require(rig.run.recording.systemAudioURL, "tap file"))
+        expectEqual(counted.found, 249 * 480, "every other buffer is in the file")
+        expectEqual(counted.breaks, 1, "in order, with the one piece missing")
+        expectEqual(counted.silent, 28800, "and the silence that stands in its place, 0.6 s")
+        let spans = try require(TapSpans.read(try require(rig.run.recording.tapSpansURL, "spans file")), "spans")
+        expectEqual(spans.spans.count, 2, "the tap's audio before the silence and after it: \(spans.spans)")
+    }
+
+    await test("arrival: a tap whose device runs 100 parts in a million slow or fast stays within 13 ms of where it arrives, a sample at a time, with no silence and nothing left out") {
+        for (name, ppm) in [("slow", 100.0), ("fast", -100.0)] {
+            let rig = try TapRig(folder: "arrival-drift-\(name)")
+            // A tenth of a second of audio at a time, which the device takes a little more or less than that to deliver
+            let buffers = 2000
+            let pace = 0.1 * (1 + ppm / 1_000_000)
+            var furthest = 0.0
+            var last = 0.0
+            for index in 0..<buffers {
+                let arrival = Double(index + 1) * pace
+                rig.run.present = arrival + 0.002
+                try rig.io(first: index * 4800, frames: 4800, stamped: 0, at: arrival)
+                let end = CMTimeGetSeconds(try require(rig.run.systemAudioEnd, "the track's end")) - TestRecording.base
+                last = arrival - end
+                furthest = max(furthest, abs(last))
+            }
+            let finished = rig.finish()
+            expect(finished.sessionStarted, "\(name): recorded")
+            // Left alone the track would be 20 ms from the arrivals by now, and at 0.1 s get a hole or lose a buffer
+            expect(furthest < 0.013, "\(name): never further than 13 ms from where the audio arrived: \(furthest) s")
+            expect(abs(last) < 0.008, "\(name): and brought back: \(last) s at the end")
+            let counted = try sawCount(in: try require(rig.run.recording.systemAudioURL, "tap file"))
+            let changed = counted.found - buffers * 4800
+            expect(ppm > 0 ? changed > 300 && changed < 1000 : changed < -300 && changed > -1000, "\(name): by samples \(ppm > 0 ? "added" : "taken out"), one at a time: \(changed)")
+            expectEqual(counted.silent, 0, "\(name): no silence in the tap's audio")
+            let spans = try require(TapSpans.read(try require(rig.run.recording.tapSpansURL, "spans file")), "spans")
+            expectEqual(spans.spans.count, 1, "\(name): one span, so the mix stays on the tap: \(spans.spans)")
+            expect(RecLog.lines.contains { $0.contains("System audio: the tap's audio is in its track 10 ms \(ppm > 0 ? "earlier" : "later") than it arrives") && $0.contains(ppm > 0 ? "a sample is added" : "a sample is taken out") }, "\(name): the log says what is done: \(RecLog.lines)")
+            expect(RecLog.lines.contains { line in line.contains("to keep the tap's audio where it arrived") && (98...102).contains { line.contains("about \($0) parts in a million \(ppm > 0 ? "less" : "more") audio than time passed") } }, "\(name): and the summary how much: \(RecLog.lines)")
+            expect(RecLog.lines.allSatisfy { !$0.contains("left out") }, "\(name): nothing left out: \(RecLog.lines)")
+            expectEqual(rig.notified, [], "\(name): nothing to tell the user")
+        }
+    }
+
+    await test("arrival: a buffer is made a frame longer or shorter where it is heard least") {
+        // A ramp with a flat piece: the frame is added, or taken out, in the flat piece
+        let format = try require(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2), "format")
+        let pcm = try require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 480), "pcm")
+        pcm.frameLength = 480
+        let data = try require(pcm.floatChannelData, "float data")
+        for frame in 0..<480 {
+            let value: Float = frame < 200 ? Float(frame) * 0.001 : (frame < 210 ? 0.2 : Float(frame - 10) * 0.001)
+            data[0][frame] = value
+            data[1][frame] = -value
+        }
+        let buffer = try require(AudioSilence.sampleBuffer(from: pcm, description: format.formatDescription, at: time(7)), "buffer")
+        let original = samplesByChannel(of: buffer)
+        for frames in [1, -1] {
+            let made = try require(MovieWriter.stretched(buffer, by: frames), "a buffer \(frames) frame")
+            expectEqual(made.numSamples, 480 + frames, "\(frames): one frame more or less")
+            expectEqual(made.presentationTimeStamp, time(7), "\(frames): at the same time")
+            let samples = samplesByChannel(of: made)
+            expectEqual(samples.count, 2, "\(frames): both channels")
+            expectEqual(Array(samples[0].prefix(200)), Array(original[0].prefix(200)), "\(frames): what comes before is untouched")
+            expectEqual(Array(samples[0].suffix(260)), Array(original[0].suffix(260)), "\(frames): and what comes after")
+            expectEqual(samples[1], samples[0].map { -$0 }, "\(frames): the same frame in both channels")
+            let steps = zip(samples[0], samples[0].dropFirst()).map { abs($1 - $0) }
+            expect((steps.max() ?? 1) < 0.0011, "\(frames): no step larger than the signal's own: \(steps.max() ?? 1)")
+        }
+        expect(MovieWriter.stretched(buffer, by: 0) == nil && MovieWriter.stretched(buffer, by: 2) == nil, "only one frame at a time")
+        let interleaved = try tapBuffer(tapFormat(interleaved: true), frames: 480, at: time(7))
+        expect(MovieWriter.stretched(interleaved, by: 1) == nil, "another format is left as it is")
+        let short = try sawBuffer(first: 0, frames: 3, at: time(7))
+        expect(MovieWriter.stretched(short, by: -1) == nil, "and so is a buffer too short for it")
     }
 
     await test("arrival: tap buffers that wait 300 ms between the IOProc and the sample queue are neither dropped nor shifted, and do not set the monitor's clock back") {

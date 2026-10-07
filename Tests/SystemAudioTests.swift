@@ -34,6 +34,10 @@ final class FakeTapHardware: TapHardware {
     private(set) var aggregateTap: String?
     private(set) var watchers = [() -> Void]()
     private(set) var watchedObjects = [AudioObjectID]()
+    /// The listeners that are installed, by the token each was given, and removals of one that was not
+    private(set) var watching = Set<UInt>()
+    private(set) var strayUnwatches = 0
+    private var tokens: UInt = 0
 
     init(_ journal: Journal, format: AudioStreamBasicDescription) {
         self.journal = journal
@@ -95,9 +99,14 @@ final class FakeTapHardware: TapHardware {
         journal.note("watch")
         watchers.append(changed)
         watchedObjects.append(object)
-        return TapListener(object: object, entries: [], queue: queue)
+        tokens += 1
+        watching.insert(tokens)
+        return TapListener(object: object, token: tokens)
     }
-    func unwatch(_ listener: TapListener) { journal.note("unwatch") }
+    func unwatch(_ listener: TapListener) {
+        journal.note("unwatch")
+        if watching.remove(listener.token) == nil { strayUnwatches += 1 }
+    }
 
     /// Calls the IOProc with `input` as the input buffers at the host time `host` (0: no valid host time), and an
     /// output buffer full of ones; returns whether the IOProc cleared the output
@@ -250,12 +259,15 @@ func samplesByChannel(of buffer: CMSampleBuffer) -> [[Float]] {
     return result
 }
 
-/// A host time `seconds` from now in host ticks
+/// A host time `seconds` from now, also before now, in host ticks; never 0, which stands for no host time
 func hostTicks(_ seconds: Double = 0) -> UInt64 {
     var timebase = mach_timebase_info_data_t()
     mach_timebase_info(&timebase)
-    let ticks = seconds * 1_000_000_000 * Double(timebase.denom) / Double(timebase.numer)
-    return mach_absolute_time() &+ UInt64(max(0, ticks))
+    let ticks = (seconds * 1_000_000_000 * Double(timebase.denom) / Double(timebase.numer)).rounded()
+    let now = mach_absolute_time()
+    if ticks >= 0 { return now &+ UInt64(ticks) }
+    let back = UInt64(-ticks)
+    return now > back ? now - back : 1
 }
 
 func systemAudioTests() async {
@@ -268,6 +280,7 @@ func systemAudioTests() async {
         expectEqual(hardware.aggregateMain, "builtin-uid", "the built-in output is the aggregate device's main sub-device, not the default output")
         expectEqual(hardware.aggregateTap, "tap-uid", "with the tap as its sub-tap")
         expectEqual(hardware.watchedObjects, [200, 30], "the aggregate device and the device that clocks it are watched")
+        expectEqual(hardware.watching.count, 2, "each with a listener of its own")
         expectEqual(tap?.clockText, "the built-in output \"MacBook Pro Speakers\"", "for the log")
         hardware.output = TapOutputDevice(id: 41, uid: "airpods-uid", name: "AirPods")
         hardware.notifyWatchers()
@@ -277,6 +290,7 @@ func systemAudioTests() async {
         expectEqual(journal.all, ["createTap", "createAggregate", "createIOProc", "usage in", "usage out", "start", "watch", "watch",
                                   "unwatch", "unwatch", "stop", "destroyIOProc", "destroyAggregate", "destroyTap"],
                     "stopped, then the IOProc, the aggregate device and the tap destroyed, once whatever stops it")
+        expect(hardware.watching.isEmpty && hardware.strayUnwatches == 0, "and every listener removed as the one that was installed: \(hardware.watching) left, \(hardware.strayUnwatches) unknown")
 
         let alone = Journal()
         let tapOnly = FakeTapHardware(alone, format: tapFormat(interleaved: false))
@@ -408,8 +422,11 @@ func systemAudioTests() async {
         tap.stop()
     }
 
-    await test("system audio tap: the IOProc copies the tap's buffers and stamps them with the host time it is called at, not the device's") {
-        for interleaved in [true, false] {
+    await test("system audio tap: the IOProc copies the tap's buffers and stamps them with the host time it is called at, whatever the device's time stamp says") {
+        // What the device's time stamp says against the time of the call: 12 s in the future, as it did when a
+        // FaceTime call connected, 5 s (voice processing switched on), and in the past, 10 s and 1100 s: a stamp
+        // behind is what a guard against stamps ahead lets through, and what loses everything after it
+        for (interleaved, stamp) in [(true, 12.0), (false, 12.0), (true, 5.0), (false, -10.0), (true, -10.0), (true, -1100.0), (false, 0.0)] {
             let journal = Journal()
             let format = tapFormat(interleaved: interleaved)
             let hardware = FakeTapHardware(journal, format: format)
@@ -419,17 +436,18 @@ func systemAudioTests() async {
             let pcm = try require(AVAudioPCMBuffer(pcmFormat: try require(AVAudioFormat(streamDescription: &asbd), "format"), frameCapacity: 512), "pcm")
             pcm.frameLength = 512
             fill(pcm)
-            // The device's time stamp says 12 s in the future, as it did when a call connected
+            let what = "\(interleaved ? "interleaved" : "non-interleaved"), stamped \(stamp) s from the call"
             let before = CMClockGetHostTimeClock().time
-            let cleared = hardware.runIO(pcm.audioBufferList, host: hostTicks(12))
+            // A stamp of 0 is one without a valid host time
+            let cleared = hardware.runIO(pcm.audioBufferList, host: stamp == 0 ? 0 : hostTicks(stamp))
             let after = CMClockGetHostTimeClock().time
             expect(cleared, "nothing is played through the aggregate device's output")
             // The IO buffer is reused by Core Audio once the IOProc returns: what was handed on must be a copy
             fill(pcm, amplitude: 0)
-            let buffer = try require(delivered.first, "a buffer is handed on")
-            expectEqual(buffer.numSamples, 512, "every frame (\(interleaved ? "interleaved" : "non-interleaved"))")
+            let buffer = try require(delivered.first, "a buffer is handed on (\(what))")
+            expectEqual(buffer.numSamples, 512, "every frame (\(what))")
             let end = CMTimeAdd(buffer.presentationTimeStamp, buffer.duration)
-            expect(end >= before && end <= after, "it ends at the host time the IOProc was called at: \(CMTimeGetSeconds(CMTimeSubtract(end, before))) s after the call began")
+            expect(end >= before && end <= after, "\(what): it ends at the host time the IOProc was called at, and is \(CMTimeGetSeconds(CMTimeSubtract(end, before))) s after the call began")
             expectClose(CMTimeGetSeconds(buffer.duration), 512.0 / 48000, within: 0.000_001, "and starts its frames before that")
             let asbdOut = try require(buffer.formatDescription?.audioStreamBasicDescription, "format")
             expectEqual(SystemAudioBuffers.isInterleaved(asbdOut), interleaved, "in the tap's own layout")
@@ -646,6 +664,23 @@ func systemAudioTests() async {
         expect(later.taps.isEmpty, "and no tap is made")
     }
 
+    await test("system audio source: as the app builds it, a tap that hands on nothing for a second is dead and the next is built at once") {
+        expectEqual(SystemAudioSource.stallSeconds, 1, "a second without a buffer")
+        expectEqual(SystemAudioSource.checkInterval, 0.25, "looked for four times a second")
+        // With the defaults, as `record()` makes it: the fake's IOProc is never called
+        let fakes = FakeTapFactory()
+        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap")) { _ in }
+        let started = Date()
+        try source.start()
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        expectEqual(fakes.taps.count, 1, "not before a second has passed")
+        expect(await waitUntil { fakes.taps.count >= 2 }, "then rebuilt")
+        let took = Date().timeIntervalSince(started)
+        expect(took > 1 && took < 1.6, "between a second and a check or two after it: \(took) s")
+        expectEqual(fakes.journal.all.prefix(3), ["tap1.make: builtInOutput", "tap1.stop", "tap2.make: builtInOutput"], "the dead one torn down first")
+        source.stopNow()
+    }
+
     await test("system audio source: a tap that hands on nothing is rebuilt at once, the next construction after two failures") {
         let fakes = FakeTapFactory()
         let source = SystemAudioSource(factory: fakes.factory, sampleQueue: DispatchQueue(label: "HoldfastTests.tap"), stallSeconds: 0.1, checkInterval: 0.02, waitScale: 0.02) { _ in }
@@ -695,7 +730,10 @@ func systemAudioTests() async {
             waits.append(repair.wait)
         }
         expectEqual(tried, [.builtInOutput, .builtInOutput, .none, .none, .defaultOutput, .defaultOutput, .builtInOutput, .builtInOutput, .none], "each twice, around and around")
-        expectEqual(waits, [0, 0.5, 1, 2, 4, 8, 10, 10, 10], "at once, then doubling up to 10 s")
+        expectEqual(waits, [0, 0.5, 1, 2, 2, 2, 2, 2, 2], "at once, then doubling up to 2 s: a dead tap is never left alone for longer")
+        expectEqual(TapRepair.longestWait, 2, "the longest wait")
+        expectEqual(TapRepair.failuresPerConstruction, 2, "each construction twice")
+        expectEqual(TapRepair.healthySeconds, 10, "and what counts as delivering again")
         repair.healthy()
         expectEqual(repair.wait, 0, "a tap that delivered long enough starts the count anew")
         expectEqual(repair.next(in: order), TapClock.none, "and keeps its construction")

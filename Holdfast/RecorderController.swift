@@ -55,7 +55,10 @@ final class RecorderController {
     let environment: RecorderEnvironment
     let recovery = RecordingRecovery()
     /// The recording that is starting or running: from an accepted start until its stop is carried out
-    private(set) var session: RecordingSession?
+    private(set) var session: RecordingSession? {
+        // Where the copies of earlier recordings are checked for room, off the main thread
+        didSet { DiskSpace.setRecording(session != nil, for: ObjectIdentifier(self)) }
+    }
     /// The recordings that were stopped and whose files are not final yet, oldest first
     private(set) var finishing = [RecordingSession]()
     /// Set when the app was asked to quit and is waiting for its files to be final

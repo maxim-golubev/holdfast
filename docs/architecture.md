@@ -102,7 +102,8 @@ Tools/                      build.sh, test.sh, release.sh, app_icon.sh; rt.sh, t
  RecordingSession.stop ──► recording → stopping: UI torn down; the session leaves the recorder's place for the
                            running recording, so the next one can start at once
    await the capture's stop (5 s at most): the tap first, then the stream
-   on the sample queue: monitor stopped, MovieWriter.finish (pad microphone, mark inputs finished)
+   the monitor is stopped on the sample queue as the capture's stop returns, whatever the main thread is doing
+   on the sample queue: MovieWriter.finish (pad microphone, mark inputs finished)
    stopping → finalizing: RecordingSaver.save
      finishWriting ─► RecordingMixer.mix to <name>.mixing.mp4 (system audio: the tap or its backup,
                       by <name>.tap-alive.txt) ─► verify ─► rename to <name>.mp4
@@ -181,7 +182,12 @@ other queue, and so do the monitor's entry points.
   without a session.
 - Modal alerts during a recording are run from a run-loop block, never inside a
   main-queue block, where a modal would hold up the main queue and with it the
-  stop.
+  stop. That goes for a start as well, since a recording stopped a moment
+  before may still be closing: "Microphone Not Available" is a run-loop block,
+  and the start goes on from its answer. And the monitor of a recording is
+  stopped on the sample queue the moment its capture has stopped, so whatever
+  holds the main thread before the writer is taken cannot make it fill the
+  tracks with silence or warn about sources that have gone.
 
 ## Capture
 
@@ -287,12 +293,23 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   row, by a build that throws or a tap that dies, gives way to the next in the
   order, and after the last the first comes again (`TapRepair`); the first
   attempt after a failure is at once, then the wait doubles from 0.5 s to at
-  most 10 s, for as long as the recording runs. A tap that has delivered for
-  10 s starts the count anew. A tap that cannot be built at the start does not
-  stop the start: it is tried in the background while the backup records.
-  Nobody is asked to do anything and nothing is shown; the log has each
-  failure (the first ones of a run, then one in thirty) and the counts at the
-  stop. Which device is the default output no longer matters, so nothing
+  most 2 s, for as long as the recording runs: building a tap is cheap, and
+  while it is dead a FaceTime call is not recorded. A tap that has delivered
+  for 10 s starts the count anew. A tap that cannot be built at the start does
+  not stop the start: it is tried in the background while the backup records.
+  Nobody is asked to do anything; the log has each failure (the first ones of
+  a run, then one in thirty) and the counts at the stop. Only a tap that has
+  put nothing into its track for 15 s (`RecordingMonitor.tapLostSeconds`, by
+  when each construction has failed twice) is shown, see the monitor below.
+  The listeners (`CoreAudioTapHardware.watch`) are registered as a C function
+  with a token as client data, never as a block: Core Audio finds the listener
+  to remove by comparing, a Swift closure passed as a block is a new block
+  object at every call, and so the removal of a block listener matched
+  nothing and returned no error (checked on the owner's Mac with a
+  property-only probe). Every tap ever built would have left two listeners
+  on the built-in output for as long as the app ran. A token that has been
+  removed does nothing, so a notification already on its way ends there, and
+  a removal that fails is logged. Which device is the default output no longer matters, so nothing
   follows it: the listeners on the default output and on the device list are
   gone. They were there only to move the tap to the new default output, and the
   device list one needed its own guard against rebuilding whenever the tap's
@@ -332,7 +349,8 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   the backup has delivered for the monitor's 5 s; a tap that stops while the
   backup goes on is logged ("the process tap has delivered nothing for 5 s; the
   backup (screen capture) records the system audio meanwhile", and when it is
-  back), not shown. Sound-only recordings are watched the same way.
+  back), and shown, as a notice, only when it has lasted 15 s. Sound-only
+  recordings are watched the same way.
 - **Teardown.** The device is stopped, then the IOProc, the aggregate device
   and the tap are destroyed, in that order, once: at the stop (the tap before
   the stream, both before the writer's inputs are finished), when a start
@@ -352,10 +370,11 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   tap without the permission delivers zeros, and the choice then takes the
   backup). "Call Audio Not Included" is posted once while the app runs
   (`SystemAudioSelection.notifies`, `callAudioNotice`), from `enterRecording`,
-  for a recording that started without the tap. Only a tap that cannot run at
+  for a recording that started without the tap. A tap that cannot run at
   all (its source throws, which takes a missing format converter) makes the
   recording show "Call audio is not being recorded" for as long as it runs
-  (`Health.notice`); a tap that cannot be built yet is repaired, not reported.
+  (`Health.notice`); a tap that cannot be built yet is repaired, and reported
+  the same way only once it has been dead for 15 s, until it delivers again.
 - **Not yet verified in a real recording.** That the tap hears FaceTime was
   verified on 2026-10-05; a recording with this version during a FaceTime
   call, and during a browser call whose AirPods switch to 24 kHz, has not been
@@ -468,8 +487,21 @@ of it could not be. The two sources differ in what may leave a buffer out:
   device clock can cause it: the host clock only moves forward at the pace of
   real time, and the track's end is a count of samples written. It happens
   when the monitor wrote silence over the buffer's time before the buffer
-  reached the writer, or when the tap delivered that much more audio than time
-  has passed. It is logged the first time and counted at the stop.
+  reached the writer. It is logged the first time and counted at the stop.
+  The count of samples follows the clock of the device that clocks the tap,
+  which is not the host clock: a device 50 parts in a million slow delivers
+  0.1 s too little in 33 minutes, which left alone would become a hole of
+  0.1 s of silence in the middle of speech (and a stretch the mix takes from
+  the backup), and a fast one a buffer left out again and again. `TapDrift`
+  takes that up before it gets there: the difference between where a buffer
+  arrived and where it goes is smoothed over 2 s, and once it is more than
+  10 ms one frame is added to, or taken out of, a buffer every 0.1 s of audio
+  (`MovieWriter.stretched`, where the samples around it differ least) until
+  less than 2 ms is left. No silence is written and the tap's span is not
+  broken. The first runs are logged, and the stop logs the frames and what
+  they say about the device's rate. For this the tap's buffer is taken to end
+  at its arrival also when it was converted from another format, whose
+  buffers the converter puts on a timeline counted from their samples.
 - The stream's buffers, on their own timestamps, are left out when they lie
   wholly before the end and written whole when they overlap it, late by less
   than one buffer (`SystemAudioPlacement.place`); what `StreamStamps` decides
@@ -565,6 +597,12 @@ It is also the watchdog. No microphone audio written for 5 s, only exact zeros
 for 20 s, or no system audio for 5 s from either of its sources (no first frame
 5 s after the start) sets
 the session's warning, which the status item shows, and writes a log line.
+A tap that is silent while its backup records is no such problem: it is logged
+after 5 s, and after 15 s (`tapLostSeconds`) the recording shows "Call audio is
+not being recorded" as its notice (`Display.notice` → `Health.notice`, shown
+where no warning is) until the tap's audio is back, because the backup does
+not hear a FaceTime or phone call and nothing else would say that one is being
+lost. It is not notified and is not the system audio warning.
 A problem is over only once its source has delivered steadily for
 `steadySeconds` (5 s): audio written up to within `steadyGap` (2 s) of the
 present on every tick, and for the microphone audio that is not digital
@@ -710,7 +748,14 @@ tap and its aggregate device go with the process.
 
 No start with less than 2 GB free; a running recording is stopped while it can
 still be closed, at under 500 MB (checked every 5 s); no mix or MP3 when a
-second copy would not fit. Free space counts what the system frees on demand,
+second copy would not fit with 500 MB to spare, or with 2 GB to spare while
+another recording is starting or running (`DiskSpace.copyReserve`; the
+recorder tells `DiskSpace` when it has one, since the copies are checked off
+the main thread): that recording passed its start check before the mix of the
+one before it took its space, and would otherwise be stopped by it. The
+recording is then kept unmixed and the report says why. The other order is
+not guarded: a recording started while a mix is already being written is
+checked against the space free at that moment. Free space counts what the system frees on demand,
 as Finder does. The watch follows the open file by its descriptor (`F_GETPATH`),
 so a moved folder keeps the guard, and it stops the recording when the file has
 no name left: writing on into a deleted file would lose the rest of the meeting
@@ -787,7 +832,9 @@ written, and the log is kept in memory.
 | Timestamp check | `ArrivalCheck`, `StreamStamps` | the tap's audio has only its arrival time; stream audio and frames stamped over 1 s after their arrival, frames over 1 s before it, the microphone over 300 s before it, get their arrival time; stream audio stamped behind at real-time pace gets it after 1.5 s of arrivals; nothing ends over 1 s after the present |
 | Disk | `DiskSpace` | start 2 GB, stop 500 MB, checked every 5 s |
 | Device switch | `MicDevices` | check 0.7 s after a change; 3 retries, 2 s apart |
-| Tap repair | `SystemAudioSource`, `TapRepair` | dead after 1 s without a buffer (checked every 0.25 s); rebuilt at once, then waits of 0.5 s doubling to 10 s, for the whole recording; next construction after two failures; healthy after 10 s |
+| Tap repair | `SystemAudioSource`, `TapRepair` | dead after 1 s without a buffer (checked every 0.25 s); rebuilt at once, then waits of 0.5 s doubling to 2 s, for the whole recording; next construction after two failures; healthy after 10 s; shown as "Call audio is not being recorded" after 15 s without tap audio (`RecordingMonitor.tapLostSeconds`) |
+| Tap drift | `TapDrift` | smoothed over 2 s; one frame every 0.1 s of audio from 10 ms off until 2 ms |
+| Room for a copy | `DiskSpace.copyReserve` | 500 MB to spare; 2 GB while a recording is starting or running |
 | Tap or backup | `SystemAudioChoice` | 0.5 s windows cut at the tap's span edges; signal above -70 dBFS; 5 ms crossfade |
 | Quit wait | `applicationWillTerminate` | 30 s |
 | Track format | `MicConverter.sampleRate`, `CaptureSource`, `SystemAudioConverter` | 48 kHz stereo |

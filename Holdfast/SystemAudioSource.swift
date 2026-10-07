@@ -51,7 +51,8 @@ enum SystemAudioSelection {
     /// A recording without the tap is notified once while the app runs, whether the tap failed or was not allowed;
     /// every recording without the tap says why in the log
     static let callAudioNotice = NoticeOnce()
-    /// The status line and on-screen warning of a recording whose tap could not be set up at all
+    /// The status line and on-screen warning of a recording whose tap could not be set up at all, or has delivered
+    /// nothing for `RecordingMonitor.tapLostSeconds`
     static let tapFailedWarning = "Call audio is not being recorded"
 
     /// Whether a recording that `wants` system audio gets it from the tap (with the backup), as `choose` decides
@@ -98,7 +99,8 @@ enum SystemAudioSelection {
 
     /// What the recording shows for as long as it runs, in its status line and on screen like a track warning, when
     /// its tap could not run at all; nil otherwise. A tap that only fails to build, or dies, is not a warning: its
-    /// source keeps rebuilding it and the backup records meanwhile.
+    /// source keeps rebuilding it and the backup records meanwhile. Only when that has got nowhere for
+    /// `RecordingMonitor.tapLostSeconds` does the monitor show the same line, until the tap delivers again.
     static func warning(for route: SystemAudioRoute) -> String? {
         guard case .screenCaptureKit(_, true) = route else { return nil }
         return tapFailedWarning
@@ -120,10 +122,11 @@ final class NoticeOnce {
 /// is a build that throws, or a tap that stopped delivering. The same construction is tried again once; after its
 /// second failure in a row the next one in the order is, and after the last the first again. The first attempt after
 /// a failure is at once, then the wait doubles from 0.5 s up to `longestWait`, for as long as the recording runs. A
-/// tap that has delivered for `healthySeconds` starts the count anew.
+/// tap that has delivered for `healthySeconds` starts the count anew. The longest wait is short: building a tap is
+/// cheap, and while it is dead a FaceTime or phone call, which the backup does not hear, is not recorded.
 struct TapRepair: Equatable {
     static let failuresPerConstruction = 2
-    static let longestWait: Double = 10
+    static let longestWait: Double = 2
     static let healthySeconds: Double = 10
 
     /// The construction tried last, and how often it failed in a row
@@ -175,8 +178,9 @@ struct TapRepair: Equatable {
 /// aggregate device clocked by AirPods in call mode stopped calling its IOProc 27 s into a meeting and never again,
 /// with nothing in Core Audio saying so; only the silence tells. It is torn down and built again at once, logged,
 /// with the next construction after the same one failed twice (`TapRepair`), and tried again with a growing wait
-/// for as long as the recording runs. Nobody is asked to do anything, and nothing is shown: the backup track
-/// (ScreenCaptureKit's system audio) records meanwhile, and the mix takes it where the tap was dead. A change of the
+/// for as long as the recording runs. Nobody is asked to do anything: the backup track (ScreenCaptureKit's system
+/// audio) records meanwhile, and the mix takes it where the tap was dead. Only a tap that stays dead is shown, by
+/// the recording's monitor (`RecordingMonitor.tapLostSeconds`): the backup does not hear a FaceTime or phone call. A change of the
 /// clock device's rate, or the device going away, is a failure too (`SystemAudioTap`'s listener). Which device is
 /// the default output does not matter any more: the tap follows the processes, not the device.
 ///

@@ -109,16 +109,26 @@ extension RecorderController {
         session.streamType = target.type
 
         let (microphone, problem) = RecorderController.prepareMicCapture(wanted: micOverride ?? AppSettings.recordMic)
-        if let problem = problem {
-            // A recording that was asked to have the microphone never starts without it unnoticed: a microphone
-            // that turns up later cannot be added to it. Cancel is the default button.
-            let message = problem + " " + "A recording started now has no microphone track, and one cannot be added while it runs. Cancel, connect the microphone and start again, or record without it."
-            let answer = createAlert(level: .critical, title: "Microphone Not Available", message: message, button1: "Cancel", button2: "Record Without Microphone").runInFront()
-            if answer != .alertSecondButtonReturn {
-                session.abandonStart()
-                return
-            }
+        let goOn = { [self] in
+            startPrepared(session, filter: filter, target: target, store: store, microphone: microphone, fastStart: fastStart)
         }
+        guard let problem = problem else { return goOn() }
+        // A recording that was asked to have the microphone never starts without it unnoticed: a microphone that
+        // turns up later cannot be added to it. Cancel is the default button. The alert is a run loop block and the
+        // start goes on from its answer: a hotkey or script start gets here inside a main-queue block, and a modal
+        // alert there would hold up the main queue, on which a recording stopped a moment ago is being closed and
+        // saved. The session stays in `starting` meanwhile, as it did while the alert ran in place.
+        let message = problem + " " + "A recording started now has no microphone track, and one cannot be added while it runs. Cancel, connect the microphone and start again, or record without it."
+        UserNotice.onMainRunLoop {
+            let answer = createAlert(level: .critical, title: "Microphone Not Available", message: message, button1: "Cancel", button2: "Record Without Microphone").runInFront()
+            if answer == .alertSecondButtonReturn { goOn() } else { session.abandonStart() }
+        }
+    }
+
+    /// The rest of `startAsked`, once it is known whether the recording has a microphone: the files, the writer,
+    /// and the capture
+    private func startPrepared(_ session: RecordingSession, filter: SCContentFilter, target: CaptureTarget, store: RecordingFileStore,
+                               microphone: MicrophoneChoice?, fastStart: Bool) {
         // The output files and the settings this recording keeps until it is finished, whatever changes meanwhile. With
         // the process tap the writer has a track for the backup of the system audio as well.
         let audioOnly = target.type == .systemaudio

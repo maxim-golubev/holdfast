@@ -348,12 +348,16 @@ where it did not, never both at once.
 
 The tap does not depend on your output device: switching to AirPods or
 headphones, or AirPods going into their call mode, changes nothing for it. If
-the tap stops delivering anyway, Holdfast notices within a second, builds it
-again, in another way after two failures, and keeps trying for as long as the
-recording runs; the backup records meanwhile. You are not asked to do
-anything and see no warning for it; the log has each step. **System Audio Is
-Not Being Recorded** appears only when neither the tap nor the backup delivers
-anything.
+the tap stops delivering anyway, Holdfast notices after a second of silence
+from it, builds it again at once, in another way after two failures, and keeps
+trying every two seconds at most for as long as the recording runs; the backup
+records meanwhile. You are not asked to do anything; the log has each step.
+**System Audio Is Not Being Recorded** appears only when neither the tap nor
+the backup delivers anything. Should the tap stay dead for 15 seconds, the
+status item shows the triangle with **Call audio is not being recorded** until
+it is back: everything else the Mac plays is still recorded from the backup,
+but a FaceTime or phone call is not, and that is the one thing the backup
+cannot make up for.
 
 When the tap cannot be used (no permission), the system audio comes from
 screen capture alone for that recording, as before, without call audio, and

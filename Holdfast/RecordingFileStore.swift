@@ -248,8 +248,9 @@ struct RecordingFileStore {
         return DiskSpace.Watch(file: file, folder: directory, onLow: onLow, onDeleted: onDeleted)
     }
 
-    /// Before the audio mix: whether a second file as large as `url` fits next to it, or in `folder`. True when that
-    /// cannot be determined.
+    /// Before the audio mix: whether a second file as large as `url` fits next to it, or in `folder`, and leaves
+    /// what a recording that is starting or running needs (`DiskSpace.copyReserve`). True when that cannot be
+    /// determined.
     static func hasRoomForCopy(of url: URL, in folder: URL? = nil) -> Bool {
         return DiskSpace.hasRoomForCopy(of: url, in: folder)
     }

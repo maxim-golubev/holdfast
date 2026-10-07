@@ -40,6 +40,8 @@ func describe(_ stats: RunStats, _ recording: SimulatedRecording) {
     say(String(format: "  tap outage %.0f-%.0f s: %d tap buffers not delivered", Plan.tapOutage.start, Plan.tapOutage.end, stats.tapSkipped))
     say("  the tap's device clock: " + Plan.tapClockJumps.map { String(format: "%+.0f s from %.0f to %.0f s", $0.by, $0.start, $0.end) }.joined(separator: ", ")
         + "; \(stats.tapMisstamped) tap buffers delivered with such a time stamp")
+    say(String(format: "  the tap's device runs %.0f parts in a million slow: %.0f samples a second, %.3f s of audio less than time passes in %.0f s",
+               Plan.tapClockError * 1_000_000, Plan.tapRate, Plan.length * Plan.tapClockError, Plan.length))
     say(String(format: "  waited for the writer's inputs %d times, %.1f s in all; not taken by an input: %d frames, %d tap buffers, %d backup buffers",
                stats.waits, stats.waitSeconds, stats.framesNotTaken, stats.systemNotTaken, stats.backupNotTaken))
     say(String(format: "  session start %.3f s on the stream's clock; time taken out for the pause %.3f s (pause pressed for %.0f s)",
@@ -78,7 +80,10 @@ func checkSpans(_ spans: TapSpans?, timeline: OutputTimeline, stop: Double, expe
     }
     let gap = (spans.spans[0].end, spans.spans[1].start)
     say(String(format: "    the gap %.3f-%.3f s against the outage %.3f-%.3f s: %@ and %@", gap.0, gap.1, outage.start, outage.end, ms(gap.0 - outage.start), ms(gap.1 - outage.end)))
-    if abs(gap.0 - outage.start) > 0.002 || abs(gap.1 - outage.end) > 0.002 {
+    // Where the tap's audio stops, its track may be as early as its device's drift is let get (`TapDrift.begins`,
+    // and what the smoothing is behind); where it starts again the first buffer goes where its IOProc was called
+    let early = TapDrift.begins + 0.003
+    if gap.0 - outage.start > 0.002 || gap.0 - outage.start < -early || abs(gap.1 - outage.end) > 0.002 {
         Found.problems.append("the tap's spans do not have the outage where it was")
     }
     if spans.spans[0].start > 0.05 { Found.problems.append(String(format: "the tap's first span begins at %.3f s", spans.spans[0].start)) }

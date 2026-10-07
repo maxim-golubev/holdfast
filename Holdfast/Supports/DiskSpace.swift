@@ -4,12 +4,33 @@
 //
 
 import Foundation
+import Synchronization
 
 /// Free space on the volume a recording is written to. A recording is not started with less than `startMinimum`
-/// and is stopped while it can still be closed properly when less than `stopMinimum` is left.
+/// and is stopped while it can still be closed properly when less than `stopMinimum` is left. A second copy of a
+/// recording (its mix, an MP3) is written only when it leaves `stopMinimum`, and `startMinimum` while another
+/// recording is starting or running: that one passed its start check before the copy took its space, and would
+/// otherwise be stopped by it in the middle of a meeting.
 enum DiskSpace {
     static let startMinimum: Int64 = 2_000_000_000
     static let stopMinimum: Int64 = 500_000_000
+
+    /// The recorders that have a recording starting or running. Kept here, behind a lock, because the copies are
+    /// checked off the main thread, where the recorder's own state cannot be read.
+    private static let recorders = Mutex(Set<ObjectIdentifier>())
+
+    /// `recorder` has a recording starting or running, or no longer
+    static func setRecording(_ runs: Bool, for recorder: ObjectIdentifier) {
+        recorders.withLock { if runs { $0.insert(recorder) } else { $0.remove(recorder) } }
+    }
+
+    /// Whether a recording is starting or running
+    static var isRecording: Bool { recorders.withLock { !$0.isEmpty } }
+
+    /// What a second copy of a recording must leave free
+    static func copyReserve(recording: Bool) -> Int64 {
+        return recording ? startMinimum : stopMinimum
+    }
     private static let interval: TimeInterval = 5
     
     /// Bytes available for a recording, counting the space the system frees on demand (purgeable space: local
@@ -37,9 +58,9 @@ enum DiskSpace {
         return free < stopMinimum
     }
     
-    /// Whether a second file of `size` bytes fits with `stopMinimum` to spare
-    static func hasRoom(forCopyOf size: Int64, free: Int64) -> Bool {
-        return free > size + stopMinimum
+    /// Whether a second file of `size` bytes fits with `reserve` to spare
+    static func hasRoom(forCopyOf size: Int64, free: Int64, reserve: Int64 = stopMinimum) -> Bool {
+        return free > size + reserve
     }
     
     static func formatted(_ bytes: Int64) -> String {
@@ -47,11 +68,21 @@ enum DiskSpace {
     }
     
     /// Whether a second file as large as `url` (a file or a package) fits in `folder`, next to it unless given, with
-    /// `stopMinimum` to spare. True when that cannot be determined.
-    static func hasRoomForCopy(of url: URL, in folder: URL? = nil) -> Bool {
+    /// `copyReserve` to spare: more while a recording is starting or running (`recording`), which is taken to be on
+    /// the same volume. True when that cannot be determined. `free` is how the free space is found out.
+    static func hasRoomForCopy(of url: URL, in folder: URL? = nil, recording: Bool = DiskSpace.isRecording,
+                               free: (String) -> Int64? = DiskSpace.available) -> Bool {
         guard let size = size(of: url),
-              let free = available(at: (folder ?? url.deletingLastPathComponent()).path) else { return true }
-        return hasRoom(forCopyOf: size, free: free)
+              let free = free((folder ?? url.deletingLastPathComponent()).path) else { return true }
+        return hasRoom(forCopyOf: size, free: free, reserve: copyReserve(recording: recording))
+    }
+
+    /// What to say when there is no room for a copy: "Not enough free disk space to `purpose`.", and why when the
+    /// space that is there is kept for a recording
+    static func noRoom(to purpose: String, recording: Bool = DiskSpace.isRecording) -> String {
+        let text = "Not enough free disk space to \(purpose)."
+        guard recording else { return text }
+        return text + " " + String(format: "What is left is kept for the recording that is running, which is stopped when less than %@ is free.", formatted(stopMinimum))
     }
 
     /// Bytes in the file at `url`, or in all files inside it when it is a folder (a .qma package). Nil when it is not there.

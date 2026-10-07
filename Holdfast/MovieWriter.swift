@@ -645,6 +645,10 @@ final class MovieWriter {
             guard let track = isBackup ? backup : system else { return }
             audioTrack = track
             if track.fromTap {
+                // The buffer ends when it arrived. Its own time is that too, unless it was converted from another
+                // format: those buffers are on a timeline counted from their samples (`SystemAudioConverter`), which
+                // would hide from `TapDrift` how far the tap's device has drifted until it is a tenth of a second.
+                if sample.arrival.isValid, duration.isValid, duration > .zero { rawPTS = CMTimeSubtract(sample.arrival, duration) }
                 rawPTS = tapStart(rawPTS, duration: duration)
                 checksPresent = false
             } else {
@@ -720,10 +724,16 @@ final class MovieWriter {
         // would be early, and audio that arrives after silence was written in its place is left out, or
         // everything after it would be late. Its first sample is the session's start, also for the file whose
         // source began later.
-        guard let start = placeSystemAudio(track, from: pts, to: endPTS, end: track.end ?? sessionStart) else { return }
+        guard let placed = placeSystemAudio(track, from: pts, to: endPTS, end: track.end ?? sessionStart) else { return }
+        var audio = samples
+        var length = CMTimeSubtract(endPTS, pts)
+        if placed.frames != 0, let stretched = stretch(sampleBuffer, by: placed.frames, in: track), let pcm = stretched.asPCMBuffer {
+            audio = pcm
+            length = stretched.duration
+        }
         do {
-            try track.file?.write(from: samples)
-            delivered(track, from: start, to: CMTimeAdd(start, CMTimeSubtract(endPTS, pts)))
+            try track.file?.write(from: audio)
+            delivered(track, from: placed.start, to: CMTimeAdd(placed.start, length))
         } catch {
             fail(MovieWriter.writeFailure(error))
         }
@@ -734,12 +744,28 @@ final class MovieWriter {
         track.format = sampleBuffer.formatDescription
         // The writer plays audio buffers back to back whatever their timestamps say. The buffer goes at the end
         // of what was written, and only once that end is where the buffer belongs.
-        guard let start = placeSystemAudio(track, from: pts, to: endPTS, end: track.end) else { return }
-        // From the buffer's own timestamp, which is not `pts` when it was given its arrival time
-        guard let buffer = MovieWriter.retime(sampleBuffer, by: CMTimeSubtract(sampleBuffer.presentationTimeStamp, start)) else { return }
-        if append(buffer, to: input) {
-            delivered(track, from: start, to: CMTimeAdd(start, CMTimeSubtract(endPTS, pts)))
+        guard let placed = placeSystemAudio(track, from: pts, to: endPTS, end: track.end) else { return }
+        let start = placed.start
+        var audio = sampleBuffer
+        var length = CMTimeSubtract(endPTS, pts)
+        if placed.frames != 0, let stretched = stretch(sampleBuffer, by: placed.frames, in: track) {
+            audio = stretched
+            length = stretched.duration
         }
+        // From the buffer's own timestamp, which is not `pts` when it was given its arrival time
+        guard let buffer = MovieWriter.retime(audio, by: CMTimeSubtract(audio.presentationTimeStamp, start)) else { return }
+        if append(buffer, to: input) {
+            delivered(track, from: start, to: CMTimeAdd(start, length))
+        }
+    }
+
+    /// A buffer of the tap one frame longer or shorter, as its track's `TapDrift` asked for, and noted there; nil
+    /// when that cannot be made of it, and the buffer then goes in as it is
+    private func stretch(_ sampleBuffer: CMSampleBuffer, by frames: Int, in track: SystemTrack) -> CMSampleBuffer? {
+        guard let stretched = MovieWriter.stretched(sampleBuffer, by: frames) else { return nil }
+        let rate = sampleBuffer.formatDescription?.audioStreamBasicDescription?.mSampleRate ?? 48000
+        track.drift.applied(frames, frame: 1 / max(1, rate))
+        return stretched
     }
 
     /// Audio of a source went into `track` from `start` to `end`: its end moves on, the monitor hears of it, and
@@ -764,24 +790,42 @@ final class MovieWriter {
     ///
     /// The tap's buffers go back to back by their sample count, and the time their IOProc gave them only shows a
     /// real hole or a time that is taken (`SystemAudioPlacement.placeArrived`, which says why no device clock can
-    /// leave one out). The stream's buffers, on their own smooth timestamps, are left out when they lie before the
-    /// end and written whole when they overlap it, late by less than one buffer (`SystemAudioPlacement.place`);
-    /// `streamStart` has already kept back the ones of a backlog. Both tracks share one timeline.
-    private func placeSystemAudio(_ track: SystemTrack, from pts: CMTime, to endPTS: CMTime, end: CMTime?) -> CMTime? {
+    /// leave one out). `frames` is then what the buffer is to be made longer or shorter by, a frame at most, to
+    /// keep the track on the host clock while the tap's device drifts against it (`TapDrift`). The stream's buffers,
+    /// on their own smooth timestamps, are left out when they lie before the end and written whole when they overlap
+    /// it, late by less than one buffer (`SystemAudioPlacement.place`); `streamStart` has already kept back the ones
+    /// of a backlog. Both tracks share one timeline.
+    private func placeSystemAudio(_ track: SystemTrack, from pts: CMTime, to endPTS: CMTime, end: CMTime?) -> (start: CMTime, frames: Int)? {
+        var filled = false
         let fill: (CMTime) -> CMTime? = { [self] time in
+            filled = true
             self.fill(track, upTo: time)
             return track.end
         }
         guard track.fromTap else {
-            return SystemAudioPlacement.place(from: pts, to: endPTS, end: end, tolerance: MovieWriter.gapTolerance, fill: fill)
+            return SystemAudioPlacement.place(from: pts, to: endPTS, end: end, tolerance: MovieWriter.gapTolerance, fill: fill).map { ($0, 0) }
         }
         if let end, SystemAudioPlacement.isTaken(endPTS, end: end, tolerance: MovieWriter.gapTolerance) {
             track.taken += 1
             if track.taken == 1 {
-                RecLog.write(String(format: "%@: a buffer of the tap reached the recording %.2f s after silence had been written over its time, and was left out", track.name, CMTimeGetSeconds(CMTimeSubtract(end, endPTS))))
+                RecLog.write(String(format: "%@: a buffer of the tap reached the recording when its track already held %.2f s beyond it (silence written over its time while it was on its way), and was left out", track.name, CMTimeGetSeconds(CMTimeSubtract(end, endPTS))))
             }
         }
-        return SystemAudioPlacement.placeArrived(from: pts, to: endPTS, end: end, floor: sessionStart ?? pts, tolerance: MovieWriter.gapTolerance, fill: fill)
+        guard let start = SystemAudioPlacement.placeArrived(from: pts, to: endPTS, end: end, floor: sessionStart ?? pts, tolerance: MovieWriter.gapTolerance, fill: fill) else { return nil }
+        // Back to back with what the track holds: how far that is from where the buffer arrived is the drift of
+        // the tap's device. After silence up to the buffer, or at the track's beginning, there is none yet.
+        guard let end, !filled else {
+            track.drift.restart()
+            return (start, 0)
+        }
+        let runs = track.drift.runs
+        let frames = track.drift.next(offset: CMTimeGetSeconds(CMTimeSubtract(pts, end)), duration: CMTimeGetSeconds(CMTimeSubtract(endPTS, pts)))
+        if track.drift.runs != runs, runs < Restamps.loggedRuns {
+            let behind = track.drift.behind
+            RecLog.write(String(format: "%@: the tap's audio is in its track %.0f ms %@ than it arrives (its device delivers %@ audio than time passes); a sample is %@ every %.1f s until it is in place again",
+                                track.name, abs(behind) * 1000, behind > 0 ? "earlier" : "later", behind > 0 ? "less" : "more", behind > 0 ? "added" : "taken out", TapDrift.spacing))
+        }
+        return (start, frames)
     }
 
     // MARK: - Tracks whose source delivers nothing
@@ -1027,6 +1071,8 @@ final class MovieWriter {
         /// Backlogs of the stream that were left out, and buffers of the tap whose time was taken
         var backlogs = 0
         var taken = 0
+        /// What keeps the tap's track on the host clock while its device drifts
+        var drift = TapDrift()
 
         init(name: String, fromTap: Bool = false, input: AVAssetWriterInput? = nil, file: AVAudioFile? = nil) {
             self.name = name
@@ -1043,7 +1089,12 @@ final class MovieWriter {
             if stamps.lateSeconds >= 0.25 {
                 lines.append(String(format: "%@: %d buffers (%.2f s of audio) lay before the end of what was written, where silence stood in their place, and were left out", name, stamps.lateBuffers, stamps.lateSeconds))
             }
-            if taken > 0 { lines.append("\(name): \(taken) buffers of the tap reached the recording after silence had been written over their time and were left out") }
+            if taken > 0 { lines.append("\(name): \(taken) \(taken == 1 ? "buffer" : "buffers") of the tap reached the recording after silence had been written over \(taken == 1 ? "its" : "their") time and \(taken == 1 ? "was" : "were") left out") }
+            // Also when nothing had to be done yet: how far the tap's device is from the host clock is worth knowing
+            if let ppm = drift.partsPerMillion, drift.added + drift.removed > 0 || (drift.seconds >= 60 && abs(drift.behind) >= 0.001) {
+                lines.append(String(format: "%@: %d samples added and %d taken out in %d %@ to keep the tap's audio where it arrived: its device delivered about %.0f parts in a million %@ audio than time passed",
+                                    name, drift.added, drift.removed, drift.runs, drift.runs == 1 ? "run" : "runs", abs(ppm), ppm > 0 ? "less" : "more"))
+            }
             return lines
         }
     }
@@ -1054,6 +1105,56 @@ final class MovieWriter {
         if frame.presentationTimeStamp == pts { return frame }
         let timing = CMSampleTimingInfo(duration: frame.duration, presentationTimeStamp: pts, decodeTimeStamp: .invalid)
         return try? CMSampleBuffer(copying: frame, withNewTiming: [timing])
+    }
+
+    /// `sample` with one frame more (`frames` 1) or less (-1), at the same time: 32-bit float audio with a buffer
+    /// for each channel, the format all system audio reaches the writer in; nil for anything else. The frame is
+    /// added, as the mean of its neighbours, or taken out where the samples around it differ least, in silence if
+    /// there is any, so the place is not heard.
+    static func stretched(_ sample: CMSampleBuffer, by frames: Int) -> CMSampleBuffer? {
+        guard frames == 1 || frames == -1, let description = sample.formatDescription, let asbd = description.audioStreamBasicDescription,
+              asbd.mFormatID == kAudioFormatLinearPCM, asbd.mBitsPerChannel == 32, asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0,
+              asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0, asbd.mChannelsPerFrame > 0,
+              let format = AVAudioFormat(standardFormatWithSampleRate: asbd.mSampleRate, channels: asbd.mChannelsPerFrame) else { return nil }
+        let count = sample.numSamples
+        let channels = Int(asbd.mChannelsPerFrame)
+        guard count >= 4, let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count + 1)),
+              let target = output.floatChannelData else { return nil }
+        let made = try? sample.withAudioBufferList { list, _ -> Bool in
+            var sources = [UnsafePointer<Float>]()
+            for part in list {
+                guard let data = part.mData, Int(part.mDataByteSize) >= count * MemoryLayout<Float>.size else { return false }
+                sources.append(UnsafePointer(data.assumingMemoryBound(to: Float.self)))
+            }
+            guard sources.count == channels else { return false }
+            // The frame after which one is added, or the frame taken out: where its neighbours are closest
+            var place = 1
+            var least = Float.infinity
+            for index in 1..<(count - 1) {
+                var difference: Float = 0
+                for source in sources { difference += abs(source[index + 1] - source[frames > 0 ? index : index - 1]) }
+                if difference < least {
+                    least = difference
+                    place = index
+                    if difference == 0 { break }
+                }
+            }
+            for (channel, source) in sources.enumerated() {
+                let out = target[channel]
+                if frames > 0 {
+                    out.update(from: source, count: place + 1)
+                    out[place + 1] = (source[place] + source[place + 1]) / 2
+                    (out + place + 2).update(from: source + place + 1, count: count - place - 1)
+                } else {
+                    out.update(from: source, count: place)
+                    (out + place).update(from: source + place + 1, count: count - place - 1)
+                }
+            }
+            return true
+        }
+        guard made == true else { return nil }
+        output.frameLength = AVAudioFrameCount(count + frames)
+        return AudioSilence.sampleBuffer(from: output, description: description, at: sample.presentationTimeStamp)
     }
 
     /// Returns the buffer with `offset` subtracted from its timestamps, or the buffer itself when there is nothing to shift

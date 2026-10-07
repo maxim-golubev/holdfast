@@ -64,15 +64,16 @@ struct TapOutputDevice: Equatable {
     let name: String
 }
 
-/// Listeners installed by `TapHardware.watch`, which `unwatch` removes. `queue` is the queue Core Audio calls them on.
+/// Listeners installed by `TapHardware.watch`, which `unwatch` removes: the properties of `object` that are watched,
+/// and the `token` the hardware registered them under
 final class TapListener {
     let object: AudioObjectID
-    let entries: [(address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)]
-    let queue: DispatchQueue
-    init(object: AudioObjectID, entries: [(address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)], queue: DispatchQueue) {
+    let addresses: [AudioObjectPropertyAddress]
+    let token: UInt
+    init(object: AudioObjectID, addresses: [AudioObjectPropertyAddress] = [], token: UInt = 0) {
         self.object = object
-        self.entries = entries
-        self.queue = queue
+        self.addresses = addresses
+        self.token = token
     }
 }
 
@@ -515,10 +516,6 @@ final class SystemAudioConverter {
 /// The Core Audio calls behind `SystemAudioTap`
 struct CoreAudioTapHardware: TapHardware {
     private static let system = AudioObjectID(kAudioObjectSystemObject)
-    /// Where Core Audio calls the listeners, which only pass the change on to the queue they were given: a listener is
-    /// removed on that queue, and never has to wait for a listener running on it
-    private static let listenerQueue = DispatchQueue(label: "Holdfast.systemAudioTap.listeners")
-
     private static func address(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
         return AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
     }
@@ -694,25 +691,75 @@ struct CoreAudioTapHardware: TapHardware {
         return AudioHardwareDestroyProcessTap(tap)
     }
 
+    /// What the listeners that are installed call, by the token Core Audio hands them as their client data. A
+    /// listener is registered with Core Audio as a C function and that token, never as a block: Core Audio finds the
+    /// listener to remove by comparing, and a Swift closure passed as a block is wrapped in a new block object at
+    /// every call, so `AudioObjectRemovePropertyListenerBlock` matched nothing, returned no error, and every tap
+    /// ever built left its listeners on the built-in output for as long as the app ran (checked on the owner's Mac).
+    /// A token that is not in the table any more does nothing, so a notification that is already on its way when the
+    /// listener is removed ends here.
+    private final class ListenerTable: @unchecked Sendable {
+        private let lock = NSLock()
+        private var next: UInt = 1
+        private var entries = [UInt: (queue: DispatchQueue, changed: () -> Void)]()
+
+        func add(queue: DispatchQueue, _ changed: @escaping () -> Void) -> UInt {
+            lock.lock(); defer { lock.unlock() }
+            let token = next
+            next += 1
+            entries[token] = (queue, changed)
+            return token
+        }
+
+        func remove(_ token: UInt) {
+            lock.lock(); defer { lock.unlock() }
+            entries[token] = nil
+        }
+
+        /// Passes the change on to the queue the listener was installed with
+        func notify(_ token: UInt) {
+            lock.lock()
+            let entry = entries[token]
+            lock.unlock()
+            if let entry { entry.queue.async(execute: entry.changed) }
+        }
+    }
+
+    private static let listeners = ListenerTable()
+    /// The one function Core Audio calls for every listener, on a thread of its own; which listener it is for is
+    /// the token in `clientData`
+    private static let listenerProc: AudioObjectPropertyListenerProc = { _, _, _, clientData in
+        CoreAudioTapHardware.listeners.notify(UInt(bitPattern: clientData))
+        return noErr
+    }
+
     func watch(_ object: AudioObjectID, _ selectors: [AudioObjectPropertySelector], queue: DispatchQueue, _ changed: @escaping () -> Void) -> TapListener? {
-        var entries = [(address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)]()
+        let token = CoreAudioTapHardware.listeners.add(queue: queue, changed)
+        var addresses = [AudioObjectPropertyAddress]()
         for selector in selectors {
             var address = CoreAudioTapHardware.address(selector)
-            let block: AudioObjectPropertyListenerBlock = { _, _ in queue.async { changed() } }
-            let status = AudioObjectAddPropertyListenerBlock(object, &address, CoreAudioTapHardware.listenerQueue, block)
+            let status = AudioObjectAddPropertyListener(object, &address, CoreAudioTapHardware.listenerProc, UnsafeMutableRawPointer(bitPattern: token))
             if status == noErr {
-                entries.append((address, block))
+                addresses.append(address)
             } else {
                 RecLog.write("System audio tap: cannot watch property \(SystemAudioTapError.code(Int32(bitPattern: selector))) (\(SystemAudioTapError.code(status)))")
             }
         }
-        return entries.isEmpty ? nil : TapListener(object: object, entries: entries, queue: CoreAudioTapHardware.listenerQueue)
+        guard !addresses.isEmpty else {
+            CoreAudioTapHardware.listeners.remove(token)
+            return nil
+        }
+        return TapListener(object: object, addresses: addresses, token: token)
     }
 
     func unwatch(_ listener: TapListener) {
-        for entry in listener.entries {
-            var address = entry.address
-            _ = AudioObjectRemovePropertyListenerBlock(listener.object, &address, listener.queue, entry.block)
+        // First, so that nothing reaches the tap's owner any more, whatever Core Audio makes of the removal
+        CoreAudioTapHardware.listeners.remove(listener.token)
+        for var address in listener.addresses {
+            let status = AudioObjectRemovePropertyListener(listener.object, &address, CoreAudioTapHardware.listenerProc, UnsafeMutableRawPointer(bitPattern: listener.token))
+            if status != noErr {
+                RecLog.write("System audio tap: a listener for property \(SystemAudioTapError.code(Int32(bitPattern: address.mSelector))) could not be removed (\(SystemAudioTapError.code(status)))")
+            }
         }
     }
 }
