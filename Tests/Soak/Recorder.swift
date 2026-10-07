@@ -19,8 +19,9 @@ enum RecLog {
 
 /// The real writer as the monitor sees it. Everything goes to the `MovieWriter`; only `clockAnchor` differs: the
 /// writer stamps the arrival of a buffer with the real uptime, and this simulation delivers buffers far faster than
-/// real time, so the anchor is given the simulated uptime at which that buffer arrived. The monitor then tells the
-/// present exactly as it would in a live recording.
+/// real time, so the anchor is given the simulated uptime at which that buffer arrived (for a buffer of the tap,
+/// when its IOProc was called, before it waited for the sample queue). The monitor then tells the present exactly
+/// as it would in a live recording.
 final class SimulatedClockWriter: RecordingWriter {
     let real: MovieWriter
     private var realAnchor: (raw: CMTime, uptime: UInt64)?
@@ -33,7 +34,7 @@ final class SimulatedClockWriter: RecordingWriter {
         real.write(sample)
         if let anchor = real.clockAnchor, realAnchor.map({ $0.raw != anchor.raw || $0.uptime != anchor.uptime }) ?? true {
             realAnchor = anchor
-            clockAnchor = (anchor.raw, uptime)
+            clockAnchor = (anchor.raw, sample.arrival.isValid ? Plan.uptime(Plan.seconds(sample.arrival)) : uptime)
         }
     }
 
@@ -67,6 +68,15 @@ final class SimulatedClockWriter: RecordingWriter {
     func cancel() { real.cancel() }
 }
 
+/// Stands in for the process tap: `SystemAudioSource` builds it, and the simulation calls `deliver` in its IOProc's place
+final class SimulatedTap: SystemAudioTapping {
+    let clockText = "a simulated clock"
+    let formatText = "48000 Hz, 2 channels"
+    let deliver: (CMSampleBuffer) -> Void
+    init(deliver: @escaping (CMSampleBuffer) -> Void) { self.deliver = deliver }
+    func stop() {}
+}
+
 /// What the simulated recording did, for the report
 struct RunStats {
     var events = 0
@@ -75,6 +85,8 @@ struct RunStats {
     var backupBuffers = 0
     /// Tap buffers not delivered: the outage
     var tapSkipped = 0
+    /// Tap buffers its device stamped with another time than theirs
+    var tapMisstamped = 0
     var micBuffers = 0
     var ticks = 0
     /// Times the feed waited for a writer input that was not ready, and for how long in all
@@ -116,6 +128,14 @@ final class SimulatedRecording {
     let writer: MovieWriter
     let clockWriter: SimulatedClockWriter
     let monitor: RecordingMonitor
+    /// The tap's source, as in the app, with a tap the simulation delivers through. It hands its buffers on on a
+    /// queue of its own, from which the feed takes them when they arrive on the sample queue.
+    private var tapSource: SystemAudioSource?
+    private var tap: SimulatedTap?
+    private let tapQueue = DispatchQueue(label: "Soak.tap-hand-off")
+    private var handedOn = [CaptureSample]()
+    /// When the tap's IOProc is called, on the stream's clock
+    private var ioTime = 0.0
     var stats = RunStats()
     private var inputs = [AVAssetWriterInput]()
     private var pixelPool: CVPixelBufferPool?
@@ -160,6 +180,30 @@ final class SimulatedRecording {
             kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
         ]
         CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pixelPool)
+        // The tap's source as `record()` starts it. Its host clock is the simulated one, read where the IOProc reads it.
+        let factory = SystemAudioSource.Factory(constructions: { [.builtInOutput] }, makeTap: { [unowned self] _, _, deliver, _ in
+            let made = SimulatedTap(deliver: deliver)
+            tap = made
+            return made
+        })
+        let source = SystemAudioSource(factory: factory, sampleQueue: tapQueue, stallSeconds: 1_000_000,
+                                       clock: { [unowned self] in Plan.stamp(ioTime) }) { [unowned self] sample in
+            handedOn.append(sample)
+        }
+        try source.start()
+        tapSource = source
+        guard tap != nil else { throw SoakError("no tap was built") }
+    }
+
+    /// The tap's IOProc is called at `buffer.io` with a buffer its device stamped `stamp`; what its source hands on
+    private func tapSamples(_ buffer: SystemBuffer, stamped stamp: Double) throws -> [CaptureSample] {
+        ioTime = buffer.io
+        tap?.deliver(try systemBuffer(buffer, stamped: stamp))
+        return tapQueue.sync {
+            let samples = handedOn
+            handedOn = []
+            return samples
+        }
     }
 
     private func waitForInputs() {
@@ -212,9 +256,9 @@ final class SimulatedRecording {
 
     /// The sound the Mac plays, as the tap (`backup` false) or ScreenCaptureKit hears it: the same tones, each with
     /// noise of its own
-    private func systemBuffer(_ buffer: SystemBuffer, backup: Bool = false) throws -> CMSampleBuffer {
+    private func systemBuffer(_ buffer: SystemBuffer, backup: Bool = false, stamped stamp: Double? = nil) throws -> CMSampleBuffer {
         let first = buffer.index * Plan.systemFrames
-        return try pcmBuffer(rate: Plan.systemRate, channels: 2, frames: Plan.systemFrames, at: Plan.stamp(buffer.pts)) { data in
+        return try pcmBuffer(rate: Plan.systemRate, channels: 2, frames: Plan.systemFrames, at: Plan.stamp(stamp ?? buffer.pts)) { data in
             for i in 0..<Plan.systemFrames {
                 let t = Double(first + i) / Plan.systemRate
                 let tone = Plan.tone(at: t, first: 10, frequencyBase: 1000)
@@ -325,7 +369,7 @@ final class SimulatedRecording {
                 switch next {
                 case .frame(let frame):
                     let before = writer.videoPTS
-                    clockWriter.deliver(CaptureSample(kind: .screen(complete: true), buffer: try frameBuffer(frame), pts: Plan.stamp(frame.pts)), at: uptime)
+                    clockWriter.deliver(CaptureSample(kind: .screen(complete: true), buffer: try frameBuffer(frame), pts: Plan.stamp(frame.pts), arrival: Plan.stamp(now)), at: uptime)
                     if taking && writer.videoPTS == before { stats.framesNotTaken += 1 }
                     if stats.sessionStart == nil, let start = writer.sessionStart { stats.sessionStart = Plan.seconds(start) }
                     stats.frames += 1
@@ -335,15 +379,19 @@ final class SimulatedRecording {
                         // The tap is dead: its IOProc delivers nothing until it is rebuilt
                         stats.tapSkipped += 1
                     } else {
+                        // Through the tap's source, as in the app: the IOProc was called at `buffer.io` with a buffer
+                        // its device stamped as `Plan.tapDeviceStamp` says, and it reaches the sample queue now
                         let before = writer.audioEndPTS
-                        clockWriter.deliver(CaptureSample(kind: .audio, buffer: try systemBuffer(buffer), pts: Plan.stamp(buffer.pts)), at: uptime)
+                        let stamp = Plan.tapDeviceStamp(buffer.pts)
+                        if stamp != buffer.pts { stats.tapMisstamped += 1 }
+                        for sample in try tapSamples(buffer, stamped: stamp) { clockWriter.deliver(sample, at: uptime) }
                         if taking && writer.audioEndPTS == before { stats.systemNotTaken += 1 }
                         stats.systemBuffers += 1
                     }
                     nextSystem = system.next()
                 case .backup(let buffer):
                     let before = writer.backupEndPTS
-                    clockWriter.deliver(CaptureSample(kind: .backupAudio, buffer: try systemBuffer(buffer, backup: true), pts: Plan.stamp(buffer.pts)), at: uptime)
+                    clockWriter.deliver(CaptureSample(kind: .backupAudio, buffer: try systemBuffer(buffer, backup: true), pts: Plan.stamp(buffer.pts), arrival: Plan.stamp(now)), at: uptime)
                     if taking && writer.backupEndPTS == before { stats.backupNotTaken += 1 }
                     stats.backupBuffers += 1
                     nextBackup = backup.next()
@@ -386,6 +434,7 @@ final class SimulatedRecording {
 
     /// What `RecordingSession.takeWriter` does on the sample queue once the capture has stopped
     func finish() -> MovieWriter.Finished {
+        tapSource?.stopNow()
         return queue.sync {
             monitor.stop()
             return writer.finish()

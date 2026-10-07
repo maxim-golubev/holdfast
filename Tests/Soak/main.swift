@@ -38,6 +38,8 @@ func describe(_ stats: RunStats, _ recording: SimulatedRecording) {
     say(String(format: "  fed in %.1f s of wall time: %d events (%d frames, %d tap buffers, %d backup buffers, %d microphone buffers, %d monitor ticks)",
                stats.feedSeconds, stats.events, stats.frames, stats.systemBuffers, stats.backupBuffers, stats.micBuffers, stats.ticks))
     say(String(format: "  tap outage %.0f-%.0f s: %d tap buffers not delivered", Plan.tapOutage.start, Plan.tapOutage.end, stats.tapSkipped))
+    say("  the tap's device clock: " + Plan.tapClockJumps.map { String(format: "%+.0f s from %.0f to %.0f s", $0.by, $0.start, $0.end) }.joined(separator: ", ")
+        + "; \(stats.tapMisstamped) tap buffers delivered with such a time stamp")
     say(String(format: "  waited for the writer's inputs %d times, %.1f s in all; not taken by an input: %d frames, %d tap buffers, %d backup buffers",
                stats.waits, stats.waitSeconds, stats.framesNotTaken, stats.systemNotTaken, stats.backupNotTaken))
     say(String(format: "  session start %.3f s on the stream's clock; time taken out for the pause %.3f s (pause pressed for %.0f s)",
@@ -85,7 +87,7 @@ func checkSpans(_ spans: TapSpans?, timeline: OutputTimeline, stop: Double, expe
 /// Everything measured in one file: lengths, markers, time code, silence
 func measure(raw: URL?, mixed: URL?, timeline: OutputTimeline, stop: Double, expectedLength: Double, cutOff: Bool = false) async throws {
     let holes = expectedMicrophoneHoles(stop: stop, sessionStart: timeline.sessionStart)
-    let outputHoles = holes.map { (start: timeline.outputAfterPause($0.start), end: timeline.outputAfterPause($0.end)) }.filter { $0.end - $0.start >= 0.03 }
+    let outputHoles = holes.map { (start: timeline.outputAfterPause($0.start), end: timeline.outputAfterPause($0.end)) }.filter { $0.end - $0.start >= Checks.shortestHole }
     func micAbsent(_ marker: Marker) -> Bool {
         let muted = marker.time + Plan.burst > Plan.mute.start && marker.time < Plan.mute.end
         return muted || holes.contains { marker.time + Plan.burst > $0.start && marker.time < $0.end }
@@ -125,6 +127,18 @@ func measure(raw: URL?, mixed: URL?, timeline: OutputTimeline, stop: Double, exp
         system = try Checks.markers(raw, track: audio[0].id, Plan.systemMarkers, timeline: timeline, until: end, absent: tapAbsent, label: "system audio (tap)", report: &Found.problems)
         Checks.printOffsets(system, label: "system audio (tap)", timeline: timeline)
         say("    tap markers that fall in its outage (checked absent): \(Plan.systemMarkers.filter { timeline.output($0.time) != nil && tapAbsent($0) }.map(\.index))")
+        // The tap's device clock jumped back and ahead while these sounded: each must be there, in its place
+        for jump in Plan.tapClockJumps {
+            let during = Plan.systemMarkers.filter { $0.time >= jump.start && $0.time + Plan.burst <= jump.end && $0.time + Plan.burst <= stop && timeline.output($0.time) != nil }
+            // A file cut off before the jump has none of them
+            guard !during.isEmpty else { continue }
+            let found = during.compactMap { marker in system.first { $0.marker.index == marker.index } }
+            say(String(format: "    tap markers while its device clock was %+.0f s off (%.0f-%.0f s): ", jump.by, jump.start, jump.end)
+                + found.map { "\($0.marker.index) at \(ms($0.offset))" }.joined(separator: ", ") + " (\(found.count) of \(during.count))")
+            if found.count != during.count || found.contains(where: { abs($0.offset) > 0.1 }) {
+                Found.problems.append(String(format: "tap markers are missing or out of place where its device clock was %+.0f s off", jump.by))
+            }
+        }
         let backup = try Checks.markers(raw, track: audio[1].id, Plan.systemMarkers, timeline: timeline, until: end, absent: { _ in false }, label: "system audio (backup)", report: &Found.problems)
         Checks.printOffsets(backup, label: "system audio (backup)", timeline: timeline)
         var apart = 0.0

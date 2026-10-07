@@ -168,7 +168,8 @@ struct TapRepair: Equatable {
 /// The system audio of one recording through a Core Audio process tap. It builds the tap at the start (`start`),
 /// rebuilds it whenever it stops delivering, and tears it down at the stop. Every buffer is handed on as a
 /// `CaptureSample` of kind `.audio`, on the sample queue, in ScreenCaptureKit's system audio format
-/// (`SystemAudioConverter`), to the same `onSample` the stream's buffers go to.
+/// (`SystemAudioConverter`), to the same `onSample` the stream's buffers go to. Its time is when it arrived in the
+/// tap's IOProc, where it ends, and nothing else: no timestamp of the tap's device reaches the recording.
 ///
 /// Self-repair: a tap whose IOProc has handed on nothing for `stallSeconds` (1 s) is dead. On the owner's Mac an
 /// aggregate device clocked by AirPods in call mode stopped calling its IOProc 27 s into a meeting and never again,
@@ -219,10 +220,10 @@ final class SystemAudioSource {
     private let checkInterval: Double
     /// Seconds to wait before an attempt, from the repair's own; the tests shorten it
     private let waitScale: Double
-    /// The host clock, read on the IO thread when a buffer is handed on: its arrival time, against which the writer
-    /// checks the buffer's own time (`ArrivalCheck`). The tests give their own.
-    private let clock: () -> CMTime
-    static let hostClock: () -> CMTime = { CMClockMakeHostTimeFromSystemUnits(mach_absolute_time()) }
+    /// Nil in the app: a buffer arrived when its tap's IOProc read the host clock, which is where the tap made it
+    /// end (`SystemAudioTap`). The tests and the simulation give a clock of their own, read on the IO thread in the
+    /// IOProc's place, and whatever time the buffer came with is then replaced by it.
+    private let clock: (() -> CMTime)?
     /// The generation of the tap whose buffers are handed on; 0 while none is
     private let delivering = Atomic<Int>(0)
     /// When the current tap last handed a buffer on, in uptime nanoseconds; 0 before its first
@@ -249,7 +250,7 @@ final class SystemAudioSource {
 
     init(factory: Factory, sampleQueue: DispatchQueue, stallSeconds: Double = SystemAudioSource.stallSeconds,
          checkInterval: Double = SystemAudioSource.checkInterval, waitScale: Double = 1,
-         clock: @escaping () -> CMTime = SystemAudioSource.hostClock, onSample: @escaping (CaptureSample) -> Void) {
+         clock: (() -> CMTime)? = nil, onSample: @escaping (CaptureSample) -> Void) {
         self.factory = factory
         self.sampleQueue = sampleQueue
         self.stallSeconds = stallSeconds
@@ -413,11 +414,12 @@ final class SystemAudioSource {
     // MARK: - IO thread
 
     /// From the IOProc of the tap of `generation`: queues the buffer, with the time it arrived, unless that tap has
-    /// been replaced or stopped
+    /// been replaced or stopped. The time is taken here, on the IO thread: however long the buffer then waits for
+    /// the sample queue, it is recorded where it arrived.
     private func deliver(_ buffer: CMSampleBuffer, generation: Int) {
         guard delivering.load(ordering: .acquiring) == generation else { return }
         lastDelivery.store(DispatchTime.now().uptimeNanoseconds, ordering: .releasing)
-        let arrival = clock()
+        let arrival = clock.map { $0() } ?? CMTimeAdd(buffer.presentationTimeStamp, buffer.duration)
         sampleQueue.async { [weak self] in self?.handOn(buffer, generation: generation, arrival: arrival) }
     }
 
@@ -433,7 +435,14 @@ final class SystemAudioSource {
             latestGeneration = generation
             converter.reset()
         }
-        guard let converted = converter.convert(buffer) else { return }
+        // The buffer ends when it arrived. The tap made it so; one given a clock's time instead is moved there.
+        var stamped = buffer
+        let start = CMTimeSubtract(arrival, buffer.duration)
+        if start.isValid, start != buffer.presentationTimeStamp,
+           let moved = MovieWriter.retime(buffer, by: CMTimeSubtract(buffer.presentationTimeStamp, start)) {
+            stamped = moved
+        }
+        guard let converted = converter.convert(stamped) else { return }
         buffersHandedOn += 1
         onSample(CaptureSample(kind: .audio, buffer: converted, pts: converted.presentationTimeStamp, arrival: arrival))
     }

@@ -344,6 +344,11 @@ enum Checks {
     /// Runs of digital silence in a track against the holes that should be silent; every other 10 ms with sound
     /// `lag(t)` is how late the source's audio is at `t` (the microphone's drift, measured from its markers): its
     /// last sound before a hole ends that much after the hole begins
+    /// The shortest hole that must show as digital silence. The levels are read in 10 ms windows and AAC spreads
+    /// sound over up to a frame (21 ms) next to silence, so a hole of 30 ms, as the splice of the pause leaves in
+    /// the microphone track, may not hold one silent window; one of 50 ms always does.
+    static let shortestHole = 0.05
+
     static func silence(_ url: URL, track id: CMPersistentTrackID, expectedHoles: [(start: Double, end: Double)], lag: (Double) -> Double = { _ in 0 }, label: String, report: inout [String]) throws {
         let levels = try Analysis.levels(url, track: id)
         let silent: Float = 1e-5     // -100 dBFS
@@ -362,7 +367,7 @@ enum Checks {
         let quietWindows = levels.enumerated().filter { $0.element >= silent && $0.element < sound }.map { Double($0.offset) * 0.01 }
         say(String(format: "    %@: %.2f s scanned, %d runs of digital silence, %d windows of 10 ms between -100 and -50 dBFS", label, Double(levels.count) * 0.01, runs.count, quietWindows.count))
         var matched = Set<Int>()
-        for hole in expectedHoles where hole.end - hole.start >= 0.03 {
+        for hole in expectedHoles where hole.end - hole.start >= Checks.shortestHole {
             let overlapping = runs.indices.filter { runs[$0].end > hole.start - 0.05 && runs[$0].start < hole.end + 0.05 }
             guard !overlapping.isEmpty else {
                 report.append(String(format: "%@: no silence where the microphone delivered nothing, %.3f-%.3f s", label, hole.start, hole.end))

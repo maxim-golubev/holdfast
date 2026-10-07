@@ -64,6 +64,14 @@ enum Plan {
         func edge(_ t: Double) -> Double { (t * systemRate / Double(systemFrames)).rounded(.up) * Double(systemFrames) / systemRate }
         return (edge(tapOutage.start), edge(tapOutage.end))
     }
+    /// What the time stamps of the tap's device do while its audio keeps coming, as they did around call events on
+    /// the owner's Mac: 10 s behind the time for 70 s, right again, and later 5 s ahead for 70 s. The first is
+    /// before the kill of the killed run. Each covers two markers.
+    static let tapClockJumps: [(start: Double, end: Double, by: Double)] = [(1745, 1815, -10), (3605, 3675, 5)]
+    /// The time the tap's device stamps a buffer with whose audio is from `t`
+    static func tapDeviceStamp(_ t: Double) -> Double {
+        return t + (tapClockJumps.first { t >= $0.start && t < $0.end }?.by ?? 0)
+    }
     static let systemRate = 48000.0
     static let systemFrames = 1024
     static let systemNoise: Float = 0.0173      // uniform, RMS 0.01 (-40 dBFS)
@@ -164,14 +172,22 @@ struct SystemBuffer {
     let index: Int
     let pts: Double
     let end: Double
+    /// For the tap: when its IOProc is called with the buffer
+    let io: Double
+    /// When the buffer reaches the sample queue
     let arrival: Double
 }
 
 /// System audio: 1024-frame buffers on the stream's own clock, arriving 5 to 25 ms after their end. The tap's and
-/// the backup's have their own arrivals (`seed`).
+/// the backup's have their own arrivals (`seed`). The tap's IOProc is called up to 2 ms after a buffer's end, and
+/// the buffer waits for the sample queue from then until it arrives.
 struct SystemSchedule {
     private var random: SplitMix
-    init(seed: UInt64 = 0x7379_7374) { random = SplitMix(seed: seed) }
+    private var ioRandom: SplitMix
+    init(seed: UInt64 = 0x7379_7374) {
+        random = SplitMix(seed: seed)
+        ioRandom = SplitMix(seed: seed ^ 0x696F_7072)
+    }
     private var index = 0
     private var lastArrival = 0.0
 
@@ -181,7 +197,7 @@ struct SystemSchedule {
         let arrival = max(lastArrival, end + random.range(0.005, 0.025))
         lastArrival = arrival
         defer { index += 1 }
-        return SystemBuffer(index: index, pts: pts, end: end, arrival: arrival)
+        return SystemBuffer(index: index, pts: pts, end: end, io: end + ioRandom.range(0, 0.002), arrival: arrival)
     }
 }
 

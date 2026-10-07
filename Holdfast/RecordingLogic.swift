@@ -38,20 +38,25 @@ enum Timeline {
     }
 }
 
-/// Whether a buffer's own timestamp can be believed, judged against when it reached the app on the host clock that
-/// timestamps are on. Audio is never stamped after it arrived: a buffer stamped later than `ahead` after its arrival
-/// carries a time from another clock or none at all (a process tap's buffer was once stamped 1100 s in the future as
-/// a call ended) and is given its arrival time instead. One stamped long before it arrived is either the same or a
-/// backlog with its true times. For system audio, placed by what was written, more than `behind` is the former. The
-/// microphone's converter tells a backlog from a lagging clock and drops a backlog whose time was filled with
-/// silence; given its arrival time instead, a backlog's stale audio would be spliced in at the present, chopped,
-/// where silence belongs. So the microphone is restamped only when it is `microphoneBehind` old, minutes, which is no
-/// backlog but a time from another clock.
+/// Whether a timestamp can be believed, judged against when its buffer reached the app on the host clock the
+/// timestamps are on. Timestamps come from devices, and around a call they have been wrong: a process tap's buffers
+/// were stamped 12 s in the future as a FaceTime call connected, 1100 s as it ended, and 4.77 s as another app
+/// switched voice processing on. So:
+/// - the process tap's device timestamps are not used at all: its buffers are stamped in its IOProc with the host
+///   time at which they arrived (`SystemAudioTap`) and placed by their sample count (`SystemAudioPlacement.placeArrived`);
+/// - ScreenCaptureKit's system audio and its frames keep their own time while it is within `ahead` after and `behind`
+///   before their arrival; otherwise they go where their arrival puts them (`StreamStamps` for the audio, which
+///   also tells a backlog from a clock that lags; a frame simply at its arrival time);
+/// - the microphone's converter tells a backlog from a lagging clock and drops a backlog whose time was filled with
+///   silence; given its arrival time instead, a backlog's stale audio would be spliced in at the present, chopped,
+///   where silence belongs. So the microphone is restamped only when it is stamped after its arrival or
+///   `microphoneBehind` before it, minutes, which is no backlog but a time from another clock.
 enum ArrivalCheck {
     /// Seconds a buffer may be stamped after its arrival
     static let ahead: Double = 1
-    /// Seconds a system audio buffer may be stamped before its arrival
-    static let behind: Double = 30
+    /// Seconds a frame, or a buffer of ScreenCaptureKit's system audio, may be stamped before its arrival and still
+    /// be taken at its own time
+    static let behind: Double = 1
     /// Seconds a microphone buffer may be stamped before its arrival
     static let microphoneBehind: Double = 300
 
@@ -65,7 +70,7 @@ enum ArrivalCheck {
 
     /// What a buffer starting at `pts` that arrived at `arrival` is worth, when it may be stamped up to `behind`
     /// seconds before it. Trusted when the arrival is not known.
-    static func verdict(pts: CMTime, arrival: CMTime, behind: Double = ArrivalCheck.behind) -> Verdict {
+    static func verdict(pts: CMTime, arrival: CMTime, behind: Double) -> Verdict {
         guard pts.isValid, arrival.isValid else { return .trusted }
         let offset = CMTimeGetSeconds(CMTimeSubtract(pts, arrival))
         guard offset.isFinite else { return .trusted }
@@ -81,16 +86,256 @@ enum ArrivalCheck {
     }
 }
 
+/// Buffers of one source that lie before the end of its track, one after another. They are one of two things. A
+/// backlog: the source was held up and then hands over what piled up meanwhile, with the times the audio was
+/// captured at, faster than real time. Their time was filled with silence while they were held up, so they are
+/// dropped, and the buffers after them are at their own time again. Or a source whose timestamps lag the recording's
+/// clock: its buffers keep arriving at real-time pace, all of them behind, and dropping them would leave the track
+/// silent for good. The age of a buffer (when it arrived minus when its audio ends) tells them apart: it falls while
+/// a backlog drains and holds steady for a lagging clock. The microphone's converter and ScreenCaptureKit's system
+/// audio (`StreamStamps`) both decide with it.
+struct LateRun {
+    /// How far the age of late buffers may vary within `window` and still count as steady
+    static let steadyRange: Double = 0.25
+    /// How fast the age of late buffers may fall, in seconds per second of arrivals over the whole run, and still
+    /// count as steady. A backlog drained at rate r makes it fall by r - 1: drained at 1.1 times real time, its age
+    /// falls by only 0.2 s over two seconds, within `steadyRange`, but by 0.1 s every second all along.
+    static let steadyFall: Double = 0.02
+
+    /// How far the first buffer was behind the end of the track: the time already filled that a backlog covers
+    let span: Double
+    /// Seconds of arrivals over which the age of late buffers must hold steady before they are taken to lag
+    let window: Double
+    var buffers = 0
+    /// Seconds of audio in the late buffers so far
+    var audio: Double = 0
+    private(set) var firstAge: Double?
+    private(set) var lastAge: Double?
+    /// Arrival and age of the late buffers of about the last `window` seconds of arrivals
+    private var recent = [(arrival: Double, age: Double)]()
+    /// Sums for the least-squares slope of age against arrival over the whole run, relative to its first buffer
+    private var firstArrival: Double?
+    private var count: Double = 0
+    private var sumX: Double = 0, sumY: Double = 0, sumXX: Double = 0, sumXY: Double = 0
+
+    init(span: Double, window: Double) {
+        self.span = span
+        self.window = window
+    }
+
+    mutating func note(arrival: Double, age: Double) {
+        if firstAge == nil { firstAge = age }
+        lastAge = age
+        recent.append((arrival, age))
+        while recent.count > 2 && recent[1].arrival <= arrival - window { recent.removeFirst() }
+        let origin = firstArrival ?? arrival
+        firstArrival = origin
+        let x = arrival - origin
+        let y = age - (firstAge ?? age)
+        count += 1
+        sumX += x
+        sumY += y
+        sumXX += x * x
+        sumXY += x * y
+    }
+
+    /// How fast the age changed over the whole run, in seconds per second of arrivals; nil before the arrivals
+    /// span any time
+    var ageSlope: Double? {
+        let spread = count * sumXX - sumX * sumX
+        guard count >= 2, spread > 1e-9 else { return nil }
+        return (count * sumXY - sumX * sumY) / spread
+    }
+
+    /// The buffers have arrived at real-time pace for `window` at least: their age within `steadyRange` over that
+    /// window, and not falling over the whole run (`steadyFall`), as it does while a backlog drains
+    var isSteady: Bool {
+        guard let first = recent.first, let last = recent.last, last.arrival - first.arrival >= window - 0.001 else { return false }
+        var low = Double.infinity
+        var high = -Double.infinity
+        for entry in recent {
+            low = min(low, entry.age)
+            high = max(high, entry.age)
+        }
+        guard high - low <= LateRun.steadyRange, let slope = ageSlope else { return false }
+        return slope >= -LateRun.steadyFall
+    }
+}
+
+/// Where a buffer of ScreenCaptureKit's system audio (the backup of the process tap, or the system audio itself
+/// when the tap is not used) starts on the recording's clock. The stream's own timestamps are kept while they agree
+/// with the buffers' arrival: they are smooth, where arrivals come in bursts. When they do not agree the stream is
+/// never given up, in either direction:
+/// - stamped more than `ArrivalCheck.ahead` after its arrival: the buffer ends when it arrived, and the difference
+///   is kept as `offset` for the buffers after it, which stay as smooth as the stream stamped them;
+/// - stamped more than `ArrivalCheck.behind` before its arrival, or before the end of what its track already holds:
+///   a backlog, handed over late with the times its audio was captured at, or a clock that lags, whose buffers
+///   keep arriving at real-time pace. `LateRun` tells them apart within `steadyWindow`. Until it has, and for a
+///   backlog all along, a buffer that lies before the end of its track is left out (silence was written in its
+///   place while it was held up) and one that does not is written at its own time. A backlog drains faster than
+///   real time, so it ends by itself and the buffers after it are at their own time. The buffers of a lagging clock
+///   end when they arrived from then on, like the ones stamped ahead.
+/// The offset goes as soon as the stream's own timestamps agree with the arrival again.
+struct StreamStamps {
+    /// Seconds of arrivals at real-time pace after which late buffers are taken to come from a lagging clock
+    static let steadyWindow: Double = 1.5
+    /// Seconds of late audio left out before buffers whose arrival is not known are placed at the end of their track
+    static let longestDrop: Double = 1
+
+    enum Event: Equatable {
+        /// A run begins: a buffer is stamped this many seconds after it arrived
+        case ahead(Double)
+        /// A run begins: buffers stamped this many seconds before their place keep arriving at real-time pace;
+        /// `dropped` seconds of them were left out until that was clear
+        case lagging(behind: Double, dropped: Double)
+        /// The stream's timestamps agree with the arrival again, after this many buffers placed by their arrival
+        case agreesAgain(buffers: Int)
+        /// Late buffers were followed by one at its own time: a backlog, of which this much was left out
+        case backlog(buffers: Int, seconds: Double, firstAge: Double?, lastAge: Double?)
+    }
+
+    /// Added to the stream's timestamps; zero while they agree with the buffers' arrival
+    private(set) var offset = CMTime.zero
+    /// Buffers placed by their arrival: in the run that is going on, the runs, and in all
+    private(set) var run = 0
+    private(set) var runs = 0
+    private(set) var total = 0
+    /// Buffers left out because silence had been written in their place, and the seconds of audio in them
+    private(set) var lateBuffers = 0
+    private(set) var lateSeconds: Double = 0
+    /// The late buffers that are arriving now; its `buffers` and `audio` count the ones left out
+    private var late: LateRun?
+
+    private static func agrees(_ lead: Double) -> Bool {
+        return lead <= ArrivalCheck.ahead && -lead <= ArrivalCheck.behind
+    }
+
+    private mutating func count() -> Bool {
+        let begins = run == 0
+        if begins { runs += 1 }
+        run += 1
+        total += 1
+        return begins
+    }
+
+    /// Where a buffer the stream stamped `pts`, `duration` long, that arrived at `arrival` starts; nil when it is
+    /// left out. `end` is where the audio in its track ends, on the same clock; nil while nothing can lie before it
+    /// (before the recording has begun, or while it resumes). A buffer whose arrival is not known keeps its time,
+    /// and after `longestDrop` of them were left out the next goes at `end`.
+    mutating func start(_ pts: CMTime, duration: CMTime, arrival: CMTime, end: CMTime?) -> (start: CMTime?, events: [Event]) {
+        guard pts.isValid else { return (pts, []) }
+        var events = [Event]()
+        var start = CMTimeAdd(pts, offset)
+        // Stamped before its arrival by more than a buffer waits, with or without the offset
+        var behind = false
+        let lead = arrival.isValid ? CMTimeGetSeconds(CMTimeSubtract(pts, arrival)) : Double.nan
+        if lead.isFinite {
+            let shiftedLead = CMTimeGetSeconds(CMTimeSubtract(start, arrival))
+            if StreamStamps.agrees(lead) {
+                if run > 0 { events.append(.agreesAgain(buffers: run)) }
+                offset = .zero
+                run = 0
+                start = pts
+            } else if offset != .zero, StreamStamps.agrees(shiftedLead) {
+                _ = count()
+            } else if lead > ArrivalCheck.ahead || shiftedLead > ArrivalCheck.ahead {
+                // Not its time, with or without the offset: it ends when it arrived
+                start = ArrivalCheck.restamped(arrival: arrival, duration: duration)
+                offset = CMTimeSubtract(start, pts)
+                if count() { events.append(.ahead(lead)) }
+            } else {
+                behind = true
+                // An offset that puts it further from its arrival than its own time does is of no use any more
+                if offset != .zero, abs(shiftedLead) > abs(lead) {
+                    offset = .zero
+                    run = 0
+                    start = pts
+                }
+            }
+        }
+        let seconds = CMTimeGetSeconds(duration)
+        let length = seconds.isFinite && seconds > 0 ? seconds : 0.02
+        let liesBefore = end.map { CMTimeAdd(start, duration.isValid && duration > .zero ? duration : .zero) <= $0 } ?? false
+        guard behind || liesBefore else {
+            // At its own time: the late ones before it, if any, were a backlog. Less than a quarter of a second
+            // left out is a hiccup, not worth a line.
+            if let found = late, found.audio >= 0.25 {
+                events.append(.backlog(buffers: found.buffers, seconds: found.audio, firstAge: found.firstAge, lastAge: found.lastAge))
+            }
+            late = nil
+            return (start, events)
+        }
+        var found = late ?? LateRun(span: end.map { CMTimeGetSeconds(CMTimeSubtract($0, start)) } ?? 0, window: StreamStamps.steadyWindow)
+        var placed: CMTime?
+        if lead.isFinite {
+            found.note(arrival: CMTimeGetSeconds(arrival), age: CMTimeGetSeconds(CMTimeSubtract(arrival, start)) - length)
+            if found.isSteady { placed = ArrivalCheck.restamped(arrival: arrival, duration: duration) }
+        } else if liesBefore, found.audio + length > StreamStamps.longestDrop {
+            placed = end
+        }
+        if var placed {
+            // Never before the end of the track, or it would be late again and the stream left out for good
+            if let end, placed < end { placed = end }
+            late = nil
+            let lag = CMTimeGetSeconds(CMTimeSubtract(placed, start))
+            offset = CMTimeSubtract(placed, pts)
+            if count() { events.append(.lagging(behind: lag, dropped: found.audio)) }
+            return (placed, events)
+        }
+        if liesBefore {
+            found.buffers += 1
+            found.audio += length
+            lateBuffers += 1
+            lateSeconds += length
+        }
+        late = found
+        return (liesBefore ? nil : start, events)
+    }
+
+    /// The recording was paused or resumed: the late buffers before it say nothing about the ones after it
+    mutating func interrupted() {
+        late = nil
+    }
+}
+
 /// Where system audio goes on its track, which is counted from what was written and not read from the timestamps
 enum SystemAudioPlacement {
-    /// Where a buffer that covers `pts` to `endPTS` goes when the system audio written so far ends at `end`: at
-    /// that end. Nil when it must not be written: it lies before that end (silence was already written in its
+    /// Where a buffer of ScreenCaptureKit's system audio that covers `pts` to `endPTS` goes when the audio written
+    /// to its track so far ends at `end`: at that end. Nil when it must not be written: it lies before that end (silence was already written in its
     /// place), or the silence for a hole in front of it could not be written yet. A hole of more than
     /// `tolerance` seconds is filled first: `fill` writes silence up to the time it is given and returns where the
     /// audio ends afterwards. A buffer that overlaps the end is written whole.
     static func place(from pts: CMTime, to endPTS: CMTime, end: CMTime?, tolerance: Double, fill: (CMTime) -> CMTime?) -> CMTime? {
         guard let end = end else { return pts }
         if pts < end { return endPTS > end ? end : nil }
+        guard CMTimeGetSeconds(CMTimeSubtract(pts, end)) > tolerance else { return end }
+        guard let filled = fill(pts), CMTimeGetSeconds(CMTimeSubtract(pts, filled)) <= tolerance else { return nil }
+        return filled
+    }
+
+    /// Whether the track, which ends at `end`, already holds more than `tolerance` seconds beyond the end of a
+    /// buffer that ends at `endPTS`: the buffer's time is taken
+    static func isTaken(_ endPTS: CMTime, end: CMTime, tolerance: Double) -> Bool {
+        return CMTimeGetSeconds(CMTimeSubtract(end, endPTS)) > tolerance
+    }
+
+    /// Where a buffer of the process tap goes. `pts` to `endPTS` is when it arrived (it ends at the host time its
+    /// IOProc read, less the pauses); `end` is where the audio written to its track ends, and `floor` where the
+    /// recording begins. Buffers go back to back, by their sample count: at `end`, wherever that is within
+    /// `tolerance` of the buffer's arrival. The arrival is used for two things only. A hole of more than
+    /// `tolerance` in front of the buffer is real (the tap delivered nothing, or the writer did not take a buffer)
+    /// and is filled first, as in `place`. And a buffer whose time is taken (`isTaken`) is not written a second time.
+    ///
+    /// That is the only buffer of the tap left out for its time, and no device clock can cause it. Its time is the
+    /// host clock read in the IOProc, which only moves forward at the pace of real time; the track's end is the count
+    /// of the samples written, tap audio and silence. The end passes a buffer by more than `tolerance` only when
+    /// silence was written over the buffer's time before it reached the writer (the monitor fills a track that is 1.5 s
+    /// behind the present, so the buffer waited that long between the IOProc and the sample queue) or when the tap
+    /// delivered that much more audio than time has passed. Either way the track already holds that time. Nil also
+    /// while the silence for a hole in front of the buffer cannot be written, and before the recording begins.
+    static func placeArrived(from pts: CMTime, to endPTS: CMTime, end: CMTime?, floor: CMTime, tolerance: Double, fill: (CMTime) -> CMTime?) -> CMTime? {
+        guard let end = end else { return endPTS > floor ? pts : nil }
+        if isTaken(endPTS, end: end, tolerance: tolerance) { return nil }
         guard CMTimeGetSeconds(CMTimeSubtract(pts, end)) > tolerance else { return end }
         guard let filled = fill(pts), CMTimeGetSeconds(CMTimeSubtract(pts, filled)) <= tolerance else { return nil }
         return filled

@@ -133,13 +133,21 @@ enum TapClock: String, Equatable, CaseIterable {
 /// buffer into a `CMSampleBuffer` stamped on the host-time clock, the clock ScreenCaptureKit stamps its buffers with.
 /// Built and started by `init`, torn down by `stop` (and by `deinit`), each once.
 ///
+/// A buffer's time is the host time the IOProc reads when it is called (`mach_absolute_time`): the buffer ends then.
+/// The time stamps Core Audio hands the IOProc are never read. They are the aggregate device's, and around call
+/// events they were wrong on the owner's Mac while the audio itself kept coming: 12 s in the future as a FaceTime
+/// call connected, 1100 s as it ended, 4.77 s as another app switched voice processing on with AirPods in call mode.
+/// A recording placed by them loses everything after a jump back. The host clock read here cannot jump, and being
+/// read on the IO thread it does not move with how long the buffer then waits for the sample queue.
+///
 /// The IOProc uses only the tap's stream (`useTapStreamOnly`): an output device in the aggregate device is there for
 /// its clock alone. The aggregate device runs from `AudioDeviceStart` on, delivering zeros while nothing plays, so
 /// the track is continuous from the first moment (it is not made to wait for the first sound, which
 /// `kAudioAggregateDeviceTapAutoStartKey` would do).
 ///
 /// Threads: `init` and `stop` run on the thread of the owner (`SystemAudioSource`'s queue). The IOProc runs on Core
-/// Audio's real-time IO thread and only copies the audio out of the IO buffer, stamps it and calls `deliver`.
+/// Audio's real-time IO thread and only reads the host time, copies the audio out of the IO buffer, stamps it and
+/// calls `deliver`.
 final class SystemAudioTap: SystemAudioTapping {
     /// The name of the aggregate device. `MicSelection.getMicrophone` leaves it out: inside this process it is an
     /// input device like any.
@@ -204,14 +212,16 @@ final class SystemAudioTap: SystemAudioTapping {
                 RecLog.write("System audio tap: the tap's format is \(Int(tapFormat.mSampleRate)) Hz, the device's \(Int(format.mSampleRate)) Hz; the device's rate is used")
             }
             let description = try SystemAudioBuffers.formatDescription(format)
-            proc = try hardware.createIOProc(aggregate) { _, input, inputTime, output, _ in
+            proc = try hardware.createIOProc(aggregate) { _, input, _, output, _ in
+                // When these frames arrived, before anything else is done. The device's own time stamps (the
+                // parameters not named here) are not looked at.
+                let arrived = mach_absolute_time()
                 // The aggregate device has its main device's output streams too, turned off for this IOProc (their
                 // buffers are then NULL); should that have failed, nothing is played through them
                 for buffer in UnsafeMutableAudioBufferListPointer(output) {
                     if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
                 }
-                guard gate.isOpen, let sample = SystemAudioBuffers.sampleBuffer(from: input, format: format, description: description,
-                                                                    at: SystemAudioBuffers.presentationTime(of: inputTime.pointee, list: input, format: format)) else { return }
+                guard gate.isOpen, let sample = SystemAudioBuffers.sampleBuffer(from: input, format: format, description: description, arrivedAt: arrived) else { return }
                 deliver(sample)
             }
             undo.append { _ = hardware.destroyIOProc(aggregate, proc) }
@@ -361,19 +371,20 @@ enum SystemAudioBuffers {
         return found
     }
 
-    /// When the first frame of an IO buffer list was played, on the host-time clock: the IO time stamp's host time
-    /// (`mHostTime`, in host ticks). A time stamp without a valid host time is taken as just captured.
-    static func presentationTime(of timeStamp: AudioTimeStamp, list: UnsafePointer<AudioBufferList>, format: AudioStreamBasicDescription) -> CMTime {
-        return presentationTime(of: timeStamp, frames: frames(in: list, format: format) ?? 0, rate: format.mSampleRate)
+    /// When a buffer of `frames` frames at `rate` that arrived at the host time `hostTime` (in the units of
+    /// `mach_absolute_time`) starts, on the host-time clock: it ends when it arrived
+    static func startTime(arrivedAt hostTime: UInt64, frames: Int, rate: Double) -> CMTime {
+        let end = CMClockMakeHostTimeFromSystemUnits(hostTime)
+        guard rate > 0, frames > 0 else { return end }
+        return CMTimeSubtract(end, CMTime(value: CMTimeValue(frames), timescale: CMTimeScale(rate.rounded())))
     }
 
-    static func presentationTime(of timeStamp: AudioTimeStamp, frames: Int, rate: Double) -> CMTime {
-        if timeStamp.mFlags.contains(.hostTimeValid) && timeStamp.mHostTime != 0 {
-            return CMClockMakeHostTimeFromSystemUnits(timeStamp.mHostTime)
-        }
-        let now = CMClockGetTime(CMClockGetHostTimeClock())
-        guard rate > 0, frames > 0 else { return now }
-        return CMTimeSubtract(now, CMTime(value: CMTimeValue(frames), timescale: CMTimeScale(rate.rounded())))
+    /// A sample buffer holding a copy of the tap's audio in an IO buffer list that arrived at the host time
+    /// `hostTime`, which is where it ends. Nil when the list does not hold the tap's stream in `format`.
+    static func sampleBuffer(from list: UnsafePointer<AudioBufferList>, format: AudioStreamBasicDescription,
+                             description: CMAudioFormatDescription, arrivedAt hostTime: UInt64) -> CMSampleBuffer? {
+        guard let frames = frames(in: list, format: format) else { return nil }
+        return sampleBuffer(from: list, format: format, description: description, at: startTime(arrivedAt: hostTime, frames: frames, rate: format.mSampleRate))
     }
 
     /// A sample buffer holding a copy of the tap's audio in an IO buffer list, starting at `pts`. Nil when the list

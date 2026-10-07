@@ -408,7 +408,7 @@ func systemAudioTests() async {
         tap.stop()
     }
 
-    await test("system audio tap: the IOProc copies the tap's buffers, stamped with their host time") {
+    await test("system audio tap: the IOProc copies the tap's buffers and stamps them with the host time it is called at, not the device's") {
         for interleaved in [true, false] {
             let journal = Journal()
             let format = tapFormat(interleaved: interleaved)
@@ -419,14 +419,18 @@ func systemAudioTests() async {
             let pcm = try require(AVAudioPCMBuffer(pcmFormat: try require(AVAudioFormat(streamDescription: &asbd), "format"), frameCapacity: 512), "pcm")
             pcm.frameLength = 512
             fill(pcm)
-            let host = hostTicks()
-            let cleared = hardware.runIO(pcm.audioBufferList, host: host)
+            // The device's time stamp says 12 s in the future, as it did when a call connected
+            let before = CMClockGetHostTimeClock().time
+            let cleared = hardware.runIO(pcm.audioBufferList, host: hostTicks(12))
+            let after = CMClockGetHostTimeClock().time
             expect(cleared, "nothing is played through the aggregate device's output")
             // The IO buffer is reused by Core Audio once the IOProc returns: what was handed on must be a copy
             fill(pcm, amplitude: 0)
             let buffer = try require(delivered.first, "a buffer is handed on")
             expectEqual(buffer.numSamples, 512, "every frame (\(interleaved ? "interleaved" : "non-interleaved"))")
-            expectEqual(buffer.presentationTimeStamp, CMClockMakeHostTimeFromSystemUnits(host), "stamped with the IO's host time")
+            let end = CMTimeAdd(buffer.presentationTimeStamp, buffer.duration)
+            expect(end >= before && end <= after, "it ends at the host time the IOProc was called at: \(CMTimeGetSeconds(CMTimeSubtract(end, before))) s after the call began")
+            expectClose(CMTimeGetSeconds(buffer.duration), 512.0 / 48000, within: 0.000_001, "and starts its frames before that")
             let asbdOut = try require(buffer.formatDescription?.audioStreamBasicDescription, "format")
             expectEqual(SystemAudioBuffers.isInterleaved(asbdOut), interleaved, "in the tap's own layout")
             expectEqual(asbdOut.mSampleRate, 48000, "at its rate")
@@ -477,19 +481,14 @@ func systemAudioTests() async {
         tap.stop()
     }
 
-    await test("system audio buffers: host time is the host-time clock ScreenCaptureKit stamps with") {
+    await test("system audio buffers: a buffer ends at the host time it arrived at, on the clock ScreenCaptureKit stamps with") {
         let now = CMClockGetTime(CMClockGetHostTimeClock())
-        var stamp = AudioTimeStamp()
-        stamp.mHostTime = mach_absolute_time()
-        stamp.mFlags = .hostTimeValid
-        let pts = SystemAudioBuffers.presentationTime(of: stamp, frames: 480, rate: 48000)
-        expectClose(CMTimeGetSeconds(CMTimeSubtract(pts, now)), 0, within: 0.005, "the IO's host time on the host-time clock")
-        stamp.mHostTime = hostTicks(2)
-        let later = SystemAudioBuffers.presentationTime(of: stamp, frames: 480, rate: 48000)
-        expectClose(CMTimeGetSeconds(CMTimeSubtract(later, now)), 2, within: 0.005, "two seconds of host ticks are two seconds")
-        stamp.mFlags = []
-        let guessed = SystemAudioBuffers.presentationTime(of: stamp, frames: 4800, rate: 48000)
-        expectClose(CMTimeGetSeconds(CMTimeSubtract(guessed, now)), -0.1, within: 0.005, "without a valid host time: just captured, ending now")
+        let start = SystemAudioBuffers.startTime(arrivedAt: mach_absolute_time(), frames: 4800, rate: 48000)
+        expectClose(CMTimeGetSeconds(CMTimeSubtract(start, now)), -0.1, within: 0.005, "a tenth of a second of frames starts a tenth before")
+        let later = SystemAudioBuffers.startTime(arrivedAt: hostTicks(2), frames: 480, rate: 48000)
+        expectClose(CMTimeGetSeconds(CMTimeSubtract(later, now)), 1.99, within: 0.005, "two seconds of host ticks are two seconds")
+        let none = SystemAudioBuffers.startTime(arrivedAt: mach_absolute_time(), frames: 0, rate: 48000)
+        expectClose(CMTimeGetSeconds(CMTimeSubtract(none, now)), 0, within: 0.005, "nothing to go back by without frames")
     }
 
     await test("system audio buffers: the IO format is linear PCM at the device's rate") {
@@ -759,16 +758,18 @@ func systemAudioTests() async {
     await test("system audio source: the writer records the tap's audio like ScreenCaptureKit's") {
         let fakes = FakeTapFactory()
         let queue = DispatchQueue(label: "HoldfastTests.tapWriter")
-        let run = try TestRecording(folder: "tap-writer", audioOnly: true, microphone: false)
+        let run = try TestRecording(folder: "tap-writer", audioOnly: true, microphone: false, tap: true)
         try run.writer.prepareAudio()
         run.writer.startCapturing()
-        // Each buffer arrives a little after the last one of the two seconds is stamped
-        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, clock: { run.at(2.05) }) { run.writer.write($0) }
+        // Each buffer arrives as its last frame is captured
+        var arrival = 0.0
+        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, stallSeconds: 60, clock: { run.at(arrival) }) { run.writer.write($0) }
         try source.start()
         let tap = try require(fakes.taps.first, "a tap")
         // Two seconds from an output device at 44.1 kHz, interleaved, as a tap may deliver them
         let format = tapFormat(rate: 44100, interleaved: true)
         for index in 0..<200 {
+            arrival = Double(index + 1) / 100
             tap.deliver(try tapBuffer(format, frames: 441, at: run.at(Double(index) / 100), amplitude: 0.3))
         }
         source.stopNow()

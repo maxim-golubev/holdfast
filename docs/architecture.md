@@ -244,8 +244,15 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   their narrowband call mode. The IOProc copies the tap's buffers (the last
   ones of the input) into a `CMSampleBuffer` in the tap's format
   (`kAudioTapPropertyFormat`, interleaved or not) at the aggregate device's
-  rate, stamped with the IO time stamp's host time on the host-time clock, the
-  clock ScreenCaptureKit stamps its buffers with, and notes the time. It does
+  rate. Its time is the host time the IOProc reads as it is called
+  (`mach_absolute_time`, on the host-time clock ScreenCaptureKit stamps its
+  buffers with): the buffer ends then. The time stamps Core Audio hands the
+  IOProc are never read. They are the aggregate device's, and around call
+  events they were wrong on the owner's Mac while the audio itself kept
+  coming: 12 s in the future as a FaceTime call connected, 1100 s as it ended,
+  4.77 s as another app switched voice processing on with AirPods in call
+  mode. The host clock cannot jump, and read on the IO thread it does not move
+  with how long the buffer then waits for the sample queue. The IOProc does
   nothing else on the real-time thread.
 - **The same path as the stream.** `SystemAudioSource` queues each buffer on
   the sample queue, where `SystemAudioConverter` turns it into
@@ -253,8 +260,8 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   channel; a buffer already in it goes on unchanged, others are converted and
   resampled onto a continuous timeline), and hands it as an `.audio`
   `CaptureSample` to the same `onSample` as the stream's buffers, with the
-  host time at which the IOProc handed it on as its arrival time. The stream's
-  own system audio arrives as `.backupAudio`.
+  host time its IOProc read as its arrival time, which is where it ends. The
+  stream's own system audio arrives as `.backupAudio`.
 - **Self-repair.** A tap whose IOProc has handed on nothing for 1 s
   (`stallSeconds`, checked every 0.25 s on the source's own queue) is dead: it
   is torn down and built again at once, and logged. A change of the aggregate
@@ -363,27 +370,51 @@ alike: the first time placed after a resume sets `timeOffset` so the
 recording continues where it left off, and the offset never shrinks. `lastPTS`
 is the latest end of anything on the timeline, fills included.
 
-**Never past the present.** In a 20-minute FaceTime call the process tap
-handed on one buffer, as the call ended, stamped about 1100 s in the future.
-The writer believed it: `lastPTS` jumped to that time and stayed there (it only
-ever grows), the system audio track was filled with silence towards it until
-its input stopped taking more (16 s), every real system audio buffer after it
-lay before that end and was dropped (hence "System Audio Is Not Being Recorded"
-5 s later), and the stop padded the microphone to `lastPTS`: 1100 s of silence,
-38 minutes of audio for 20 of picture, which the mix check of the day let
-through. Now every buffer carries its arrival time on the host clock
-(`CaptureSource` stamps the stream's, `SystemAudioSource` the tap's on the IO
-thread), and the writer reads the present from `presentClock` (the host clock;
-the tests and the simulation give their own):
-- A system audio or microphone buffer stamped more than 1 s after its arrival
-  (`ArrivalCheck`) is given its arrival time less its length instead; the first
-  of a run and its end are logged, the total at the stop. So is a system audio
-  buffer stamped more than 30 s before its arrival, and a microphone buffer
-  more than 300 s before it: a microphone backlog is left to the converter,
-  which drops it where silence was filled, while given its arrival time it
-  would put stale audio at the present, chopped up.
-- A buffer that still ends more than 1 s after the present (a frame, or audio
-  whose arrival is not known) is left out, logged once and counted at the stop.
+**Placed by arrival, never past the present.** A timestamp comes from a
+device, and around call events devices have stamped buffers wrongly while the
+audio kept coming. In a 20-minute FaceTime call the process tap handed on one
+buffer, as the call ended, stamped about 1100 s in the future. The writer
+believed it: `lastPTS` jumped to that time and stayed there (it only ever
+grows), the system audio track was filled with silence towards it until its
+input stopped taking more (16 s), every real system audio buffer after it lay
+before that end and was dropped, and the stop padded the microphone to
+`lastPTS`: 38 minutes of audio for 20 of picture. On 2026-10-06 the other side
+of a 47-minute meeting was lost: the working diagnosis is that the tap's
+device stamped its buffers some seconds in the past, each then lay before the
+end of its track and was left out, while the IOProc kept running and nothing
+was rebuilt. So every buffer carries the host time at which it arrived
+(`CaptureSource` reads it for the stream's buffers, the tap's IOProc for its
+own), the writer reads the present from `presentClock` (the host clock; the
+tests and the simulation give their own), and:
+- The process tap's buffers have no other time than their arrival (see "System
+  audio" below).
+- ScreenCaptureKit's system audio keeps its own timestamps, which are smooth
+  where arrivals come in bursts, while they agree with the arrival
+  (`StreamStamps`). A buffer stamped more than 1 s after its arrival ends when
+  it arrived instead, and the difference is kept for the buffers after it, so
+  they stay as evenly spaced as the stream stamped them. Buffers stamped more
+  than 1 s before their arrival, or before the end of what their track holds,
+  are one of two things, which `LateRun` tells apart by their age (arrival
+  minus the end of their audio), as it does for the microphone: a backlog,
+  handed over faster than real time with the times its audio was captured at,
+  whose age falls, or a clock that lags, whose buffers keep arriving at
+  real-time pace with a steady age. Until that is clear (1.5 s of arrivals),
+  and for a backlog all along, a buffer that lies before the end of its track
+  is left out, because silence was written in its place while it was held up,
+  and one that does not is written at its own time. The buffers of a lagging
+  clock end when they arrived from then on, so no stream is left out for
+  good. The first of a run, a backlog and the return of the stream's own time
+  are logged, the totals at the stop.
+- A complete frame is never left out for its timestamp: stamped more than 1 s
+  before or after its arrival it is written at its arrival time, with one log
+  line per run of such frames.
+- A microphone buffer stamped more than 1 s after its arrival, or more than
+  300 s before it, is given its arrival time less its length. A microphone
+  backlog is left to the converter, which drops it where silence was filled,
+  while given its arrival time it would put stale audio at the present,
+  chopped up.
+- A buffer without a picture and without a known arrival that ends more than
+  1 s after the present is left out, logged once and counted at the stop.
 - `lastPTS` takes no end more than 1 s after the present, and the monitor's
   fills and frame repeats are cut off there too.
 - The stop pads the microphone only to the end of the video's last frame
@@ -399,21 +430,40 @@ track fed.
 
 **Video.** Only complete frames are written. ScreenCaptureKit sends nothing
 while the picture does not change, so the monitor has the last frame written
-again once a second. A real frame that is not later than a repeated one is
-moved just after it rather than dropped: the writer fails on frames out of
-order, and the frame may be the only one of a slide change. The last frame is a
+again once a second. A frame whose time is not later than that of the frame
+before it (a repeated one, or one written at its arrival time) is moved just
+after it, half a frame interval and at most 10 ms later, never dropped: the
+writer fails on frames out of order, and the frame may be the only one of a
+slide change. Only a writer input that is not ready loses a frame. The last frame is a
 copy with pixels of its own once it is held for a repeat or a pause, because a
 frame as delivered pins one of the stream's few surfaces.
 
 **System audio.** AVAssetWriter plays audio buffers back to back whatever their
 timestamps say. So system audio goes at `audioEndPTS`, the end of what was
-actually written, not where its timestamp points: a hole of more than 0.1 s is
-filled with silence first, a buffer wholly before the end is dropped, and none
-is written while the silence in front of it could not be. It is never more than
-0.1 s early or a buffer late. The backup is placed and filled the same way on
-its own track. In a sound-only recording, whose files have no timestamps,
-either source's first buffer starts the recording, and the file of the source
-that began later starts with silence up to it.
+actually written, not where a timestamp points, and a hole of more than 0.1 s
+is filled with silence first; no buffer is written while the silence in front
+of it could not be. The two sources differ in what may leave a buffer out:
+- The tap's buffers go back to back by their sample count
+  (`SystemAudioPlacement.placeArrived`). The host time their IOProc read is
+  used for two things only: to see a real hole (the tap delivered nothing, or
+  the writer did not take a buffer), and to see that the track already holds
+  more than 0.1 s beyond the buffer's end, in which case it is not written a
+  second time. That is the only tap buffer left out for its time, and no
+  device clock can cause it: the host clock only moves forward at the pace of
+  real time, and the track's end is a count of samples written. It happens
+  when the monitor wrote silence over the buffer's time before the buffer
+  reached the writer, or when the tap delivered that much more audio than time
+  has passed. It is logged the first time and counted at the stop.
+- The stream's buffers, on their own timestamps, are left out when they lie
+  wholly before the end and written whole when they overlap it, late by less
+  than one buffer (`SystemAudioPlacement.place`); what `StreamStamps` decides
+  comes before that.
+The tap's spans (`TapSpanLog`) are made from the buffers written to its track
+and end where silence is written into it, so they say where the track holds
+the tap's audio, not when its IOProc was called. The backup is filled the same
+way on its own track. In a sound-only recording, whose files have no
+timestamps, either source's first buffer starts the recording, and the file of
+the source that began later starts with silence up to it.
 
 **Failures.** Every append goes through `append(_:to:)`. A failed append, a
 writer found in `.failed`, or a failed audio file write calls `fail`, which
@@ -482,9 +532,10 @@ fill writes the silence, and the unmute is an anchor.
 
 Each session has a `RecordingMonitor`: a `.strict` dispatch timer every 0.5 s
 on the sample queue, which runs whether or not buffers arrive and also in the
-background. Its idea of the present is the last buffer's end plus the uptime
-since it arrived (`clockAnchor`), which is the timestamp a buffer arriving now
-would carry.
+background. Its idea of the present is the host time at which the last buffer
+arrived plus the uptime since then (`clockAnchor`; a buffer that waited for
+the sample queue counts from when it arrived, and one whose arrival is not
+known from its end). No timestamp of a device moves it, ahead or back.
 
 Each tick fills the microphone, the system audio and its backup with silence up
 to 1 s behind the present, once at least half a second is missing, and has the writer repeat
@@ -713,7 +764,7 @@ written, and the log is kept in memory.
 | Capture stop wait | `RecordingSession.stopCapture` | 5 s |
 | Mix stall limit | `RecordingMixer.stallLimit` | 60 s |
 | Mix check | `RecordingMixer.verify` | audio within 2 s of the video (12 s shorter for a leftover never closed); length within 1 s; 30 windows; silence below -60 dBFS; system audio at 0.5 to 1.5 times its source |
-| Timestamp check | `ArrivalCheck` | audio stamped over 1 s after its arrival, system audio over 30 s and the microphone over 300 s before it, gets its arrival time; nothing ends over 1 s after the present |
+| Timestamp check | `ArrivalCheck`, `StreamStamps` | the tap's audio has only its arrival time; stream audio and frames stamped over 1 s after their arrival, frames over 1 s before it, the microphone over 300 s before it, get their arrival time; stream audio stamped behind at real-time pace gets it after 1.5 s of arrivals; nothing ends over 1 s after the present |
 | Disk | `DiskSpace` | start 2 GB, stop 500 MB, checked every 5 s |
 | Device switch | `MicDevices` | check 0.7 s after a change; 3 retries, 2 s apart |
 | Tap repair | `SystemAudioSource`, `TapRepair` | dead after 1 s without a buffer (checked every 0.25 s); rebuilt at once, then waits of 0.5 s doubling to 10 s, for the whole recording; next construction after two failures; healthy after 10 s |

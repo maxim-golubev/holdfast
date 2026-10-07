@@ -9,21 +9,22 @@ import AVFoundation
 import Foundation
 
 func presentTests() async {
-    await test("Arrival check: audio stamped more than 1 s after it arrived, or more than 30 s before (a microphone: 300 s), is given its arrival time") {
+    await test("Arrival check: a frame or stream audio stamped more than 1 s from its arrival, a microphone 1 s after or 300 s before, is not at its time") {
         let arrival = time(5000)
-        expectEqual(ArrivalCheck.verdict(pts: time(4999.98), arrival: arrival), .trusted, "a buffer stamped just before it arrived")
-        expectEqual(ArrivalCheck.verdict(pts: time(5000.9), arrival: arrival), .trusted, "up to a second after it")
-        expectEqual(ArrivalCheck.verdict(pts: time(4989), arrival: arrival), .trusted, "a backlog 11 s old is left to the microphone's converter")
-        expectEqual(ArrivalCheck.verdict(pts: time(4971), arrival: arrival), .trusted, "29 s old")
-        expectEqual(ArrivalCheck.verdict(pts: time(6100), arrival: arrival), .ahead(1100), "1100 s in the future")
-        expectEqual(ArrivalCheck.verdict(pts: time(5001.5), arrival: arrival), .ahead(1.5), "1.5 s in the future")
-        expectEqual(ArrivalCheck.verdict(pts: time(4960), arrival: arrival), .behind(40), "40 s old")
+        let behind = ArrivalCheck.behind
+        expectEqual(ArrivalCheck.verdict(pts: time(4999.98), arrival: arrival, behind: behind), .trusted, "a buffer stamped just before it arrived")
+        expectEqual(ArrivalCheck.verdict(pts: time(5000.9), arrival: arrival, behind: behind), .trusted, "up to a second after it")
+        expectEqual(ArrivalCheck.verdict(pts: time(4999.1), arrival: arrival, behind: behind), .trusted, "and up to a second before it")
+        expectEqual(ArrivalCheck.verdict(pts: time(6100), arrival: arrival, behind: behind), .ahead(1100), "1100 s in the future")
+        expectEqual(ArrivalCheck.verdict(pts: time(5001.5), arrival: arrival, behind: behind), .ahead(1.5), "1.5 s in the future")
+        expectEqual(ArrivalCheck.verdict(pts: time(4998.5), arrival: arrival, behind: behind), .behind(1.5), "1.5 s old: the same the other way")
+        expectEqual(ArrivalCheck.verdict(pts: time(4990), arrival: arrival, behind: behind), .behind(10), "10 s old")
         let microphone = ArrivalCheck.microphoneBehind
         expectEqual(ArrivalCheck.verdict(pts: time(4960), arrival: arrival, behind: microphone), .trusted, "a microphone backlog 40 s old is left to the converter")
         expectEqual(ArrivalCheck.verdict(pts: time(4701), arrival: arrival, behind: microphone), .trusted, "nor one 299 s old")
         expectEqual(ArrivalCheck.verdict(pts: time(4600), arrival: arrival, behind: microphone), .behind(400), "a microphone stamped 400 s before is on another clock")
         expectEqual(ArrivalCheck.verdict(pts: time(5001.5), arrival: arrival, behind: microphone), .ahead(1.5), "and one in the future is not trusted either")
-        expectEqual(ArrivalCheck.verdict(pts: time(6100), arrival: .invalid), .trusted, "an arrival that is not known judges nothing")
+        expectEqual(ArrivalCheck.verdict(pts: time(6100), arrival: .invalid, behind: behind), .trusted, "an arrival that is not known judges nothing")
         expectEqual(ArrivalCheck.restamped(arrival: arrival, duration: time(0.01)), time(4999.99), "given its arrival time, it ends when it arrived")
         expectEqual(ArrivalCheck.restamped(arrival: arrival, duration: .invalid), arrival, "without a length, it starts then")
     }
@@ -35,7 +36,7 @@ func presentTests() async {
         expectEqual(Timeline.latestEnd(time(1110), after: time(5)), time(1110), "without a limit any later end is taken")
     }
 
-    await test("Writer: a tap buffer stamped 1100 s in the future near the end of a call is recorded at its arrival time") {
+    await test("Writer: a buffer of the stream's audio stamped 1100 s in the future near the end of a call is recorded at its arrival time") {
         let run = try TestRecording(folder: "present-future-tap")
         let writer = run.writer
         try writer.prepareVideo(width: 320, height: 240)
@@ -49,7 +50,7 @@ func presentTests() async {
             usleep(15_000)
         }
         for index in 0..<30 { try step(Double(index) / 10) }
-        // As the call ends: the tap hands on one buffer with a time 1100 s ahead
+        // As the call ends: one buffer with a time 1100 s ahead
         try step(3.0, systemStamp: 3.0 + 1100)
         let afterIt = try require(writer.lastPTS, "end of the timeline")
         expect(afterIt <= run.at(3.1), "the end of the timeline stays at the present: \(CMTimeGetSeconds(afterIt) - TestRecording.base)")
@@ -70,28 +71,34 @@ func presentTests() async {
         }
     }
 
-    await test("Writer: a buffer stamped in the future whose arrival is not known, and such a frame, are left out") {
+    await test("Writer: a buffer stamped in the future whose arrival is not known is left out, and such a frame is written at the present") {
         let run = try TestRecording(folder: "present-future-unknown")
         let writer = run.writer
         try writer.prepareVideo(width: 320, height: 240)
         writer.startCapturing()
-        run.present = 2.1
+        run.present = 1.05
         try run.feed(from: 0, to: 1)
         let end = writer.lastPTS
         let audioEnd = writer.audioEndPTS
-        let video = writer.videoPTS
         try run.systemAudio(1.0 + 1100)
-        try run.frame(1.0 + 1100)
         try run.frame(1.0 + 1100, complete: false)
         expectEqual(writer.lastPTS, end, "the end of the timeline does not move")
         expectEqual(writer.audioEndPTS, audioEnd, "no silence is written towards it")
-        expectEqual(writer.videoPTS, video, "the frame is not written")
+        expectEqual(writer.videoPTS, run.at(0.9), "a frame without a picture is not written")
         expect(writer.clockAnchor.map { $0.raw <= run.at(1) } ?? false, "and the monitor's clock does not take its time")
-        expect(RecLog.lines.contains { $0.contains("A system audio buffer ending 1099.") && $0.contains("after the present was left out") }, "logged once: \(RecLog.lines)")
-        try run.feed(from: 1, to: 2)
+        expect(RecLog.lines.contains { $0.contains("A system audio buffer ending 1100.05 s after the present was left out") }, "logged once: \(RecLog.lines)")
+        // A complete frame is a picture: it is never left out for its time
+        try run.frame(1.0 + 1100)
+        expectEqual(writer.videoPTS, run.at(1.05), "the frame is written at the present")
+        expect(try require(writer.lastPTS, "end") <= run.at(1.2), "and the timeline stays there")
+        expect(RecLog.lines.contains { $0.contains("Video: a frame is stamped 1099.95 s after it arrived") }, "logged: \(RecLog.lines)")
+        run.present = 2.1
+        try run.feed(from: 1.1, to: 2)
         expectEqual(writer.lastPTS, run.at(2), "the recording goes on")
+        expectEqual(writer.videoPTS, run.at(1.9), "with every frame after it at its own time")
         _ = try await run.close()
-        expect(RecLog.lines.contains { $0.contains("Left out for lying beyond the present: 3 buffers") }, "the stop gives the count")
+        expect(RecLog.lines.contains { $0.contains("Left out for lying beyond the present: 2 buffers") }, "the stop gives the count")
+        expect(RecLog.lines.contains { $0.contains("Video: 1 frame recorded at its arrival time in 1 run") }, "and the frame: \(RecLog.lines)")
         let tracks = try await TestRecording.tracks(of: run.recording.rawURL)
         for track in tracks.video + tracks.audio { expectClose(track.end, 2, within: 0.25, "every track is two seconds long") }
     }
@@ -143,7 +150,7 @@ func presentTests() async {
         expect(run.failures.isEmpty, "no failure: \(run.failures)")
     }
 
-    await test("Writer and monitor: a frame and a tap buffer stamped 12 s ahead as a call connects leave no hole and do not shift the microphone") {
+    await test("Writer and monitor: a frame and an audio buffer stamped 12 s ahead as a call connects leave no hole and do not shift the microphone") {
         // The owner's FaceTime call: as it connected, a buffer stamped about 12 s in the future reached the writer.
         // Without the checks against the present, the monitor's present ran 12 s ahead: video lost 12 s of picture,
         // system audio was filled 11 s into the future and its real buffers dropped, and the microphone, filled as
@@ -201,7 +208,7 @@ func presentTests() async {
         expectEqual(converter.buffersDropped, 0, "nor any of it dropped")
         expectClose(CMTimeGetSeconds(converter.end) - TestRecording.base, 7, within: 0.03, "it ends with its last buffer, less what the resampler holds")
         expectEqual(notified, [], "nothing to notify")
-        expect(RecLog.lines.contains { $0.contains("A video buffer ending 12.") && $0.contains("after the present was left out") }, "the frame is left out: \(RecLog.lines)")
+        expect(RecLog.lines.contains { $0.contains("Video: a frame is stamped 12.00 s after it arrived") }, "the frame is written at the present, not 12 s ahead: \(RecLog.lines)")
         expect(RecLog.lines.contains { $0.contains("System audio: a buffer is stamped 11.90 s after it arrived") }, "the tap buffer is given its arrival time")
 
         _ = try await run.close()
@@ -310,17 +317,17 @@ func presentTests() async {
         expect(lines.first?.contains("7.0 s long and its video 4.0 s") == true, "the reason: \(lines)")
     }
 
-    await test("System audio source: a tap buffer carries when it arrived, and one stamped 1100 s ahead is recorded then") {
+    await test("System audio source: a tap buffer ends when it arrived, and one its device stamped 1100 s ahead is recorded like the others") {
         let fakes = FakeTapFactory()
         let queue = DispatchQueue(label: "HoldfastTests.tapFuture")
-        let run = try TestRecording(folder: "present-tap-source", audioOnly: true, microphone: false)
+        let run = try TestRecording(folder: "present-tap-source", audioOnly: true, microphone: false, tap: true)
         try run.writer.prepareAudio()
         run.writer.startCapturing()
         run.present = 3.1
         var arrival = 0.0
-        var arrivals = [CMTime]()
-        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, clock: { run.at(arrival) }) { sample in
-            arrivals.append(sample.arrival)
+        var samples = [CaptureSample]()
+        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, stallSeconds: 60, clock: { run.at(arrival) }) { sample in
+            samples.append(sample)
             run.writer.write(sample)
         }
         try source.start()
@@ -335,9 +342,10 @@ func presentTests() async {
         queue.sync {}
         let finished = queue.sync { run.writer.finish() }
         expect(finished.sessionStarted, "recorded")
-        expectEqual(arrivals.count, 300, "every buffer handed on")
-        expectEqual(arrivals.first, run.at(0.01), "with the time the IOProc handed it on")
-        expect(RecLog.lines.contains { $0.contains("System audio: a buffer is stamped 1099.99 s after it arrived") }, "the one in the future is recorded at that time: \(RecLog.lines)")
+        expectEqual(samples.count, 300, "every buffer handed on")
+        expectEqual(samples.first?.arrival, run.at(0.01), "with the time the IOProc handed it on")
+        expect(samples.allSatisfy { CMTimeAdd($0.pts, $0.buffer.duration) == $0.arrival && $0.buffer.presentationTimeStamp == $0.pts }, "which is where it ends, whatever its device stamped")
+        expect(RecLog.lines.allSatisfy { !$0.contains("is stamped") }, "nothing to say about a timestamp that is not used: \(RecLog.lines)")
         let seconds = try await TestMovie.seconds(of: try require(run.recording.systemAudioURL, "system audio file"))
         expectClose(seconds, 3, within: 0.05, "three seconds in the file, nothing towards the future")
     }

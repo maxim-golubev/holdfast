@@ -241,4 +241,45 @@ func logicTests() async {
         expectEqual(DiskSpace.size(of: file), 1000, "a file is as large as itself")
         expect(DiskSpace.size(of: folder.appendingPathComponent("missing.mp4")) == nil, "a file that is not there has no size")
     }
+
+    await test("Stream stamps: audio stamped 1.2 s behind at real-time pace is first written at its own time and within 2 s by its arrival; a backlog's tail never is") {
+        // A tenth of a second at a time, each buffer arriving 20 ms after its last frame
+        var stamps = StreamStamps()
+        var end = time(100)
+        var byArrival: Double?
+        var leftOut = 0
+        var events = [StreamStamps.Event]()
+        for index in 0..<60 {
+            let t = 100 + Double(index) / 10
+            let lag = t >= 102 ? 1.2 : 0
+            let arrival = time(t + 0.12)
+            let placed = stamps.start(time(t - lag), duration: time(0.1), arrival: arrival, end: end)
+            events += placed.events
+            guard let start = placed.start else {
+                leftOut += 1
+                continue
+            }
+            if lag > 0, byArrival == nil, start == time(t + 0.02) { byArrival = t }
+            if byArrival != nil { expectEqual(start, time(t + 0.02), "from then on each ends when it arrived") }
+            end = CMTimeAdd(start, time(0.1))
+        }
+        let since = try require(byArrival, "placed by arrival")
+        expect(since - 102 <= 2, "within 2 s: after \(since - 102) s")
+        expect(leftOut <= 12, "what lay before the end of the track is left out until the stamps pass it, no more: \(leftOut) buffers")
+        expect(events.contains { if case .lagging = $0 { return true } else { return false } }, "said once: \(events)")
+        expectEqual(stamps.runs, 1, "one run")
+
+        // Five seconds handed over in half a second, the first 5 s after its time: behind, and not at real-time pace
+        var backlog = StreamStamps()
+        var kept = 0
+        for index in 0..<50 {
+            let stamp = 200 + Double(index) / 10
+            let arrival = time(205 + Double(index) / 100)
+            let placed = backlog.start(time(stamp), duration: time(0.1), arrival: arrival, end: time(200))
+            if placed.start == time(stamp) { kept += 1 }
+            expect(placed.start == nil || placed.start == time(stamp), "a backlog keeps its own times")
+        }
+        expectEqual(kept, 50, "and what does not lie before the end of the track is written")
+        expectEqual(backlog.total, 0, "none by its arrival")
+    }
 }

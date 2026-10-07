@@ -95,7 +95,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 163 tests in about a minute (63 s measured), without the
+`Tools/test.sh` runs 169 tests in a little over a minute (75 s measured), without the
 app, a screen or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
@@ -103,7 +103,7 @@ synthetic buffers and read them back.
 | Area | Tests | What they cover |
 | --- | ---: | --- |
 | Microphone converter | 23 | Format changes (24 → 48 → 24 kHz, 44.1 kHz stereo), gaps as silence, jitter, a backlog with its own timestamps dropped where silence was filled with no offset after it (drained at 3, 1.1 and 1.05 times real time, held 13 s or 40 s), a lagging clock shifted, full-length track, silence generation |
-| System audio and timeline | 7 | Placement at the end of what was written, holes filled past 0.1 s, pause offsets |
+| System audio and timeline | 8 | Placement at the end of what was written, holes filled past 0.1 s, pause offsets; stream audio stamped 1.2 s behind at real-time pace placed by its arrival within 2 s, a backlog never |
 | Writer | 14 | One file with three tracks of the same length, pause, mute, a source that stops, late frames, no empty file, every audio format |
 | Session | 17 | Every state in order, stop while starting, repeated stops, failures, quitting while recording, starting or exporting, pause and the timer |
 | Monitor | 11 | Fills and warnings for each track, the start warning, late ticks, resume, a source that keeps dropping out notified once, a microphone back with only zeros not back, system audio missing only when neither the tap nor its backup delivers (a quiet tap only logged) |
@@ -112,9 +112,10 @@ synthetic buffers and read them back.
 | Settings | 7 | Keys, defaults and stored types of earlier installations |
 | Status item | 7 | Every state's symbol, title and sentence, the timer text, the item's width, the call-audio warning |
 | Package | 1 | `.qma` info files of earlier versions |
-| Timestamps and length | 13 | The timeline never past the present: a tap buffer stamped 1100 s in the future near the end of a call recorded at its arrival time (through the writer and through the tap's source), a frame and a tap buffer stamped 12 s ahead as a call connects (no video hole, no fill past the present, the microphone not shifted), a microphone stamped 400 s before its arrival, a microphone backlog 40 s old left to the converter, a frame or audio of unknown arrival in the future left out, fills and repeats cut off a second after the present, the stop's padding up to the video's end (sound only: the present), a mix whose audio is over 2 s longer or shorter than its video rejected and the recording kept unmixed |
-| System audio tap | 19 | Build and teardown order against fake Core Audio calls with each clock (built-in output, no sub-device, default output) and the order of constructions, cleanup after each failed step, the IOProc's stream usage (only the tap's stream), the IOProc's copy (interleaved, non-interleaved, behind other input streams, turned-off streams, malformed lists), nothing handed on once the rate changes or the clock device goes away, host-time stamps, conversion and resampling to 48 kHz stereo, the choice between the tap with its backup and screen capture alone, with its notice and warning; the repair: a tap that hands on nothing rebuilt at once and the next construction after two failures, around and around, the waits (at once, then 0.5 s doubling to 10 s), a tap that cannot be built at the start built in the background, a rate change, nothing of an old tap after the new one, the real tap on fake hardware falling back from the built-in output to no sub-device to the default output, and a tap whose IOProc is never called; a sound-only file written from the tap's buffers |
+| Timestamps and length | 13 | The timeline never past the present: a buffer of the stream's audio stamped 1100 s in the future near the end of a call recorded at its arrival time, a tap buffer its device stamped 1100 s ahead recorded like the others (its source hands it on ending when it arrived), a frame and an audio buffer stamped 12 s ahead as a call connects (no video hole, no fill past the present, the microphone not shifted), a microphone stamped 400 s before its arrival, a microphone backlog 40 s old left to the converter, audio of unknown arrival in the future left out and such a frame written at the present, fills and repeats cut off a second after the present, the stop's padding up to the video's end (sound only: the present), a mix whose audio is over 2 s longer or shorter than its video rejected and the recording kept unmixed |
+| System audio tap | 19 | Build and teardown order against fake Core Audio calls with each clock (built-in output, no sub-device, default output) and the order of constructions, cleanup after each failed step, the IOProc's stream usage (only the tap's stream), the IOProc's copy (interleaved, non-interleaved, behind other input streams, turned-off streams, malformed lists), nothing handed on once the rate changes or the clock device goes away, buffers stamped with the host time the IOProc is called at whatever the device's time stamp says, conversion and resampling to 48 kHz stereo, the choice between the tap with its backup and screen capture alone, with its notice and warning; the repair: a tap that hands on nothing rebuilt at once and the next construction after two failures, around and around, the waits (at once, then 0.5 s doubling to 10 s), a tap that cannot be built at the start built in the background, a rate change, nothing of an old tap after the new one, the real tap on fake hardware falling back from the built-in output to no sub-device to the default output, and a tap whose IOProc is never called; a sound-only file written from the tap's buffers |
 | Backup of the system audio | 11 | The tap's spans and the choice of source stretch by stretch; three titled tracks and the spans through the real writer; today's meeting (the tap dead from 27 s to 28 s): the mix holds the backup exactly there and the tap elsewhere, the switches within 0.02 s; a tap dead from the start; FaceTime (backup silent) the tap's, both alive the tap's alone at its level, both dead silence; the check rejecting a mix without the system audio or with it twice; the microphone kept apart; a sound-only recording started by the backup and merged; a killed recording recovered with its spans |
+| Placed by arrival | 5 | Through the real tap source, writer and monitor, each failing on the version before: the tap's device time stamps jump 10 s back, 5 s ahead and 1100 s back mid-recording and return (every sample in the file, once, in order, within one buffer of its arrival, no silence added, one unbroken span); tap buffers that wait 300 ms between the IOProc and the sample queue (nothing left out or shifted, the monitor's clock not set back); ScreenCaptureKit audio stamped a steady 10 s behind at real-time pace (recorded by its arrival within 2 s); a ScreenCaptureKit backlog of 5 s handed over in half a second after a 5 s stall (left out where silence was written, the audio after it in place); a frame stamped 12 s ahead and one 12 s behind (written at their arrival, every later frame in order, none left out) |
 
 ## Not yet checked on the real machine
 
@@ -173,35 +174,48 @@ minutes.
 
 The simulated meeting runs 90 minutes, of which 2 are paused: 64 × 36 frames
 at 5 fps with a time code in each, and a 5-minute static slide with no frames;
-48 kHz stereo system audio with a tone every minute, from the process tap and,
-with noise of its own and buffers arriving on their own schedule, from its
-backup; a 24 kHz mono microphone with its own tone every minute, whose clock
+48 kHz stereo system audio with a tone every minute, from the process tap
+(through its real source: each buffer stamped in the IOProc's place and handed
+to the sample queue 5 to 25 ms later) and, with noise of its own and buffers
+arriving on their own schedule, from its backup; a 24 kHz mono microphone with its own tone every minute, whose clock
 runs 50 ppm fast, with irregular buffer sizes and arrival. At 10 minutes a call
 app takes the microphone (10 s with nothing, then 3 minutes at 48 kHz), at 33
 minutes the AirPods disconnect for 30 s, from 2,215 to 2,245 s the tap
 delivers nothing (an outage, then the tap is back), and the microphone is
-muted for 1 minute after the pause.
+muted for 1 minute after the pause. The tap's device stamps its buffers 10 s
+in the past from 1,745 to 1,815 s and 5 s in the future from 3,605 to 3,675 s
+while their audio keeps coming, as it did around call events on the real
+machine (6,563 buffers in all).
 
 - **Lengths:** 88 minutes expected (5,279.9 s from the first frame). Video
   5,280.022 s, the tap's track 5,279.879 s, the backup's 5,279.857 s,
   microphone 5,279.952 s; the mixed file the same. Every track within 0.13 s.
 - **Sync, from the files:** the picture is where its time code says to the
-  millisecond. System audio within 0.2 ms of its place until the pause and
-  21.3 ms early after it (one 1024-frame buffer, the pause's alignment, within
+  millisecond. System audio within 0.3 ms of its place until the pause and
+  22 ms early after it (one 1024-frame buffer, the pause's alignment, within
   the 0.1 s the writer allows; the tap's and the backup's markers lie within
-  0.1 ms of each other). The microphone is late by its clock drift, up to
+  0.3 ms of each other). The microphone is late by its clock drift, up to
   68 ms, and back in place after each gap, pause or mute.
+- **The tap's device clock:** the four markers that sounded while it was 10 s
+  behind and 5 s ahead are in the tap's track where they belong (0.3 ms, and
+  21.9 ms early after the pause like every other), the track has no silence
+  there, its spans have no break, and the log has nothing to say: those time
+  stamps are not read. Run against the version before, the same meeting has
+  the tap's track silent for the 70 s its device clock was behind (both
+  markers missing, a break in its spans), which is how the other side of a
+  meeting was lost.
 - **The tap's outage:** the tap's track is digital silence exactly from the
   end of its last buffer to its first one after the outage (2,214.919 to
   2,244.913 s of the file, found to within 21 ms), and its spans file has that
-  gap to the sample; marker 37, which fell in it, is missing from the tap's
+  gap to within 0.2 ms (the first buffer after it goes where its IOProc was
+  called); marker 37, which fell in it, is missing from the tap's
   track and present in the backup's and in the mix. The monitor logged the
   tap's silence after 5 s and its return, and raised no warning.
 - **Mix:** 5,249.9 s from the tap, 30.0 s from the backup in one stretch,
-  2,214.919 to 2,244.913 s. The check after the mix passed (29 of 30 windows had
+  2,214.919 to 2,244.914 s. The check after the mix passed (29 of 30 windows had
   the microphone alone, all audible in the mix; the one with system audio alone
   had it at its level); every marker of every source is in the mixed file
-  within 0.1 ms of where it is in the recording, and the mixed track has no
+  within 0.2 ms of where it is in the recording, and the mixed track has no
   digital silence. The spans file was removed afterwards.
 - **Silence:** the microphone track is digital silence exactly where the
   microphone delivered nothing or was muted (10 s, 30 s, 60 s), to within the
@@ -211,14 +225,15 @@ muted for 1 minute after the pause.
   status item only) and for the disconnect, notified with its all-clear; none
   for the mute, and none for the tap's outage, which the backup covered (the
   log has it); the static slide's last frame was written again once a second
-  (375 frames).
+  (374 frames).
 - **Killed at 45 minutes**, after the outage, writer not finished: the file
   opened, recovery mixed it with the spans the run left (the outage from the
   backup) and removed them, and 2,694 s of the 2,699.9 s recorded were in it
-  (the last 5.9 s of video, 8 s of the tap, 10 s of the backup and 7 s of
-  microphone lost).
-- **Resources:** the whole run, mix and checks included, took 113 s (the mix
-  of the 88 minutes about 37 s, its first pass reading both system audio
-  tracks included). Memory: 61 to 71 MB once the writer had caught up; 180 to
-  200 MB at most (two runs) while it was fed about 120 times faster than real
+  (the last 5.7 s of video, 8 s of the tap, 10 s of the backup and 7 s of
+  microphone lost); the two markers of the first clock jump are in place in
+  it.
+- **Resources:** the whole run, mix and checks included, took 109 s (the mix
+  of the 88 minutes about 34 s, its first pass reading both system audio
+  tracks included). Memory: 48 to 57 MB once the writer had caught up; 224 MB
+  at most (two runs) while it was fed about 120 times faster than real
   time.

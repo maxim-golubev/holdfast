@@ -182,18 +182,23 @@ func writerTests() async {
         expect(inspection.mixable && !inspection.fragmented, "a closed recording is an ordinary movie the mix can read")
     }
 
-    await test("Writer: a frame that does not end after the last one taken is left out") {
+    await test("Writer: a frame that is not later than the one before it is written right after it, never left out") {
         let run = try TestRecording(folder: "writer-old-frame", microphone: false)
         try run.writer.prepareVideo(width: 320, height: 240)
         run.writer.startCapturing()
         try run.frame(0)
         expectEqual(run.writer.videoPTS, run.at(0), "the first frame")
+        let step = CMTime(value: 1, timescale: 100)
+        // A little slower than they can be made: the input is that of a live recording
+        usleep(30_000)
         try run.frame(-0.05)
-        expectEqual(run.writer.videoPTS, run.at(0), "one that ends before it is left out")
+        expectEqual(run.writer.videoPTS, CMTimeAdd(run.at(0), step), "one stamped before it goes right after it")
+        usleep(30_000)
         try run.frame(0)
-        expectEqual(run.writer.videoPTS, run.at(0), "and one that ends with it")
+        expectEqual(run.writer.videoPTS, CMTimeAdd(run.at(0), CMTimeAdd(step, step)), "and one with its time after that")
+        usleep(30_000)
         try run.frame(0.05)
-        expectEqual(run.writer.videoPTS, run.at(0.05), "one that ends after it is taken")
+        expectEqual(run.writer.videoPTS, run.at(0.05), "a later one is at its own time")
         _ = try await run.close()
         expect(run.failures.isEmpty, "no failure: \(run.failures)")
     }
@@ -246,7 +251,7 @@ func writerTests() async {
         try run.frame(3.3)
         expectEqual(writer.videoPTS, CMTimeAdd(run.at(3.5), CMTime(value: 1, timescale: 100)), "a frame that is only just behind is moved, not lost")
         try run.frame(2.0)
-        expectEqual(writer.videoPTS, CMTimeAdd(run.at(3.5), CMTime(value: 1, timescale: 100)), "one that is more than a second behind is left out")
+        expectEqual(writer.videoPTS, CMTimeAdd(run.at(3.5), CMTime(value: 2, timescale: 100)), "nor is one that is more than a second behind")
         _ = try await run.close()
         expect(run.failures.isEmpty, "no failure: \(run.failures)")
         let tracks = try await TestRecording.tracks(of: run.recording.rawURL)

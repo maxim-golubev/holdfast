@@ -368,9 +368,11 @@ and why, and stretches in which the tap was quiet while its backup recorded;
 where the mix took the system audio from; its stop, with the reason when it
 stopped by itself; where it was saved; microphone device switches and format changes; microphone audio that
 came in late (a backlog dropped, or a microphone clock found to lag and recorded
-that much late); system audio or microphone buffers whose timestamps were
-too far from when they arrived to be believed, which are recorded at their
-arrival time instead, and anything left out for lying in the future; mute and
+that much late); system audio from screen capture, frames or microphone
+buffers whose timestamps were too far from when they arrived to be believed,
+which are recorded at their arrival time instead, screen-capture audio that
+came in late (a backlog left out where silence stood for it, or a clock found
+to lag), and anything left out for lying in the future; mute and
 unmute; every
 track warning and its end; every failure that was reported; and at the end of
 each recording with a microphone, a summary of its microphone track: buffers
