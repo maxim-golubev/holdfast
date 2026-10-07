@@ -9,7 +9,8 @@ import Foundation
 import AppKit
 import ScreenCaptureKit
 
-/// Whether a recording can be started now (`RecorderController.startRefusal`). When not, the script gets an error,
+/// Whether a recording can be started now (`RecorderController.startRefusal`): not while one is starting or running
+/// or the app waits to quit; a recording that is still being saved holds up nothing. When not, the script gets an error,
 /// and no alert: the script reports it, and an alert would come up over the app in front. Script commands run on
 /// the main thread.
 private func scriptCanStart(_ command: NSScriptCommand) -> Bool {
@@ -17,7 +18,6 @@ private func scriptCanStart(_ command: NSScriptCommand) -> Bool {
     command.scriptErrorNumber = errOSAGeneralError
     switch refusal {
     case .recording: command.scriptErrorString = "A recording is already running."
-    case .saving: command.scriptErrorString = "The previous recording is still being saved."
     case .quitting: command.scriptErrorString = "Holdfast is quitting."
     }
     return false

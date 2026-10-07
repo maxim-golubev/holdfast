@@ -56,8 +56,9 @@ struct RecordingContext {
 
     /// Reads the settings kept for the recording from `AppSettings`. What depends on how this recording
     /// was started is handed in: `recordMic` is whether it got a microphone, `saveDirectory` the folder
-    /// `RecorderController.start` has checked, `tap` whether its system audio is to come from the process tap.
-    init(audioOnly: Bool, recordMic: Bool, fastStart: Bool, saveDirectory: String, tap: Bool = false) {
+    /// `RecorderController.start` has checked, `tap` whether its system audio is to come from the process tap,
+    /// `reserved` the names of the recordings that are not final yet (`RecordingFileStore.newBase`).
+    init(audioOnly: Bool, recordMic: Bool, fastStart: Bool, saveDirectory: String, tap: Bool = false, reserved: Set<String> = []) {
         let systemAudio = RecordingContext.wantsSystemAudio(audioOnly: audioOnly, fastStart: fastStart)
         let systemAudioBackup = systemAudio && tap
         let remuxAudio = AppSettings.remuxAudio
@@ -77,7 +78,7 @@ struct RecordingContext {
         self.audioQuality = AppSettings.audioQuality.rawValue
         self.keepUnmixed = AppSettings.keepUnmixed
 
-        files = RecordingFiles(base: RecordingFileStore(directory: saveDirectory).newBase(), audioOnly: audioOnly,
+        files = RecordingFiles(base: RecordingFileStore(directory: saveDirectory).newBase(reserved: reserved), audioOnly: audioOnly,
                                recordMic: recordMic, systemAudio: systemAudio, remuxAudio: remuxAudio,
                                videoEnding: videoFormat.rawValue, audioFormat: audioFormat, systemAudioBackup: systemAudioBackup)
     }

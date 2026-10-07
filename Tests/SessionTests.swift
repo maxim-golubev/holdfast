@@ -60,10 +60,10 @@ final class FakeWriter: RecordingWriter {
     let hasSystemAudio = false
     var hasMicrophoneTrack: Bool { recording.recordMic }
 
-    init(_ journal: Journal, queue: DispatchQueue, folder: URL, microphone: Bool = false, audioOnly: Bool = false) {
+    init(_ journal: Journal, queue: DispatchQueue, folder: URL, microphone: Bool = false, audioOnly: Bool = false, reserved: Set<String> = []) {
         self.journal = journal
         self.queue = queue
-        recording = RecordingContext(audioOnly: audioOnly, recordMic: microphone, fastStart: false, saveDirectory: folder.path)
+        recording = RecordingContext(audioOnly: audioOnly, recordMic: microphone, fastStart: false, saveDirectory: folder.path, reserved: reserved)
     }
 
     private func onQueue() { dispatchPrecondition(condition: .onQueue(queue)) }
@@ -97,16 +97,22 @@ final class FakeWriter: RecordingWriter {
     func fail(_ reason: String) { queue.sync { isCapturing = false; events.failed(reason) } }
 }
 
-/// A recorder whose surroundings only take notes. `holdSave` keeps a stopped recording in `finalizing` until `releaseSave()`.
+/// A recorder whose surroundings only take notes. `holdSave` keeps every recording whose save begins while it is
+/// set in `finalizing`, until `releaseSave()` (all of them) or `releaseOldestSave()`.
 @MainActor
 final class Rig {
     /// What the app's save is told and when it returns
     @MainActor
     final class Saves {
         var hold = false
-        var waiting: CheckedContinuation<Void, Never>?
+        /// The saves that are held, oldest first
+        var waiting = [CheckedContinuation<Void, Never>]()
         /// Why the recording ended early, and whether it was a cancelled start
         var all = [(reason: String?, cancelled: Bool)]()
+        /// The sessions that were saved, in the order their saves began
+        var sessions = [RecordingSession]()
+        /// Sleep assertions held now (`RecorderEnvironment.keepAwake`)
+        var awake = 0
     }
 
     let journal = Journal()
@@ -119,6 +125,9 @@ final class Rig {
         set { saves.hold = newValue }
     }
     var saved: [(reason: String?, cancelled: Bool)] { saves.all }
+    var savedSessions: [RecordingSession] { saves.sessions }
+    /// How many recordings keep the Mac awake for their save
+    var awake: Int { saves.awake }
 
     init(_ name: String) throws {
         folder = try Suite.folder(name)
@@ -137,26 +146,42 @@ final class Rig {
             if isIdle && !wasIdle { journal.note("idle") }
             wasIdle = isIdle
         }
+        environment.keepAwake = { [saves] in
+            saves.awake += 1
+            return { saves.awake -= 1 }
+        }
         environment.save = { [journal, saves] session, _, _, reason, cancelled in
             journal.note("save")
             saves.all.append((reason, cancelled))
+            saves.sessions.append(session)
             expect(session.state == .finalizing, "the file is closed in the finalizing state")
-            if saves.hold { await withCheckedContinuation { saves.waiting = $0 } }
+            if saves.hold { await withCheckedContinuation { saves.waiting.append($0) } }
         }
         controller = RecorderController(queue: queue, environment: environment)
     }
 
     func releaseSave() {
         saves.hold = false
-        saves.waiting?.resume()
-        saves.waiting = nil
+        let waiting = saves.waiting
+        saves.waiting = []
+        waiting.forEach { $0.resume() }
     }
+
+    /// Lets the save that has been held longest return; the others stay held
+    func releaseOldestSave() {
+        guard !saves.waiting.isEmpty else { return }
+        saves.waiting.removeFirst().resume()
+    }
+
+    /// Whether `count` saves are being held
+    func holds(_ count: Int) async -> Bool { await wait { self.saves.waiting.count == count } }
 
     /// What the app does between an accepted start and the running capture
     @discardableResult
     func start(autoStop: Int = 0, enter: Bool = true, microphone: Bool = false, audioOnly: Bool = false) throws -> (session: RecordingSession, capture: FakeCapture, writer: FakeWriter) {
         let session = try require(controller.begin(audioOnly ? .systemaudio : .screen, autoStop: autoStop), "an accepted start")
-        let writer = FakeWriter(journal, queue: queue, folder: folder, microphone: microphone, audioOnly: audioOnly)
+        // It writes no file, so only the recorder knows which names are taken
+        let writer = FakeWriter(journal, queue: queue, folder: folder, microphone: microphone, audioOnly: audioOnly, reserved: controller.basesInUse)
         session.install(writer)
         let capture = FakeCapture(journal)
         session.attach(capture)
@@ -218,18 +243,18 @@ func sessionTests() async {
         expect(rig.controller.state == .stopping, "stopping at once")
         expect(rig.controller.isSaving, "the UI shows that the recording is being saved")
         expect(rig.controller.streamType == nil && !rig.controller.hasStream, "the recording pill is gone")
+        expect(rig.controller.session == nil && rig.controller.finishing.count == 1, "it has left the place of the running recording")
         await rig.settle()
         expect(rig.controller.state == .stopping, "the writer is not touched before the capture has stopped")
         expectEqual(rig.journal.count("writer.finish"), 0, "the inputs are not finished before the capture has stopped")
         capture.answer()
         expect(await rig.wait { rig.controller.state == .finalizing }, "finalizing once the inputs are finished")
-        expectEqual(rig.controller.startRefusal, .saving, "why, for a script, without telling the user")
-        expectEqual(rig.journal.count("refused"), 0, "which only canStart does")
-        expect(!rig.controller.canStart(), "no start while the file is being saved")
+        expectEqual(rig.controller.startRefusal, nil, "a recording that is being saved refuses no start, to a script either")
+        expect(rig.controller.canStart(), "nor to anything else")
         rig.releaseSave()
         expect(await rig.idle(), "idle when the files are final")
-        expectEqual(rig.journal.all, ["writer.start", "tearDown", "capture.stop", "writer.finish", "save", "refused", "idle"], "order of a recording's end")
-        expect(rig.controller.session == nil, "nothing of the recording is left")
+        expectEqual(rig.journal.all, ["writer.start", "tearDown", "capture.stop", "writer.finish", "save", "idle"], "order of a recording's end")
+        expect(rig.controller.session == nil && rig.controller.finishing.isEmpty, "nothing of the recording is left")
     }
 
     await test("session: the next recording starts with nothing of the one before") {
@@ -342,25 +367,19 @@ func sessionTests() async {
         expectEqual(rig.journal.count("capture.stop"), 1, "and not stopped again (the one stop is the first recording's)")
     }
 
-    await test("session: a start is refused until the previous recording is final") {
+    await test("session: a second start is refused only while a recording is starting or running") {
         let rig = try Rig("session-refused")
         try rig.start()
         expect(rig.controller.begin(.window) == nil, "no second start while recording")
         expectEqual(rig.journal.count("refused") + rig.journal.count("abandoned"), 0, "and what is on screen is the running recording's")
-        rig.holdSave = true
         rig.controller.stop()
-        expect(rig.controller.begin(.window) == nil, "no start while stopping")
-        expect(await rig.wait { rig.controller.state == .finalizing }, "finalizing")
-        let finishing = rig.controller.session
-        expect(rig.controller.begin(.window) == nil, "no start while finalizing")
-        expect(rig.controller.session === finishing && rig.controller.state == .finalizing, "the recording being saved is not disturbed")
-        expectEqual(rig.journal.count("refused"), 2, "the user is told each time")
-        expectEqual(rig.journal.count("abandoned"), 2, "and the selector's frame goes")
-        rig.releaseSave()
         expect(await rig.idle(), "idle")
-        let next = rig.controller.begin(.window)
-        expect(next != nil && rig.controller.state == .starting, "a start is accepted again")
-        expect(rig.controller.streamType == .window, "with its own kind")
+        let (starting, _, _) = try rig.start(enter: false)
+        expect(rig.controller.begin(.window) == nil, "nor while one is starting")
+        expect(rig.controller.session === starting, "which is not disturbed")
+        expectEqual(rig.journal.count("refused") + rig.journal.count("abandoned"), 0, "nothing is said, nothing on screen goes")
+        starting.abandonStart()
+        expect(rig.controller.state == .idle, "idle")
     }
 
     await test("session: an abandoned start leaves nothing behind") {

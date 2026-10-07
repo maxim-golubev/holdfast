@@ -22,20 +22,22 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// that would move the items below it. The sets differ in what is under the pointer, so an open menu is never
     /// turned from one into another.
     private enum Layout {
-        case recording, saving, idle
+        /// A recording is starting or running: what stops and controls it
+        case recording
+        /// None is: what starts one, also while earlier recordings are still being saved
+        case idle
 
         init(_ state: RecordingState) {
             switch state {
             case .starting, .recording: self = .recording
-            case .stopping, .finalizing: self = .saving
-            case .idle: self = .idle
+            case .stopping, .finalizing, .idle: self = .idle
             }
         }
     }
 
     /// The items whose text changes while the menu is open
     private enum Tag: Int {
-        case pause = 1, mute, line
+        case pause = 1, mute, line, saving
     }
 
     private var item: NSStatusItem?
@@ -290,8 +292,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menuIsOpen = false
     }
 
-    /// While a recording starts or runs: Stop first and largest, Pause, Mute, then the status line. While it is
-    /// being saved: the status line. Otherwise what starts a recording, the settings and Quit.
+    /// While a recording starts or runs: Stop first and largest, Pause, Mute, then the status line, and last a
+    /// line for earlier recordings that are still being saved. Otherwise the status line ("Ready to record", or
+    /// what is being saved, recovered or exported), what starts a recording, the settings and Quit.
     private func fill(_ menu: NSMenu, forDock: Bool = false) {
         let display = StatusDisplay(recorder.statusInput)
         let layout = Layout(recorder.state)
@@ -323,10 +326,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             add("", symbol: nil, #selector(toggleMicrophoneMute), tag: .mute)
             menu.addItem(.separator())
             addStatusLine()
-        case .saving:
-            addStatusLine()
+            // The last item, so that nothing moves when it comes or goes while the menu is open
+            let saving = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            saving.isEnabled = false
+            saving.tag = Tag.saving.rawValue
+            menu.addItem(saving)
         case .idle:
-            // "Ready to record", or the recovery or export that runs
+            // "Ready to record", or the saving, recovery or export that runs
             addStatusLine()
             menu.addItem(.separator())
             add("Open Main Panel", symbol: "rectangle.on.rectangle", #selector(openMainPanel))
@@ -374,6 +380,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             set(.mute, title: "Mute Microphone", symbol: "mic.slash", enabled: recorder.canMuteMicrophone)
         }
         if let line = menu.item(withTag: Tag.line.rawValue), line.title != display.line { line.title = display.line }
+        if let saving = menu.item(withTag: Tag.saving.rawValue) {
+            if let text = display.saving, saving.title != text { saving.title = text }
+            if saving.isHidden != (display.saving == nil) { saving.isHidden = display.saving == nil }
+        }
     }
 
     // MARK: - Commands
@@ -394,7 +404,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         AppDelegate.shared.openMainPanel()
     }
 
-    // The menu may have been open while the recorder left the idle state
+    // The menu may have been open while a recording started
     @objc private func recordSystemAudio() { AppDelegate.shared.startIfAllowed { $0.recordSystemAudio() } }
     @objc private func chooseScreen() { AppDelegate.shared.startIfAllowed { $0.chooseScreen() } }
     @objc private func chooseArea() { AppDelegate.shared.startIfAllowed { $0.chooseArea() } }

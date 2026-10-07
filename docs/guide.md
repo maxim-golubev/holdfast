@@ -71,9 +71,10 @@ Then check three settings once:
 on screen before a start from the panel, the menu, or a script command that
 names a screen, application or window; its **Cancel** button, the **Stop
 Recording** shortcut or `stop recording` calls the start off. The shortcuts
-that start a recording, and `record system audio`, begin at once. A start is
-refused with a message while the previous recording is still being saved: a
-second recording can only start once the first one's files are final.
+that start a recording, and `record system audio`, begin at once. A recording
+starts the moment it is asked for, also while earlier recordings are still
+being saved: each is closed and mixed by itself, under its own name, while the
+next one runs. Only one recording runs at a time.
 
 If **Record Microphone** is on and the microphone cannot be recorded (no
 permission, no input device), the start stops at **Microphone Not Available**,
@@ -107,10 +108,13 @@ Clicking the item opens its menu. While recording: **Stop Recording** first,
 then **Pause Recording** / **Resume Recording**, **Mute Microphone** / **Unmute
 Microphone**, and a status line: "Recording — microphone OK", "microphone
 silent" (nothing, or only digital zeros, in the last half second), "microphone
-muted" or "no microphone". While saving, the line says "Saving the recording",
-then "Mixing the audio tracks of the recording" with a percentage. Clicking the
-item never stops a recording by itself, and **Quit Holdfast** is not in the menu
-while recording.
+muted" or "no microphone". While an earlier recording is still being saved, a
+line under it says so: "Saving the previous recording — 42%" (the percentage is
+its audio mix). With nothing recording, the menu starts a recording as when idle
+and its status line says "Saving the recording", then "Mixing the audio tracks of
+the recording" with a percentage ("Saving 2 recordings" when there are several).
+Clicking the item never stops a recording by itself, and **Quit Holdfast** is not
+in the menu while recording.
 
 ## The microphone warning and mute
 
@@ -160,7 +164,10 @@ macOS refuses is tried again three times, two seconds apart.
 **Stop Recording** in the menu, the **Stop Recording** shortcut, `stop
 recording`, or the timer all stop the same way. The item says **Saving** while
 the file is closed and its audio mixed; for a long meeting the mix takes a while,
-with its percentage in the menu. Then a preview of the recording appears at the
+with its percentage in the menu. The next recording can be started meanwhile:
+the item then shows that recording, and the menu how far the earlier one is. A
+failure of the earlier one is reported as that recording's, by name, and does
+not touch the one that runs. Then a preview of the recording appears at the
 bottom right of the screen for a few seconds: its first frame (click it to open
 the file), its file name, and where it was saved (**Saved to Desktop**). The
 folder button shows it in Finder. **Done** only closes the preview; the
@@ -172,7 +179,7 @@ with **Notifications** set to **Problems and Finished Recordings** a quiet
 **Recording Completed** notification (no sound) says where the file is.
 
 Quitting during a recording (from the Dock icon, at logout, or with `kill`) stops it
-and quits only once the final file is there. So does quitting while a recording
+and quits only once the final files of every recording are there. So does quitting while a recording
 from an earlier run is being recovered or an export is being written.
 
 A recording also stops by itself, and says why in **Recording Stopped Early**,
@@ -301,11 +308,13 @@ end tell
 - `record screen`, `record application` and `record window` without a
   parameter open the matching selector; `record screen area` always does.
   `record system audio` starts at once; `microphone` applies to that recording
-  only. Every record command returns an error while a recording runs or is
-  being saved, and one that names a screen, application or window it cannot
-  find shows **Failed to Record**.
+  only. Every record command returns an error while a recording is starting
+  or running, and starts while earlier recordings are still being saved; one
+  that names a screen, application or window it cannot find shows **Failed to
+  Record**.
 - `stop recording` returns at once and the file is saved in the background. It
-  also cancels a countdown, and does nothing when idle. With the audio mixed,
+  also cancels a countdown, and does nothing when no recording is starting or
+  running (one that is being saved is not touched). With the audio mixed,
   the file is final once no `.recording.` or `.mixing.` file is left in the
   save folder.
 - `mute microphone` and `unmute microphone` each say what the track is to be,

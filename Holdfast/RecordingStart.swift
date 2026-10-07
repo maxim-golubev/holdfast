@@ -24,8 +24,8 @@ extension RecorderController {
     static let shared = RecorderController(queue: DispatchQueue(label: "Holdfast.samples"), environment: .app)
 
     /// The one way a recording starts: the selectors, the hotkeys, the script commands and the countdown all end
-    /// here. It does nothing unless the recorder is idle (`begin`), so a second start while one is starting,
-    /// recording or still being saved cannot get in.
+    /// here. It does nothing while a recording is starting or running (`begin`); recordings that were stopped and
+    /// are still being saved hold it up for nothing.
     /// `recordMic` overrides the "recordMic" setting for this recording only. `autoStop` is the number of minutes
     /// after which this recording stops by itself (0: never); it is not set anywhere else. `area` is what an area
     /// recording captures, relative to `display`.
@@ -124,7 +124,9 @@ extension RecorderController {
         let audioOnly = target.type == .systemaudio
         let permission = SystemAudioPermission.status()
         let tap = SystemAudioSelection.usesTap(wanted: RecordingContext.wantsSystemAudio(audioOnly: audioOnly, fastStart: fastStart), permission: permission)
-        let recording = RecordingContext(audioOnly: audioOnly, recordMic: microphone != nil, fastStart: fastStart, saveDirectory: store.directory, tap: tap)
+        // No name of a recording that is still being saved, whatever files it has at this moment
+        let recording = RecordingContext(audioOnly: audioOnly, recordMic: microphone != nil, fastStart: fastStart, saveDirectory: store.directory, tap: tap,
+                                         reserved: basesInUse)
         let writer = MovieWriter(recording: recording, micConverter: microphone?.converter)
         session.install(writer)
         if recording.audioOnly {
@@ -243,7 +245,12 @@ extension RecorderController {
                     UserNotice.showNotification(.problem, title: SystemAudioSelection.noticeTitle, body: notice, id: "holdfast.callaudio.\(UUID().uuidString)")
                 }
                 if !audioOnly { AppDelegate.shared.startRecordingMouseMonitor() }
-                if recording.preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
+                if recording.preventSleep {
+                    // This recording's own, given up at its stop: the save of an earlier recording, which holds
+                    // another, neither stands in for it nor releases it
+                    let awake = SleepAssertion(reason: "Screen recording in progress")
+                    session.whenStopped { awake.release() }
+                }
                 if recording.recordMic { MicDevices.recordingStarted() }
                 // The file that is written to all along: in a package, its system audio file
                 let file = recording.systemAudioURL ?? recording.rawURL
@@ -273,8 +280,6 @@ extension RecorderEnvironment {
             switch reason {
             case .recording:
                 break
-            case .saving:
-                UserNotice.showAlertLater(title: "Failed to Record", message: "The previous recording is still being saved. Start the new one when \"Saving\" has gone from the menu bar.")
             case .quitting:
                 UserNotice.showAlertLater(title: "Failed to Record", message: "Holdfast is quitting: it quits as soon as what it is saving or recovering is done, and a new recording would end with it. Open Holdfast again to record.")
             }
@@ -285,6 +290,10 @@ extension RecorderEnvironment {
             AppDelegate.shared.stopAreaSelectorMonitor()
             AppDelegate.shared.stopRecordingMouseMonitor()
             closeAreaOverlay()
+        }
+        app.keepAwake = {
+            let awake = SleepAssertion(reason: "Finishing a recording", display: false)
+            return { awake.release() }
         }
         app.save = { session, recording, taken, earlyReason, cancelled in
             await RecordingSaver.save(session, recording: recording, taken: taken, earlyReason: earlyReason, cancelled: cancelled)

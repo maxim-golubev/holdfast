@@ -41,7 +41,7 @@ final class RecordingRecovery {
         let settings = Dictionary(found.filter { !$0.isAudio }.map { ($0.ending, MovieWriter.audioSettings(videoFormat: $0.ending.lowercased())) }, uniquingKeysWith: { first, _ in first })
         isRunning = true
         runningChanged()
-        // A token of its own: the sleep assertion of SleepPreventer belongs to the recording that may run meanwhile
+        // A token of its own, like every recording's (`SleepAssertion`): a recording may run meanwhile
         let activity = ProcessInfo.processInfo.beginActivity(options: .idleSystemSleepDisabled, reason: "Finishing a recording from an earlier run")
         Task.detached {
             let lines = await RecordingRecovery.recover(found, audioSettings: settings, separateMicrophone: !AppSettings.remuxAudio) { fraction in

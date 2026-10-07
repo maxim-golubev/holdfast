@@ -12,13 +12,15 @@ struct RecorderEnvironment {
     /// Something the status item shows has changed: the state, the recovery, a request to quit, pause, mute,
     /// warning, microphone level, progress
     var statusChanged: @MainActor (RecorderController) -> Void = { _ in }
-    /// A start was asked for while the previous recording is still being saved (`.saving`), or while the app
-    /// waits to quit (`.quitting`)
+    /// A start was asked for while the app waits to quit (`.quitting`)
     var startRefused: @MainActor (StartRefusal) -> Void = { _ in }
     /// A start was refused or did not lead to a recording: what a selector left on screen goes
     var startAbandoned: @MainActor () -> Void = {}
     /// The recording is being stopped: what it had on screen goes
     var tearDown: @MainActor () -> Void = {}
+    /// Keeps the Mac from sleeping until the closure it returns is called: each recording holds one of its own
+    /// from its stop until its files are final
+    var keepAwake: @MainActor () -> (@MainActor () -> Void) = { {} }
     /// Closes what the writer left and post-processes it; returns when the files are final. The arguments after
     /// the recording: what the writer handed over, why it ended early if it did, whether it was a cancelled start.
     var save: @MainActor (RecordingSession, RecordingContext, MovieWriter.Finished, String?, Bool) async -> Void = { _, _, _, _, _ in }
@@ -37,21 +39,25 @@ struct RecorderEnvironment {
 enum StartRefusal {
     /// One is starting or running. Nothing offers a start then, so `canStart` says nothing.
     case recording
-    /// The previous recording is still being saved, or the app waits to quit: `canStart` tells the user (`startRefused`)
-    case saving, quitting
+    /// The app waits to quit: `canStart` tells the user (`startRefused`)
+    case quitting
 }
 
 /// The one way into the recording side for the UI, the hotkeys, the script commands, the auto-stop timer, the
-/// abort paths and quitting. It holds the current `RecordingSession`, or none while idle; whatever belongs to one
-/// recording is in that session and goes with it.
+/// abort paths and quitting. It holds the `RecordingSession` that is starting or running, if any, and those that
+/// were stopped and are still being saved (`finishing`); whatever belongs to one recording is in its session and
+/// goes with it. A recording that was stopped goes on closing and mixing by itself: it holds up no start, and
+/// nothing asked of the recorder from then on reaches it.
 @MainActor
 final class RecorderController {
     /// The one queue all stream outputs are delivered on, on which every session's writer and monitor live
     let queue: DispatchQueue
     let environment: RecorderEnvironment
     let recovery = RecordingRecovery()
-    /// From an accepted start until that recording's files are final
+    /// The recording that is starting or running: from an accepted start until its stop is carried out
     private(set) var session: RecordingSession?
+    /// The recordings that were stopped and whose files are not final yet, oldest first
+    private(set) var finishing = [RecordingSession]()
     /// Set when the app was asked to quit and is waiting for its files to be final
     private(set) var quitRequested = false
     private var idleHandlers = [() -> Void]()
@@ -69,14 +75,34 @@ final class RecorderController {
 
     // MARK: - State
 
-    var state: RecordingState { session?.state ?? .idle }
+    /// The state of the recording that is starting or running; without one, that of the recording stopped last
+    /// while any is still being saved; idle only when nothing is recorded or saved
+    var state: RecordingState { session?.state ?? finishing.last?.state ?? .idle }
     /// Whether a stopped recording is still being closed or post-processed
-    var isSaving: Bool { state == .stopping || state == .finalizing }
-    /// What is being recorded, from the start until the stop
-    var streamType: StreamType? {
-        guard let session = session, session.state == .starting || session.state == .recording else { return nil }
-        return session.streamType
+    var isSaving: Bool { !finishing.isEmpty }
+    /// How far the recordings being saved are with their mix, from 0 to 1: of one, its own; of several, their
+    /// mean, one that has not begun counting as 0. Nil while none is being mixed.
+    var savingProgress: Double? {
+        let known = finishing.compactMap { $0.health.mixProgress }
+        guard !known.isEmpty else { return nil }
+        return known.reduce(0, +) / Double(finishing.count)
     }
+    /// The paths, without extension, of the final files of every recording that is not final yet: a recording
+    /// that starts gets none of these names
+    var basesInUse: Set<String> {
+        return Set(([session].compactMap { $0 } + finishing).compactMap { $0.recording?.base })
+    }
+    /// What to tell the user about a failure of `recording`, which was stopped and is being saved: `message`, and
+    /// while another recording is starting or running, first that it is about the earlier one. A report that comes
+    /// up during a meeting must not read as if the recording that runs had failed or stopped.
+    func failureMessage(_ message: String, about recording: RecordingContext) -> String {
+        guard let running = session, running.recording?.base != recording.base else { return message }
+        let name = (recording.base as NSString).lastPathComponent
+        return String(format: "This is about the earlier recording \"%@\". The recording that is running now is not affected and goes on.", name) + " " + message
+    }
+
+    /// What is being recorded, from the start until the stop
+    var streamType: StreamType? { session?.streamType }
     /// Whether the stream of a recording exists, which is what the UI means by "recording"
     var hasStream: Bool { session?.capture != nil }
     var isPaused: Bool { session?.isPaused ?? false }
@@ -95,29 +121,29 @@ final class RecorderController {
 
     /// Why a recording cannot be started now, nil when it can. Says nothing to the user: `canStart` does.
     var startRefusal: StartRefusal? {
-        if state == .starting || state == .recording { return .recording }
+        if session != nil { return .recording }
         // A quit that is waiting would end the new recording when it goes ahead
         if quitRequested { return .quitting }
-        if state != .idle { return .saving }
         return nil
     }
 
-    /// Whether a recording can be started now. While the previous one is still being saved, or the app waits to
-    /// quit, the user is told so.
+    /// Whether a recording can be started now: always, unless one is starting or running or the app waits to quit
+    /// (the user is then told so). Recordings that are still being saved hold up nothing.
     func canStart() -> Bool {
         guard let refusal = startRefusal else { return true }
         if refusal != .recording { environment.startRefused(refusal) }
         return false
     }
 
-    /// idle → starting: the only way into a recording. Nil when one is starting, running or still being saved; a
-    /// second recording cannot be started until the first one's files are final.
+    /// → starting: the only way into a recording. Nil when one is starting or running, or the app waits to quit.
+    /// Earlier recordings that are still being closed, mixed or converted do not matter: each is a session of its
+    /// own with its own files, and the new one starts at once.
     /// `autoStop` (minutes, 0 for none) belongs to the recording being started, like everything else in the session.
     func begin(_ streamType: StreamType, autoStop: Int = 0) -> RecordingSession? {
         guard canStart() else {
             // A selector's dashed frame must not stay behind. While a recording is starting or running the frame
             // on screen may be that recording's, so it is left alone.
-            if state != .starting && state != .recording { environment.startAbandoned() }
+            if session == nil { environment.startAbandoned() }
             return nil
         }
         let session = RecordingSession(streamType: streamType, autoStop: autoStop, queue: queue, environment: environment,
@@ -130,7 +156,8 @@ final class RecorderController {
 
     // MARK: - While it runs
 
-    /// Stops the current recording (`RecordingSession.stop`). Does nothing when there is none.
+    /// Stops the recording that is starting or running (`RecordingSession.stop`), and only that one: a recording
+    /// that is already being saved is not touched. Does nothing when there is none.
     func stop(earlyReason: String? = nil) {
         session?.stop(earlyReason: earlyReason)
     }
@@ -151,7 +178,7 @@ final class RecorderController {
 
     /// Called by the status item's timer: stops the recording when it has run for the minutes it was started with
     func stopIfDue() {
-        guard let session = session, streamType != nil, session.autoStopIsDue() else { return }
+        guard let session = session, session.autoStopIsDue() else { return }
         session.stop()
     }
 
@@ -187,9 +214,9 @@ final class RecorderController {
     private var isQuiet: Bool { state == .idle && !recovery.isRunning && exportsRunning == 0 }
 
     /// For `applicationShouldTerminate`. True when the app can quit now. Otherwise a recording that is starting or
-    /// running is stopped, no new one can be started (`canStart`), and `reply` is called, once, when its files are
-    /// final, a recording of an earlier run that is being mixed is done too, so are the exports, and the report of
-    /// any failure has been seen.
+    /// running is stopped, no new one can be started (`canStart`), and `reply` is called, once, when the files of
+    /// every recording are final, a recording of an earlier run that is being mixed is done too, so are the
+    /// exports, and the report of any failure has been seen.
     func canQuit(orReply reply: @escaping () -> Void) -> Bool {
         if isQuiet { return true }
         stop()
@@ -215,10 +242,27 @@ final class RecorderController {
         }
     }
 
+    private func owns(_ session: RecordingSession) -> Bool {
+        return session === self.session || finishing.contains { $0 === session }
+    }
+
+    /// A session of this recorder has changed its state. One that is being stopped leaves `session` for
+    /// `finishing` at that moment, so the next recording can start; one that is idle is dropped.
     private func stateChanged(of changed: RecordingSession, from old: RecordingState) {
-        guard changed === session else { return }
-        print("Recording state: \(old) -> \(changed.state)")
-        if changed.state == .idle { session = nil }
+        guard owns(changed) else { return }
+        print("Recording state: \(old) -> \(changed.state)\(finishing.isEmpty ? "" : " (\(finishing.count) being saved)")")
+        switch changed.state {
+        case .starting, .recording:
+            break
+        case .stopping, .finalizing:
+            if changed === session {
+                session = nil
+                finishing.append(changed)
+            }
+        case .idle:
+            if changed === session { session = nil }
+            finishing.removeAll { $0 === changed }
+        }
         environment.statusChanged(self)
         guard state == .idle else { return }
         let handlers = idleHandlers
@@ -227,7 +271,7 @@ final class RecorderController {
     }
 
     private func statusChanged(of changed: RecordingSession) {
-        guard changed === session else { return }
+        guard owns(changed) else { return }
         environment.statusChanged(self)
     }
 }

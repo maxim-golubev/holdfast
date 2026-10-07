@@ -153,9 +153,9 @@ struct CountdownView: View {
 extension AppDelegate {
     // What the tiles of the main panel and the items of the status item's menu do
 
-    /// How the tiles and the menu items start: a start that cannot happen now (the previous recording is still being
-    /// saved, the app waits to quit) is refused with its alert at once, not after a selector and a countdown, and one
-    /// asked for while a recording starts or runs does nothing.
+    /// How the tiles and the menu items start: a start that cannot happen now (the app waits to quit) is refused
+    /// with its alert at once, not after a selector and a countdown, and one asked for while a recording starts or
+    /// runs does nothing. Recordings that are still being saved hold up no start.
     func startIfAllowed(_ action: (AppDelegate) -> Void) {
         guard withRecorder({ $0.canStart() }) else { return }
         NSApp.activate(ignoringOtherApps: true)

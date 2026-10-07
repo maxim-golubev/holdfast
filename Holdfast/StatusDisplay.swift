@@ -33,7 +33,11 @@ struct StatusDisplay: Equatable {
         var onScreen: String?
         /// `RecordingSession.Health.notice`: shown like a warning while no warning is up
         var notice: String?
+        /// How far the recordings being saved are with their mix (`RecorderController.savingProgress`)
         var mixProgress: Double?
+        /// How many recordings were stopped and are still being saved (`RecorderController.finishing`). With
+        /// `state` starting or recording they are earlier ones, saved while the next recording runs.
+        var savingCount = 0
         var isRecovering = false
         var recoveryProgress: Double?
         /// A file the user started exporting is being written
@@ -51,18 +55,23 @@ struct StatusDisplay: Equatable {
     let line: String
     /// The tooltip: the line, or more about it
     let detail: String
+    /// While a recording starts or runs and earlier ones are still being saved: that, with how far their mix is.
+    /// A line of its own in the menu, under the running recording's, which is what the item shows.
+    let saving: String?
     /// The warning of a running recording that has lasted (`RecordingMonitor.announceSeconds`), or else its notice,
     /// shown on screen over every app while it is up (`WarningPanel`): a full-screen meeting hides the menu bar, and
     /// notifications may not show while the display is captured. A shorter problem is only the status item's.
     private(set) var banner: String?
 
     init(_ input: Input) {
+        let earlier = StatusDisplay.earlier(input)
         switch input.state {
         case .starting:
             kind = .starting
             title = "Starting"
             line = "The recording is starting"
-            detail = line
+            detail = StatusDisplay.sentences(line, earlier)
+            saving = earlier
         case .recording:
             title = input.length
             let microphone: String
@@ -86,19 +95,25 @@ struct StatusDisplay: Equatable {
                 kind = input.isMicrophoneMuted ? .muted : .recording
                 line = "Recording" + " — " + microphone
             }
-            detail = line
+            detail = StatusDisplay.sentences(line, earlier)
+            saving = earlier
         case .stopping, .finalizing:
             kind = .saving
             // One title for the whole of it: a title that changes its length makes the item jump in the menu bar.
             // How far the mix is stands in the menu's status line.
             title = "Saving"
-            if let progress = input.mixProgress {
+            if input.savingCount > 1 {
+                let several = "Saving \(input.savingCount) recordings"
+                line = input.mixProgress.map { StatusDisplay.percent(several, $0) } ?? several
+            } else if let progress = input.mixProgress {
                 line = StatusDisplay.percent("Mixing the audio tracks of the recording", progress)
             } else {
                 line = "Saving the recording"
             }
-            detail = line + ". " + (input.isQuitting ? "Holdfast quits when this is done." : "A new one can be started when this is done.")
+            detail = line + ". " + (input.isQuitting ? "Holdfast quits when this is done." : "A new recording can be started meanwhile.")
+            saving = nil
         case .idle:
+            saving = nil
             if input.isRecovering {
                 kind = .recovering
                 title = "Recovering"
@@ -124,6 +139,18 @@ struct StatusDisplay: Equatable {
 
     private static func percent(_ text: String, _ fraction: Double) -> String {
         return text + " — \(Int(min(1, max(0, fraction)) * 100))%"
+    }
+
+    /// "Saving the previous recording — 42%": what is still being saved of earlier recordings while one starts or
+    /// runs; nil when nothing is
+    private static func earlier(_ input: Input) -> String? {
+        guard input.savingCount > 0 else { return nil }
+        let text = input.savingCount == 1 ? "Saving the previous recording" : "Saving the \(input.savingCount) previous recordings"
+        return input.mixProgress.map { percent(text, $0) } ?? text
+    }
+
+    private static func sentences(_ line: String, _ second: String?) -> String {
+        return second.map { line + ". " + $0 } ?? line
     }
 }
 
@@ -180,9 +207,10 @@ extension StatusDisplay.Kind {
 extension RecorderController {
     /// What the status item shows of the recorder now
     var statusInput: StatusDisplay.Input {
+        // The warnings are the running recording's; the progress is that of the recordings being saved
         return StatusDisplay.Input(state: state, isPaused: isPaused, hasMicrophone: session?.hasMicrophone ?? false,
                                    isMicrophoneMuted: isMicrophoneMuted, micSilent: health.micSilent, warning: health.warning, onScreen: health.onScreen, notice: health.notice,
-                                   mixProgress: health.mixProgress, isRecovering: recovery.isRunning,
+                                   mixProgress: savingProgress, savingCount: finishing.count, isRecovering: recovery.isRunning,
                                    recoveryProgress: recovery.progress, isExporting: exportsRunning > 0, isQuitting: quitRequested,
                                    length: recordingLength())
     }

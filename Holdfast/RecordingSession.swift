@@ -6,7 +6,7 @@
 import AVFoundation
 import Foundation
 
-/// Where a recording is. `RecorderController.state` is `idle` while there is none.
+/// Where a recording is. `RecorderController.state` is `idle` while none is being recorded or saved.
 enum RecordingState {
     case idle
     /// From the request to start until the capture runs
@@ -70,7 +70,9 @@ extension MovieWriter: RecordingWriter {}
 
 /// One recording, from the request to start it until its files are final: its `RecordingContext`, its capture, its
 /// writer, its `RecordingMonitor` and what the status bar shows about it. `RecorderController` makes one for every
-/// start and drops it when it is idle again, so the next recording begins with nothing of this one.
+/// start and drops it when it is idle again, so the next recording begins with nothing of this one. Once it is
+/// stopped it closes and saves its files by itself, while the next recording may already run: nothing it holds is
+/// shared with another session but the sample queue, on which each session reaches only its own writer and monitor.
 ///
 /// It lives on two threads, and each member belongs to one of them. The `@MainActor` members are the state machine
 /// and what the UI reads. The writer and the monitor belong to the sample queue, the queue the capture delivers
@@ -396,8 +398,9 @@ final class RecordingSession: @unchecked Sendable {
     /// The one way a recording ends: the Stop buttons, the hotkey, the script command, the auto-stop timer, an
     /// error (`MovieWriter.fail`, the disk guard, a stream that stopped) and quitting all come here.
     /// Returns at once; the recording is closed and post-processed in the background, and the state is idle when
-    /// its files are final. Only a recording in the `recording` state is stopped: a stop while the capture is still
-    /// starting is carried out as soon as it runs, and any other call is ignored, so repeated stops are harmless.
+    /// its files are final. From the moment this returns the recorder can start the next recording. Only a
+    /// recording in the `recording` state is stopped: a stop while the capture is still starting is carried out as
+    /// soon as it runs, and any other call is ignored, so repeated stops are harmless.
     /// `earlyReason` says why the recording ends without the user having stopped it; the user is told so.
     @MainActor
     func stop(earlyReason: String? = nil) {
@@ -419,6 +422,9 @@ final class RecordingSession: @unchecked Sendable {
         let cancelled = earlyReason == nil && Date.now.timeIntervalSince(enteredRecording ?? .distantPast) < 3
         RecLog.write(earlyReason.map { "Recording stopped early: \($0)" } ?? "Recording stopped")
         state = .stopping
+        // This recording's own, until its files are final and whatever "preventSleep" says: sleep during the mix
+        // would leave a temporary file. Taken before what kept the display awake for the recording is given up.
+        let allowSleep = environment.keepAwake()
         isMagnifierEnabled = false
         let actions = undo
         undo = []
@@ -438,6 +444,7 @@ final class RecordingSession: @unchecked Sendable {
             state = .finalizing
             // Works from `recording` and what the writer handed over, not from settings
             await environment.save(self, recording, finished, earlyReason, cancelled)
+            allowSleep()
             state = .idle
         }
     }

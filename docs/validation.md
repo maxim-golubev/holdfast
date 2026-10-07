@@ -81,8 +81,6 @@ original next to it.
 - **Quit during a recording:** the app finished and saved the file before it
   exited.
 - **Stop pressed three times:** one recording, saved once.
-- **Start while the previous recording was saving:** refused, with a message
-  saying why.
 
 ## The menu bar item
 
@@ -95,7 +93,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 169 tests in a little over a minute (75 s measured), without the
+`Tools/test.sh` runs 177 tests in a little over a minute (76 s measured), without the
 app, a screen or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
@@ -106,6 +104,7 @@ synthetic buffers and read them back.
 | System audio and timeline | 8 | Placement at the end of what was written, holes filled past 0.1 s, pause offsets; stream audio stamped 1.2 s behind at real-time pace placed by its arrival within 2 s, a backlog never |
 | Writer | 14 | One file with three tracks of the same length, pause, mute, a source that stops, late frames, no empty file, every audio format |
 | Session | 17 | Every state in order, stop while starting, repeated stops, failures, quitting while recording, starting or exporting, pause and the timer |
+| Instant start | 8 | A recording started while the one before is held before its mix: it starts at once, is stopped and saved while the first still waits, and both files are complete, under their own names, each with only its own sound; three in a row with two mixes running while the third records; a mix that fails reported for its own recording, by name, the running one untouched; a stop, a pause and a late failure reaching only their own recording; quitting waiting for all of them, the Mac kept awake until the last; what the status item and its menu show in each combination; names taken by recordings that have no file yet |
 | Monitor | 11 | Fills and warnings for each track, the start warning, late ticks, resume, a source that keeps dropping out notified once, a microphone back with only zeros not back, system audio missing only when neither the tap nor its backup delivers (a quiet tap only logged) |
 | Files, names, disk | 18 | Temporary and final names, leftovers, staging, free-space thresholds, a moved or deleted folder |
 | Mixer and recovery | 11 | Mix and its checks, MP3 and package mixes, every recovery outcome |
@@ -123,6 +122,10 @@ Set in code and covered where a test can reach them, but not yet seen in a real
 recording:
 
 - The warning panel over a full-screen meeting.
+- A recording started while the previous one is still being saved: that it
+  starts at once, that the earlier one's mix does not disturb it, and both
+  files. Covered by tests with the real writer and mixer, not yet by a real
+  capture.
 - The app's floating windows on a full-screen Space.
 - "Leave Holdfast's Own Windows Out" with windows that open during the
   recording.

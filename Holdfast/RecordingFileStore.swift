@@ -48,11 +48,15 @@ struct RecordingFileStore {
 
     /// Path without extension for a recording started at `date`: `<directory>/<prefix><date>`, or `… (2)` and so
     /// on when a file in the folder already has that name, with any extension or label: the date repeats when the
-    /// clock goes back (the hour repeated when daylight saving time ends, a time zone change).
-    func newBase(date: Date = Date()) -> String {
+    /// clock goes back (the hour repeated when daylight saving time ends, a time zone change) and when a recording
+    /// is started in the second another one was. `reserved` are the paths, without extension, that recordings which
+    /// are not final yet have taken (`RecorderController.basesInUse`): such a recording may have no file under its
+    /// name at this moment, and the new one must still get another name.
+    func newBase(date: Date = Date(), reserved: Set<String> = []) -> String {
         let base = RecordingFileStore.basePath(directory: directory, prefix: prefix, date: date)
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
         func taken(_ candidate: String) -> Bool {
+            if reserved.contains(candidate) { return true }
             let name = (candidate as NSString).lastPathComponent
             return names.contains { $0.hasPrefix(name + ".") || $0.hasPrefix(name + " (") }
         }
@@ -253,6 +257,8 @@ struct RecordingFileStore {
 
 /// The files of one recording, from the path of its final file without the extension
 struct RecordingFiles {
+    /// The path of the final file without its extension, which every file of the recording is named from
+    let base: String
     /// What is written while recording: the video file, the audio file, or the .qma package for audio with a microphone
     let rawURL: URL
     /// What the audio mix after a video recording writes before it is checked and gets the final name, nil when
@@ -293,6 +299,7 @@ struct RecordingFiles {
     init(base: String, audioOnly: Bool, recordMic: Bool, systemAudio: Bool, remuxAudio: Bool, videoEnding: String, audioFormat: AudioFormat,
          systemAudioBackup: Bool = false) {
         let backup = systemAudio && systemAudioBackup
+        self.base = base
         tapSpansURL = backup ? URL(fileURLWithPath: "\(base).\(RecordingFileStore.tapSpansEnding)") : nil
         if audioOnly {
             // Written under a temporary name and renamed once closed: an audio file that was not closed does not

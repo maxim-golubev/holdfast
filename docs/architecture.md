@@ -18,8 +18,9 @@ shortcuts and SwiftLAME for MP3 output. The app makes no network requests.
 ```
 Holdfast/
   RecorderController.swift  RecorderController (@MainActor): the one way in for the UI, shortcuts, script
-                            commands, the auto-stop and quitting. Holds the current RecordingSession, or none while
-                            idle, and the launch recovery. RecorderEnvironment: what the recorder needs from the app
+                            commands, the auto-stop and quitting. Holds the RecordingSession that is starting or
+                            running, those that are still being saved, and the launch recovery.
+                            RecorderEnvironment: what the recorder needs from the app
                             (status item, alerts, the save step) as closures, so the tests can supply their own.
   RecordingStart.swift      RecorderController.shared, start (checked on the main thread), record (stream created
                             and started off it), prepareMicCapture, and RecorderEnvironment.app.
@@ -61,7 +62,7 @@ Holdfast/
   ScreenContent.swift       Screens, windows and applications from ScreenCaptureKit, and the permission.
   UserNotice.swift          Alerts and notifications (posted only as the Notifications setting allows); reportFailure.
   HoldfastApp.swift         AppDelegate: launch, shortcuts, quitting, SIGTERM.
-  Supports/                 RecLog (the recordings log), DiskSpace, SleepPreventer, the AppleScript commands and
+  Supports/                 RecLog (the recordings log), DiskSpace, SleepAssertion, the AppleScript commands and
                             their dictionary, window identifiers, the window picker's highlight.
   ViewModel/                StatusItem (menu bar item, its menu, the warning panel), the main panel, the selectors,
                             Settings, the shared recording controls, the cursor highlight and magnifier, the preview,
@@ -77,7 +78,7 @@ Tools/                      build.sh, test.sh, release.sh, app_icon.sh; rt.sh, t
  panel · menu · shortcut · AppleScript · auto-stop · quit
                          │
                          ▼
- RecorderController.start ──► begin: idle → starting, a new RecordingSession
+ RecorderController.start ──► begin: → starting, a new RecordingSession (earlier ones may still be saving)
    checks: save folder and 2 GB free, display, filter, microphone
    RecordingContext (file names, settings) ─► MovieWriter ─► session.install
                          │
@@ -98,33 +99,48 @@ Tools/                      build.sh, test.sh, release.sh, app_icon.sh; rt.sh, t
                           RecordingMonitor, every 0.5 s on the same queue:
                             fill silent tracks, repeat the last frame, watchdog
 
- RecordingSession.stop ──► recording → stopping: UI torn down
+ RecordingSession.stop ──► recording → stopping: UI torn down; the session leaves the recorder's place for the
+                           running recording, so the next one can start at once
    await the capture's stop (5 s at most): the tap first, then the stream
    on the sample queue: monitor stopped, MovieWriter.finish (pad microphone, mark inputs finished)
    stopping → finalizing: RecordingSaver.save
      finishWriting ─► RecordingMixer.mix to <name>.mixing.mp4 (system audio: the tap or its backup,
                       by <name>.tap-alive.txt) ─► verify ─► rename to <name>.mp4
      recording as written ─► <name> (unmixed, 3 audio tracks).mp4; <name>.tap-alive.txt removed
-   finalizing → idle: the session is dropped
+   finalizing → idle: the session is dropped; the recorder is idle when none is left
 ```
 
 ## The state machine
 
 `RecordingSession.state` is `starting`, `recording`, `stopping` or
-`finalizing`; with no session the recorder is `idle`. Only three methods change
+`finalizing`; with no session the recorder is `idle`. The recorder holds at
+most one session that is starting or running (`session`) and any number that
+were stopped and are still being saved (`finishing`). Only three methods change
 it, all on the main thread: `enterRecording`, `abandonStart` and `stop`. No
 transition is decided from whether a stream exists: the UI reads that only to
 show or refuse a panel, a shortcut or the cursor highlight. A second way into a
 state, or out of one, is how a recording gets lost between states.
 
 - **One start.** Every start, from any source, ends in
-  `RecorderController.start`, which begins with `begin`. `begin` refuses unless
-  the recorder is idle, with an alert while the previous recording is still
-  being saved: a second recording must not start before the first one's files
-  are final. Everything that belongs to one recording (its auto-stop, its
-  pause and mute, its capture and writer) lives in its session, so a late
-  report from one recording, a writer failure or a stream end, lands in that
-  session and not in the next.
+  `RecorderController.start`, which begins with `begin`. `begin` refuses only
+  while a recording is starting or running, or the app waits to quit.
+- **A start never waits for a save.** A session that is stopped moves to
+  `finishing` in the same call and goes on closing and mixing by itself, while
+  the next start is accepted at once: a meeting that begins while the last
+  one's 47-minute mix runs must be recorded from its first second. Nothing is
+  shared between sessions but the sample queue, on which each reaches only its
+  own writer and monitor: the capture, the tap, the writer, the monitor, the
+  disk watch, the two sleep assertions (display while recording, system from
+  the stop until its files are final) and the file names all belong to one
+  session. A new recording gets no name a session that is not final holds
+  (`RecorderController.basesInUse` → `RecordingFileStore.newBase(reserved:)`),
+  so each mix reads and renames only its own files. Stop, pause and mute reach
+  the running session only. Everything that belongs to one recording (its
+  auto-stop, its pause and mute, its capture and writer) lives in its session,
+  so a late report from one recording, a writer failure or a stream end, lands
+  in that session and not in the next; a failure reported while another
+  recording runs says which recording it is about
+  (`RecorderController.failureMessage`).
 - **One failed start.** Every start that cannot go on ends in `abandonStart`,
   which removes the writer (its `cancel` deletes the empty file it created, and
   only that), the stream and the session, and the reason is shown in one
@@ -577,8 +593,9 @@ the microphone, marks every input finished and, when the session never
 started, removes the empty file. Nothing can append after `markAsFinished`, and
 nothing is lost before it. Then `finalizing` and `RecordingSaver.save`, which
 is `async` and returns on every path: one that never returned would leave the
-app unable to record or quit. A sleep assertion is held from `finalizing` to
-idle, because sleep during the mix would leave a temporary file.
+app unable to quit. Each session holds a sleep assertion of its own from its
+stop until its files are final, because sleep during the mix would leave a
+temporary file; the Mac stays awake until the last one is.
 
 `save` closes the file with `finishWriting` (only for a writer in `.writing`,
 and the result is checked), then:
@@ -678,7 +695,7 @@ report lists every file.
 
 `applicationShouldTerminate` asks `canQuit(orReply:)`, which is true only when
 nothing is recording, saving, recovering or exporting. Otherwise it stops the
-recording and replies once all of that is done and any failure alert has been
+recording and replies once every session's files are final, the rest of that is done and any failure alert has been
 dismissed, checked again together before the reply; meanwhile no new recording
 can start, since the reply would end it. `applicationWillTerminate` stops the
 same way for up to 30 s in case the app is terminated past that. SIGTERM is
@@ -740,7 +757,10 @@ is why the seams exist: the session sees its capture and writer through the
 the monitor's `tick(at:)` takes its time as a parameter. The writer, converter,
 mixer and recovery tests write real files with AVFoundation from synthetic
 buffers and read them back; the session tests drive the state machine through a
-fake capture and writer. The system audio tests build and tear down
+fake capture and writer. The instant-start tests record two and three
+recordings in a row through the real writer and mixer, each held before its mix
+while the next one records, and check that every file is complete and holds only
+its own sound. The system audio tests build and tear down
 `SystemAudioTap` against fake Core Audio calls (`TapHardware`), feed its IOProc
 buffer lists made in the test, and drive `SystemAudioSource`'s choice, its
 construction order and its repair with fake taps and with the real tap on the

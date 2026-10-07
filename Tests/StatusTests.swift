@@ -121,7 +121,8 @@ func statusTests() async {
         display = StatusDisplay(Input(state: .finalizing, mixProgress: 0.424))
         expectEqual(display.title, "Saving", "the title does not change its length during the mix")
         expectEqual(display.line, "Mixing the audio tracks of the recording — 42%", "the mix in percent, in the status line")
-        expect(display.detail.contains("A new one can be started"), "the tooltip says what to wait for")
+        expect(display.detail.contains("A new recording can be started meanwhile"), "the tooltip says that nothing has to be waited for")
+        expectEqual(display.saving, nil, "no second line: the saving is what the item shows")
         expect(StatusDisplay(Input(state: .finalizing, mixProgress: 1.7)).line.hasSuffix("100%"), "never more than all of it")
 
         display = StatusDisplay(Input(isRecovering: true))

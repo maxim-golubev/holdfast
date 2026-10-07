@@ -17,8 +17,6 @@ enum RecordingSaver {
     /// mix, MP3 conversion); it returns when the files are final, and only then is the session idle. Nothing here
     /// blocks the main thread. It works from `recording` and what the writer handed over, not from settings.
     static func save(_ session: RecordingSession, recording: RecordingContext, taken: MovieWriter.Finished, earlyReason: String?, cancelled: Bool) async {
-        // Held until the files are final, whether or not the recording itself kept the display awake
-        SleepPreventer.shared.preventSleep(reason: "Finishing a recording", display: false)
         let frame = taken.frame
         // Nil when nothing arrived: the writer has removed its empty file or package, and the report below says so
         let writer = taken.writer
@@ -33,7 +31,7 @@ enum RecordingSaver {
         let nothingTitle = "Recording Not Saved"
         if session.filesDeleted {
             // The reason says it all: what was written is gone with its name, and there is no file to point to
-            UserNotice.reportFailure(title: "Recording Stopped Early", message: earlyReason ?? "")
+            report("Recording Stopped Early", of: recording, earlyReason ?? "")
         } else if !taken.sessionStarted && cancelled {
             // Stopped before the first frame or the first audio arrived. Nothing was lost, so nothing is reported as
             // failed, and the user who stopped it needs no notification to know.
@@ -41,7 +39,7 @@ enum RecordingSaver {
         } else if !taken.sessionStarted {
             // Stopped, early or by the user, before the first frame (or the first system audio of an audio-only recording)
             let nothing = recording.audioOnly ? "No audio arrived, so nothing was recorded and no file was kept." : "Nothing was recorded, so no file was kept."
-            UserNotice.reportFailure(title: nothingTitle, message: (earlyReason.map { $0 + " " } ?? "") + nothing)
+            report(nothingTitle, of: recording, (earlyReason.map { $0 + " " } ?? "") + nothing)
         } else if !recording.audioOnly {
             if !closed {
                 print("Video writing failed with status: \(String(describing: writer?.status)), error: \(String(describing: writer?.error))")
@@ -56,7 +54,7 @@ enum RecordingSaver {
                 } else {
                     body += " " + movedNote(for: recording.rawURL)
                 }
-                UserNotice.reportFailure(title: failureTitle, message: body)
+                report(failureTitle, of: recording, body)
             } else {
                 if recording.mixesAudio {
                     // Where the recording ends up is only known after the mix
@@ -78,7 +76,7 @@ enum RecordingSaver {
                 var body = earlyReason ?? ""
                 if let error = writer.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
                 body += (body.isEmpty ? "" : " ") + keptNote(kept, "The microphone file could not be closed. The recording was kept with separate audio files: %@")
-                UserNotice.reportFailure(title: failureTitle, message: body)
+                report(failureTitle, of: recording, body)
             } else {
                 // The package is only read now that the microphone file is complete. With the tap, its system audio
                 // is first made one file from the tap's and the backup's.
@@ -88,7 +86,12 @@ enum RecordingSaver {
         }
         // The final files are written: the tap's spans have served
         RecordingFileStore.removeTapSpans(recording.tapSpansURL)
-        SleepPreventer.shared.allowSleep()
+    }
+
+    /// Reports a failure of `recording` (`UserNotice.reportFailure`). While another recording is starting or running,
+    /// the report says first which recording it is about (`RecorderController.failureMessage`).
+    private static func report(_ title: String, of recording: RecordingContext, _ message: String) {
+        UserNotice.reportFailure(title: title, message: RecorderController.shared.failureMessage(message, about: recording))
     }
 
     /// Mixes the audio tracks of a finished video recording and presents the result. Returns when the recording has
@@ -130,12 +133,12 @@ enum RecordingSaver {
             let kept = RecordingFileStore.keep(written: raw, as: unmixedURL)
             guard fd.fileExists(atPath: kept.path) else {
                 // Not a place to claim the recording is: the writer kept writing through its open file, wherever that went
-                UserNotice.reportFailure(title: "Audio Mix Failed", message: early + String(format: "Mixing the audio failed: %@", failure) + " " + movedNote(for: raw))
+                report("Audio Mix Failed", of: recording, early + String(format: "Mixing the audio failed: %@", failure) + " " + movedNote(for: raw))
                 return
             }
             let tracks = recording.systemAudioBackup ? "with each audio track as it was recorded (system audio from the process tap, its backup from screen capture, the microphone)" : "with system audio and microphone as two separate audio tracks"
             let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept %@ in: %@", failure, tracks, kept.path)
-            UserNotice.reportFailure(title: "Audio Mix Failed", message: body)
+            report("Audio Mix Failed", of: recording, body)
             if recording.showPreview { showPreview(url: kept, image: frame) }
             return
         }
@@ -193,7 +196,7 @@ enum RecordingSaver {
         } catch {
             try? fd.removeItem(at: staged)
             let body = String(format: "The system audio from the process tap and from its backup could not be merged: %@ The recording keeps the system audio of the process tap; what screen capture recorded as its backup is next to it: %@", error.localizedDescription, backup.path)
-            UserNotice.reportFailure(title: "System Audio Not Merged", message: body)
+            report("System Audio Not Merged", of: recording, body)
         }
     }
 
@@ -212,7 +215,7 @@ enum RecordingSaver {
                 present(recording.finalURL, image: audioIcon, recording: recording, earlyReason: earlyReason)
             } catch {
                 let reason = String(format: "Converting to MP3 failed: %@", error.localizedDescription)
-                UserNotice.reportFailure(title: "MP3 Conversion Failed", message: early + reason + " " + keptNote(file, "Nothing is lost: the recording is kept as: %@"))
+                report("MP3 Conversion Failed", of: recording, early + reason + " " + keptNote(file, "Nothing is lost: the recording is kept as: %@"))
             }
         } else if recording.remuxAudio && recording.recordMic {
             do {
@@ -222,7 +225,7 @@ enum RecordingSaver {
                 present(recording.finalURL, image: audioIcon, recording: recording, earlyReason: earlyReason)
             } catch {
                 let body = early + String(format: "Mixing the audio failed: %@", error.localizedDescription) + " " + keptNote(file, "Nothing is lost: the recording is kept with separate audio files in: %@")
-                UserNotice.reportFailure(title: "Audio Mix Failed", message: body)
+                report("Audio Mix Failed", of: recording, body)
             }
         } else {
             // A package when there is a microphone, a single audio file otherwise
@@ -238,12 +241,12 @@ enum RecordingSaver {
     private static func present(_ url: URL, image: NSImage?, recording: RecordingContext, earlyReason: String?, note: String? = nil) {
         guard fd.fileExists(atPath: url.path) else {
             let reason = earlyReason.map { $0 + " " } ?? ""
-            UserNotice.reportFailure(title: earlyReason == nil ? "Recording Not Found" : "Recording Stopped Early", message: reason + movedNote(for: url))
+            report(earlyReason == nil ? "Recording Not Found" : "Recording Stopped Early", of: recording, reason + movedNote(for: url))
             return
         }
         RecLog.write("Recording saved: \(url.path)")
         if let reason = earlyReason {
-            UserNotice.reportFailure(title: "Recording Stopped Early", message: reason + " " + String(format: "The recording up to that point is saved as: %@", url.path))
+            report("Recording Stopped Early", of: recording, reason + " " + String(format: "The recording up to that point is saved as: %@", url.path))
         }
         if recording.showPreview, let image {
             showPreview(url: url, image: image)
