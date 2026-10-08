@@ -75,7 +75,8 @@ Most of the work went into six problems:
   temporary name and checked before anything is renamed: one video and one
   audio track, the same length to within a second, and the microphone audible
   in the mix wherever it was alone in the recording. On any failure the
-  two-track recording is what you get, with a report saying where it is.
+  recording as it was written, with its separate tracks, is what you get,
+  with a report saying where it is.
 - **System audio can die without a word.** In a 47-minute Zoom meeting in a
   browser, with AirPods, the process tap's aggregate device was clocked by the
   AirPods in their 24 kHz call mode, and its IOProc delivered nothing for the
@@ -144,8 +145,8 @@ Requires an Apple Silicon Mac on macOS 15 or later.
 
 ## Build from source
 
-Requires Xcode 26 (the app icon is an Icon Composer document) and runs on macOS
-15 or later. The project signs with its owner's development team, so
+Building requires Xcode 26 (the app icon is an Icon Composer document); the app
+runs on macOS 15 or later. The project signs with its owner's development team, so
 `Tools/build.sh` stops at code signing until you set your own team and bundle
 identifier in Xcode.
 

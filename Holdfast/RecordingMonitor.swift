@@ -4,7 +4,6 @@
 //
 
 import AVFoundation
-import Foundation
 
 /// Runs twice a second on the sample queue while a recording is capturing, whether or not any buffer arrives.
 /// Every `RecordingSession` has its own.

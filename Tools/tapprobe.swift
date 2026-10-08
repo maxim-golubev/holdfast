@@ -7,7 +7,7 @@
 // second must still have callbacks, at -180 dB.
 // Usage: tapprobe [global|calls|calltap] [seconds]
 //   global:  everything the Mac plays, in an aggregate device whose main sub-device is the default output
-//   calls:   only avconferenced (start the call first: it has no audio object before), built the same way
+//   calls:   only avconferenced (fails with "no audio object" when the process has none), built the same way
 //   calltap: only avconferenced, alone in its aggregate device, with no sub-device: Holdfast's call tap
 //            (SystemAudioTap with TapClock.callOrder), the second tap that records call audio on its own track
 // Prints the formats, the IO buffers of the first callback, then the level once a second. Needs the "System Audio

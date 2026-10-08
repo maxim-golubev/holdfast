@@ -198,3 +198,20 @@ final class Track {
         return true
     }
 }
+
+/// The gain at one moment, worked out point by point: what the tests hold `GainCurve.values`, which the mix reads,
+/// against
+extension GainCurve {
+    func value(at time: Double) -> Float {
+        guard let first = points.first else { return 1 }
+        if time <= first.time { return first.gain }
+        for index in points.indices.dropFirst() {
+            let a = points[index - 1], b = points[index]
+            if time <= b.time {
+                guard b.time > a.time else { return b.gain }
+                return a.gain + (b.gain - a.gain) * Float((time - a.time) / (b.time - a.time))
+            }
+        }
+        return points[points.count - 1].gain
+    }
+}

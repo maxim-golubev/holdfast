@@ -96,7 +96,7 @@ enum SystemAudioSelection {
 
     /// Whether the notice is posted for this recording, which runs on `route`: only when it records without the tap,
     /// and then once while the app runs (`once`). A recording whose tap could not run at all also shows it for as
-    /// long as it runs (`warning`), so later ones are not missed without a notification of their own.
+    /// long as it runs (`warning(for:)`), so later ones are not missed without a notification of their own.
     static func notifies(_ route: SystemAudioRoute, once: NoticeOnce) -> Bool {
         guard case .screenCaptureKit = route else { return false }
         return once.take()
@@ -175,7 +175,7 @@ struct TapRepair: Equatable {
 
 /// The system audio of one recording through a Core Audio process tap. It builds the tap at the start (`start`),
 /// rebuilds it whenever it stops delivering, and tears it down at the stop. Every buffer is handed on as a
-/// `CaptureSample` of kind `.audio`, on the sample queue, in ScreenCaptureKit's system audio format
+/// `CaptureSample` of its role's kind, on the sample queue, in ScreenCaptureKit's system audio format
 /// (`SystemAudioConverter`), to the same `onSample` the stream's buffers go to. Its time is when it arrived in the
 /// tap's IOProc, where it ends, and nothing else: no timestamp of the tap's device reaches the recording.
 ///
@@ -231,6 +231,9 @@ final class SystemAudioSource {
     static let stallSeconds: Double = 1
     /// How often that is checked
     static let checkInterval: Double = 0.25
+    /// How many buffers in a row may come out of the converter empty before the log says they cannot be converted:
+    /// about a second of them
+    static let unconvertedLimit = 100
 
     /// The sources that have a tap running, so quitting can tear down any that is left (`stopAll`)
     private static let live = Mutex([ObjectIdentifier: Weak]())
@@ -274,14 +277,16 @@ final class SystemAudioSource {
     /// How often a tap was built again, and attempts that failed, for the log
     private(set) var rebuilds = 0
     private(set) var failedAttempts = 0
+    private var everBuilt = false
     /// What the injection last did to the buffers, as logged
     private var injected = TapFailureInjection.Action.pass
 
     // On the sample queue
     private var latestGeneration = 0
     private let converter: SystemAudioConverter?
-    private(set) var buffersHandedOn = 0
-    private(set) var buffersDropped = 0
+    /// Buffers in a row that could not be converted, and whether the log has said so for this tap
+    private var unconverted = 0
+    private var conversionFailureLogged = false
     private var zeroingFailed = false
 
     init(factory: Factory, role: Role = .systemAudio, sampleQueue: DispatchQueue, stallSeconds: Double = SystemAudioSource.stallSeconds,
@@ -315,7 +320,7 @@ final class SystemAudioSource {
                 injectionStart.store(SystemAudioSource.uptime(), ordering: .releasing)
                 injection.activeLines.forEach { RecLog.write($0) }
             }
-            attempt(reason: nil)
+            attempt()
             let timer = DispatchSource.makeTimerSource(queue: control)
             timer.schedule(deadline: .now() + checkInterval, repeating: checkInterval, leeway: .milliseconds(20))
             timer.setEventHandler { [weak self] in self?.check() }
@@ -382,9 +387,8 @@ final class SystemAudioSource {
         SystemAudioSource.live.withLock { _ = $0.removeValue(forKey: ObjectIdentifier(self)) }
     }
 
-    /// Builds a tap of the next construction, whose buffers are handed on from its first. `reason` is why the one
-    /// before had to go, nil for the first.
-    private func attempt(reason: String?) {
+    /// Builds a tap of the next construction, whose buffers are handed on from its first
+    private func attempt() {
         guard !stopped, tap == nil else { return }
         let order = factory.constructions()
         guard let clock = repair.next(in: order) else { return }
@@ -402,7 +406,9 @@ final class SystemAudioSource {
             })
             tap = made
             builtAt = SystemAudioSource.uptime()
-            if reason == nil {
+            // The first tap that could be built is not a rebuild, however many attempts it took
+            if !everBuilt {
+                everBuilt = true
                 RecLog.write("\(role.subject): \(role.tap) with \(made.clockText) (\(made.formatText))")
             } else {
                 rebuilds += 1
@@ -431,7 +437,7 @@ final class SystemAudioSource {
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.pending = nil
-            self.attempt(reason: "retry")
+            self.attempt()
         }
         pending = work
         control.asyncAfter(deadline: .now() + repair.wait * waitScale, execute: work)
@@ -513,14 +519,13 @@ final class SystemAudioSource {
 
     /// `zeroed` is true only for a buffer the failure injection of a device test wants handed on as zeros
     private func handOn(_ buffer: CMSampleBuffer, generation: Int, arrival: CMTime, zeroed: Bool) {
-        guard generation >= latestGeneration, let converter = converter else {
-            buffersDropped += 1
-            return
-        }
+        guard generation >= latestGeneration, let converter = converter else { return }
         if generation != latestGeneration {
             // Another tap: its timeline and format start anew
             latestGeneration = generation
             converter.reset()
+            unconverted = 0
+            conversionFailureLogged = false
         }
         // The buffer ends when it arrived. The tap made it so; one given a clock's time instead is moved there.
         var stamped = buffer
@@ -529,14 +534,23 @@ final class SystemAudioSource {
            let moved = MovieWriter.retime(buffer, by: CMTimeSubtract(buffer.presentationTimeStamp, start)) {
             stamped = moved
         }
-        guard let converted = converter.convert(stamped) else { return }
+        guard let converted = converter.convert(stamped) else {
+            // A converter may hold back a buffer or two while it fills; one that gives nothing for this many has
+            // failed, and the tap's IOProc still runs, so nothing else would say why its track is silent
+            unconverted += 1
+            if unconverted == SystemAudioSource.unconvertedLimit, !conversionFailureLogged {
+                conversionFailureLogged = true
+                RecLog.write("\(role.subject): the \(role.tap)'s buffers cannot be converted (\(unconverted) in a row) and are left out\(role.meanwhile)")
+            }
+            return
+        }
+        unconverted = 0
         if zeroed, !SystemAudioSource.zero(converted) {
             // Never the real audio inside the span of a test
             if !zeroingFailed { RecLog.write("Test hook: a buffer of the \(role.tap) could not be set to zeros and is left out") }
             zeroingFailed = true
             return
         }
-        buffersHandedOn += 1
         onSample(CaptureSample(kind: role.kind, buffer: converted, pts: converted.presentationTimeStamp, arrival: arrival))
     }
 }
@@ -557,10 +571,9 @@ extension SystemAudioSource {
 /// (`TapClock.callOrder`: the tap alone in its aggregate device), has an IOProc of its own, and its buffers are
 /// stamped and handed on like the process tap's (it is a `SystemAudioSource` with the role `callAudio`).
 ///
-/// The tap exists only while `avconferenced` has an audio process object, which is expected to be only while it
-/// uses audio, during a call; that has not been observed on a device yet. If the process keeps its object while
-/// idle, the tap runs for the whole recording and delivers zeros outside calls. The list of process objects is looked at when the recording starts and
-/// whenever Core Audio says it changed (`kAudioHardwarePropertyProcessObjectList`), or every `pollSeconds` when that
+/// The tap exists only while `avconferenced` has an audio process object. On the device the process keeps its
+/// object outside calls too, so the tap runs for the whole recording and delivers zeros while no call is on. The
+/// list of process objects is looked at when the recording starts and whenever Core Audio says it changed (`kAudioHardwarePropertyProcessObjectList`), or every `pollSeconds` when that
 /// cannot be listened to. `onState` hears whether a call may be playing, on `control`.
 ///
 /// Nothing here can stop the recording: `start` does not throw, a tap that cannot be built is retried by its

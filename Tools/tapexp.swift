@@ -1,6 +1,6 @@
 // Compares process-tap constructions under a Bluetooth headset's call mode, to find one whose IOProc never stops.
 // Usage: tapexp <output|builtin|taponly> [seconds] [outfile]
-//   output:  the aggregate device's clock is the current default output (Holdfast 1.0's construction)
+//   output:  the aggregate device's clock is the current default output (how Holdfast built it before it took the built-in output)
 //   builtin: its clock is the Mac's built-in output, whatever the default output is doing
 //   taponly: no sub-device at all, the tap alone
 // Prints IOProc callbacks and the level once a second; "<-- DEAD" marks a second with no callback. With `outfile`

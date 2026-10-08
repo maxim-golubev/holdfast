@@ -35,7 +35,9 @@ enum ScreenSharingPrivacy {
     /// Brings every window in line with the setting. Cheap: a few windows, a property compared.
     static func apply() {
         let hide = !AppSettings.showDuringScreenSharing
-        for window in NSApp.windows {
+        // The cursor highlight and the magnifier are drawn to be in the picture (`CaptureSource.filter` takes them
+        // into every recording), so they are never hidden from a capture
+        for window in NSApp.windows where window !== mousePointer && window !== screenMagnifier {
             if hide {
                 guard window.sharingType != .none else { continue }
                 window.sharingType = .none

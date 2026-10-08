@@ -10,6 +10,7 @@ cd "$(dirname "$0")/.."
 keep=0
 if [[ $1 == -k ]]; then keep=1; shift; fi
 only=$1
+[[ -z $only || $only == record || $only == kill ]] || { echo "usage: Tools/soak.sh [-k] [record|kill]"; exit 2 }
 # The pipeline sources of Tools/test.sh, without its tests
 sources=(${(f)"$(sed -n '/^sources=(/,/^)/p' Tools/test.sh | grep '^ *Holdfast/' | sed 's/^ *//')"} Tests/Soak/*.swift)
 out=build/soak
@@ -49,5 +50,8 @@ if [[ -z $only || $only == kill ]]; then
   grep -E '^SOAK' $out/recover.txt
 fi
 (( keep )) || rm -rf $out/record $out/kill
-echo "reports: $out/record.txt $out/kill.txt $out/recover.txt"
+reports=()
+[[ -z $only || $only == record ]] && reports+=($out/record.txt)
+[[ -z $only || $only == kill ]] && reports+=($out/kill.txt $out/recover.txt)
+echo "reports: $reports"
 exit $result

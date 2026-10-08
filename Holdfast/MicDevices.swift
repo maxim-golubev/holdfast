@@ -116,7 +116,7 @@ enum MicDevices {
                 retriesLeft = 3
                 schedule(after: 0.7, announce: true)
             }
-            if status != noErr { print("Cannot watch the audio devices (selector \(selector)): \(status)") }
+            if status != noErr { RecLog.write("Microphone devices cannot be watched (selector \(selector), error \(status)): a device change will not reach a recording") }
         }
     }
 

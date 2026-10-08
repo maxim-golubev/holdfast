@@ -384,6 +384,8 @@ struct TapDrift {
     private(set) var removed = 0
     private(set) var runs = 0
     private(set) var seconds = 0.0
+    /// Seconds of audio the added frames, less those taken out, come to
+    private var corrected = 0.0
 
     /// A buffer `duration` seconds long goes at the end of its track, `offset` seconds before where it arrived
     /// (negative: after). Returns the frames to add to it: 1, -1 to take one out, or 0. `applied` says it was done.
@@ -409,6 +411,7 @@ struct TapDrift {
     mutating func applied(_ frames: Int, frame: Double) {
         sinceFrame = 0
         behind -= Double(frames) * frame
+        corrected += Double(frames) * frame
         if frames > 0 { added += frames } else { removed -= frames }
     }
 
@@ -424,7 +427,7 @@ struct TapDrift {
     /// A figure for the log: silence written into the track in between starts the measure of what is left anew.
     var partsPerMillion: Double? {
         guard seconds > 0 else { return nil }
-        return (Double(added - removed) / 48000 + behind) / seconds * 1_000_000
+        return (corrected + behind) / seconds * 1_000_000
     }
 }
 
@@ -467,7 +470,7 @@ struct SilentTap: Equatable {
     }
 
     /// Where the exact zeros in the tap's track began and where they end now; nil while its last audio was not zeros
-    private(set) var zerosSince: Double?
+    private var zerosSince: Double?
     private var zerosEnd = 0.0
     /// The last stretch in which another source had signal, and the earliest time in the tap's zeros, `inside`
     /// from their beginning, at which one had
@@ -476,7 +479,7 @@ struct SilentTap: Equatable {
     /// Rebuilds since the tap last delivered a sample that was not zero, and where the last one was
     private(set) var rebuilds = 0
     private var lastRebuild: Double?
-    private(set) var noticed = false
+    private var noticed = false
 
     static func == (a: SilentTap, b: SilentTap) -> Bool {
         return a.zerosSince == b.zerosSince && a.zerosEnd == b.zerosEnd && a.signal?.start == b.signal?.start && a.signal?.end == b.signal?.end
@@ -721,17 +724,6 @@ struct TapSpans: Equatable {
     func covers(_ start: Double, _ end: Double) -> Bool {
         let slack = 0.000_5
         return spans.contains { $0.start <= start + slack && $0.end >= end - slack }
-    }
-
-    /// Whether the tap delivered just after (`after`) or just before `time`
-    func isAlive(at time: Double, after: Bool) -> Bool {
-        let probe = 0.001
-        return after ? covers(time, time + probe) : covers(time - probe, time)
-    }
-
-    /// Where a stretch begins or ends, within `range`
-    func edges(in range: ClosedRange<Double>) -> [Double] {
-        return spans.flatMap { [$0.start, $0.end] }.filter { $0.isFinite && range.contains($0) }
     }
 
     /// Seconds in which the tap delivered, up to `duration`
@@ -1117,19 +1109,6 @@ enum SystemAudioAlignment {
 struct GainCurve {
     /// In order of time
     let points: [(time: Double, gain: Float)]
-
-    func value(at time: Double) -> Float {
-        guard let first = points.first else { return 1 }
-        if time <= first.time { return first.gain }
-        for index in points.indices.dropFirst() {
-            let a = points[index - 1], b = points[index]
-            if time <= b.time {
-                guard b.time > a.time else { return b.gain }
-                return a.gain + (b.gain - a.gain) * Float((time - a.time) / (b.time - a.time))
-            }
-        }
-        return points[points.count - 1].gain
-    }
 
     /// The gains of `count` frames from `frame` on at `rate` frames a second. `cursor` remembers where the last call
     /// was in the points, so a curve read from start to end costs one pass.

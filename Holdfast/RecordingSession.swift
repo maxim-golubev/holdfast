@@ -500,7 +500,7 @@ final class RecordingSession: @unchecked Sendable {
         let captureOver = { [queue, monitor] in queue.async { monitor.stop() } }
         await completion { done in
             capture.stop { error in
-                if let error = error { print("Stopping the capture: \(error.localizedDescription)") }
+                if let error = error { RecLog.write("Stopping the capture: \(error.localizedDescription)") }
                 captureOver()
                 done()
             }

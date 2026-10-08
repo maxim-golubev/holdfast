@@ -8,7 +8,6 @@
 import Foundation
 import ScreenCaptureKit
 import AVFoundation
-import VideoToolbox
 
 // Starting a recording in the app: what is checked and decided on the main thread (`start`), then the capture
 // source and the writer are created and started (`record`), and what the recorder needs from the app around it
@@ -54,7 +53,7 @@ extension RecorderController {
         }
     }
 
-    /// `start` once the microphone permission is known
+    /// `start` once the microphone and system audio permissions are known
     private func startAsked(type streamType: StreamType, display: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool, recordMic micOverride: Bool?, autoStop: Int, area: NSRect?) {
         guard let session = begin(streamType, autoStop: autoStop) else { return }
         // Every reason not to start ends here, with one alert
@@ -215,8 +214,8 @@ extension RecorderController {
             RecLog.write("System audio: screen capture, without call audio (\(reason))")
         }
         // Beside the tap, a second one of the process that plays FaceTime and phone calls alone, on a track of its
-        // own: screen capture, the tap's backup, never has that audio. It only exists while a call may be playing,
-        // and nothing it does can stop the recording.
+        // own: screen capture, the tap's backup, never has that audio. It exists for as long as that process has an audio
+        // object, and nothing it does can stop the recording.
         var callAudio: CallAudioSource?
         if systemAudio != nil {
             let source = CallAudioSource(factory: .coreAudio, sampleQueue: session.queue, onSample: deliver, onState: { session.callAudioChanged($0) })
@@ -225,8 +224,7 @@ extension RecorderController {
         }
         // A tap that cannot run at all is also shown where the track warnings are, for the whole recording
         if let warning = SystemAudioSelection.warning(for: route) { await session.showNotice(warning) }
-        let conf = CaptureSource.configuration(for: recording, target: target, filter: filter, microphoneDeviceID: microphone?.captureDeviceID,
-                                               capturesAudio: recording.systemAudio)
+        let conf = CaptureSource.configuration(for: recording, target: target, filter: filter, microphoneDeviceID: microphone?.captureDeviceID)
 
         if !audioOnly && !AppSettings.usesHEVC && !Encoder.encodesInHardware(kCMVideoCodecType_H264, width: Int32(conf.width), height: Int32(conf.height)) {
             let button = showAlertSyncOnMainThread(

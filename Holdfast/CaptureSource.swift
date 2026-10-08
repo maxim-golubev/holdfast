@@ -42,7 +42,7 @@ struct MicrophoneChoice {
 }
 
 /// The capture of one recording: what ScreenCaptureKit captures (`filter(for:content:)`), how
-/// (`configuration(for:target:filter:microphoneDeviceID:capturesAudio:)`), the stream with its delegate and outputs,
+/// (`configuration(for:target:filter:microphoneDeviceID:)`), the stream with its delegate and outputs,
 /// and the process tap that records the system audio when it is used (`systemAudio`). The stream captures system
 /// audio whenever the recording has it: as the system audio without the tap, as its backup with it
 /// (`streamAudioIsBackup`). Screen, system audio, its backup and microphone are all handed on as `CaptureSample`s on
@@ -187,9 +187,9 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     }
 
     /// The stream configuration of `recording`: picture size and format, system audio, microphone and frame rate.
-    /// `microphoneDeviceID` is the device to capture, nil for the system default input. `capturesAudio` is whether
-    /// the stream records system audio: whenever the recording has it, as the backup of the process tap or alone.
-    static func configuration(for recording: RecordingContext, target: CaptureTarget, filter: SCContentFilter, microphoneDeviceID: String?, capturesAudio: Bool) -> SCStreamConfiguration {
+    /// `microphoneDeviceID` is the device to capture, nil for the system default input. The stream records
+    /// system audio whenever the recording has it, as the backup of the process tap or alone.
+    static func configuration(for recording: RecordingContext, target: CaptureTarget, filter: SCContentFilter, microphoneDeviceID: String?) -> SCStreamConfiguration {
         let audioOnly = recording.audioOnly
         // HDR uses the local display preset; see https://developer.apple.com/videos/play/wwdc2024/10088/?time=191 for the canonical display alternative
         let conf = AppSettings.recordHDR ? SCStreamConfiguration(preset: .captureHDRStreamLocalDisplay) : SCStreamConfiguration()
@@ -214,7 +214,7 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
             }
         }
 
-        conf.capturesAudio = capturesAudio
+        conf.capturesAudio = recording.systemAudio
         // Like the tap, which leaves Holdfast's own process out
         conf.excludesCurrentProcessAudio = true
         conf.sampleRate = 48000
@@ -228,7 +228,6 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         // setting says. An audio-only stream writes no frames, so it gets one a second at most.
         let fps = AppSettings.captureFrameRate
         conf.minimumFrameInterval = audioOnly ? CMTime(value: 1, timescale: 1) : CMTime(value: 1, timescale: CMTimeScale(fps))
-        print("Frame interval passed to ScreenCaptureKit: \(conf.minimumFrameInterval)")
 
         if target.type == .screenarea {
             if let nsRect = target.area, let display = target.areaDisplay {

@@ -73,12 +73,13 @@ Holdfast/
   UserNotice.swift          Alerts and notifications (posted only as the Notifications setting allows); reportFailure.
   HoldfastApp.swift         AppDelegate: launch, shortcuts, quitting, SIGTERM.
   Supports/                 RecLog (the recordings log), DiskSpace, SleepAssertion, the AppleScript commands and
-                            their dictionary, window identifiers, the window picker's highlight.
+                            their dictionary, window identifiers, the window picker's highlight, WindowAccessor (a SwiftUI
+                            view's window), ScreenSharingPrivacy (the app's windows kept out of other apps' captures).
   ViewModel/                StatusItem (menu bar item, its menu, the warning panel), the main panel, the selectors,
                             Settings, the shared recording controls, the cursor highlight and magnifier, the preview,
                             the trimmer, the .qma player.
-Tests/                      The logic tests (Tools/test.sh).
-Tools/                      build.sh, test.sh, release.sh, app_icon.sh; rt.sh, the real-device test helpers; the
+Tests/                      The logic tests (Tools/test.sh); Soak/, the 90-minute simulation (Tools/soak.sh).
+Tools/                      build.sh, test.sh, soak.sh, release.sh, app_icon.sh; rt.sh, the real-device test helpers; the
                             probes used for the measurements and tonegen, a test signal for both audio tracks.
 ```
 
@@ -181,7 +182,8 @@ resume, so the time it shows and the auto-stop agree with the file.
 
 ## The sample queue
 
-All three stream outputs, and the process tap's buffers, are delivered on one
+All three stream outputs, and the buffers of the process tap and the call tap,
+are delivered on one
 serial queue, `RecorderController.queue`. The writer and the monitor belong to it: nothing
 else appends, so appends are ordered without locks. The session reaches its
 writer only through `queueWriter`, which traps (`dispatchPrecondition`) on any
@@ -340,11 +342,11 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   beside it: a process tap of `avconferenced`'s audio process objects only
   (`CATapDescription(stereoMixdownOfProcesses:)`, private, left audible),
   found by bundle identifier or executable name among
-  `kAudioHardwarePropertyProcessObjectList`. A process is expected to have
-  such an object only while it uses audio (for `avconferenced`: during a
-  call; not yet observed on the device, see below; if it keeps one while
-  idle, the call tap runs for the whole recording and delivers zeros outside
-  calls), so the list is read at the start and whenever Core Audio
+  `kAudioHardwarePropertyProcessObjectList`. A process may have such an
+  object only while it uses audio; on the device `avconferenced` keeps one
+  outside calls too, so the call tap ran for the whole of every recording
+  and delivered zeros with no call on. The list is read at the start and
+  whenever Core Audio
   says it changed (one listener on the system object; read every 5 s when it
   cannot be listened to). With no object there is no tap, no aggregate device
   and no IOProc; when one appears a tap is built for it, when the set of
@@ -523,11 +525,10 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   (`Health.notice`); a tap that cannot be built yet is repaired, and reported
   the same way only once it has been dead for 15 s, until it delivers again.
 - **Not yet verified in a real recording.** The process tap has recorded real
-  FaceTime calls in the build before this one. The call tap has not been run
-  during a call at all: that `avconferenced` gets and loses its audio object
-  with a call, that a tap of it alone in its aggregate device delivers the
-  call, how far its audio is from the process tap's, and what its IOProc does
-  while that process plays nothing. Nor has the watch for a tap of zeros been
+  FaceTime calls. The call tap has run in real recordings with no call on
+  (built at every start, its IOProc called throughout, no rebuild), not yet
+  during a call: that a tap of `avconferenced` alone in its aggregate device
+  delivers the call, and how far its audio is from the process tap's. Nor has the watch for a tap of zeros been
   run on the device (among other things with the output muted), nor a browser
   call whose AirPods switch to 24 kHz with this version.
 
@@ -981,8 +982,8 @@ report lists every file, under the folder it was found in.
 
 `applicationShouldTerminate` asks `canQuit(orReply:)`, which is true only when
 nothing is recording, saving, recovering or exporting. Otherwise it stops the
-recording and replies once every session's files are final, the rest of that is done and any failure alert has been
-dismissed, checked again together before the reply; meanwhile no new recording
+recording and replies once every session's files are final, recovery and
+exports are done and any failure alert has been dismissed, checked again together before the reply; meanwhile no new recording
 can start, since the reply would end it. `applicationWillTerminate` stops the
 same way for up to 30 s in case the app is terminated past that. SIGTERM is
 ignored and handled by a dispatch source that calls `NSApp.terminate` from a

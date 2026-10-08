@@ -32,7 +32,7 @@ enum DiskSpace {
         return recording ? startMinimum : stopMinimum
     }
     private static let interval: TimeInterval = 5
-    
+
     /// Bytes available for a recording, counting the space the system frees on demand (purgeable space: local
     /// snapshots, caches), as Finder does. Counting only what is free right now would refuse or stop recordings
     /// that fit. Volumes that do not report this figure report zero for it, so the larger of the two is used.
@@ -41,32 +41,32 @@ enum DiskSpace {
         guard let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]) else { return nil }
         return usable(important: values.volumeAvailableCapacityForImportantUsage, free: values.volumeAvailableCapacity.map { Int64($0) })
     }
-    
+
     /// The larger of the space counting what the system frees on demand and the space free right now
     static func usable(important: Int64?, free: Int64?) -> Int64? {
         guard let important = important else { return free }
         return max(important, free ?? 0)
     }
-    
+
     /// A recording is not started with less than `startMinimum` free
     static func canStart(free: Int64) -> Bool {
         return free >= startMinimum
     }
-    
+
     /// A running recording is stopped when less than `stopMinimum` is free
     static func mustStop(free: Int64) -> Bool {
         return free < stopMinimum
     }
-    
+
     /// Whether a second file of `size` bytes fits with `reserve` to spare
     static func hasRoom(forCopyOf size: Int64, free: Int64, reserve: Int64 = stopMinimum) -> Bool {
         return free > size + reserve
     }
-    
+
     static func formatted(_ bytes: Int64) -> String {
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
-    
+
     /// Whether a second file as large as `url` (a file or a package) fits in `folder`, next to it unless given, with
     /// `copyReserve` to spare: more while a recording is starting or running (`recording`), which is taken to be on
     /// the same volume. True when that cannot be determined. `free` is how the free space is found out.
@@ -97,7 +97,7 @@ enum DiskSpace {
         }
         return total
     }
-    
+
     /// A recording's file as it is open, wherever its folder goes: whether it was deleted, and where it is now.
     /// Holds a descriptor for events only (`O_EVTONLY`), which does not keep its volume from being ejected.
     final class OpenFile {

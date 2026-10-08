@@ -114,7 +114,7 @@ class TrimmerModel: NSObject, ObservableObject {
                 try await exportSession.export(to: output, as: fileType)
                 UserNotice.showNotification(.finished, title: "Clip Saved", body: String(format: "File saved to: %@", output.path), id: "holdfast.completed.\(UUID().uuidString)")
             } catch {
-                try? fd.removeItem(at: output)
+                try? FileManager.default.removeItem(at: output)
                 UserNotice.showAlertLater(title: "Clip Not Saved", message: String(format: "The trimmed clip of %@ could not be written: %@ The recording itself is unchanged.", fileUrl.lastPathComponent, error.localizedDescription))
             }
             RecorderController.shared.exportEnded()
@@ -172,7 +172,6 @@ struct VideoTrimmerView: View {
             window?.styleMask.insert(.resizable)
             playerViewModel.nsWindow = window
         }, onWindowClose: {
-            playerViewModel.playerView.player?.replaceCurrentItem(with: nil)
             playerViewModel.cleanup()
         }))
     }

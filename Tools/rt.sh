@@ -8,7 +8,7 @@ RT_LOG=~/Library/Logs/Holdfast/recordings.log
 # The bundle identifier of the build, whatever it is set to in Xcode
 rt_id() { /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$RT_APP/Contents/Info.plist" 2>/dev/null || { echo "rt: no app at $RT_APP, run Tools/build.sh" >&2; return 1 } }
 
-rt_quit() { local id; id=$(rt_id) || return 1; osascript -e "tell application id \"$id\" to quit" 2>/dev/null; for i in {1..40}; do pgrep -f "Release/Holdfast.app" >/dev/null || { rt_restore; return 0 }; sleep 0.5; done; echo "rt: app did not quit"; return 1 }
+rt_quit() { local id; id=$(rt_id) || return 1; osascript -e "tell application id \"$id\" to quit" 2>/dev/null; local i; for i in {1..40}; do pgrep -f "Release/Holdfast.app" >/dev/null || { rt_restore; return 0 }; sleep 0.5; done; echo "rt: app did not quit"; return 1 }
 # rt_launch points the app's save folder at the test folder and turns the preview off; rt_restore puts both back as
 # they were (or removes them when they were not set). rt_quit calls it, and so does leaving this shell.
 RT_DEFAULTS=(saveDirectory showPreview)
@@ -24,13 +24,14 @@ rt_restore() {
   local k
   for k in $RT_DEFAULTS; do
     if (( ${+RT_OLD[$k]} )); then
-      case $k in showPreview) defaults write $RT_SAVED $k -bool ${RT_OLD[$k]} ;; *) defaults write $RT_SAVED $k -string "${RT_OLD[$k]}" ;; esac
+      case $k in showPreview) defaults write $RT_SAVED $k -bool $([[ ${RT_OLD[$k]} == 1 ]] && echo true || echo false) ;; *) defaults write $RT_SAVED $k -string "${RT_OLD[$k]}" ;; esac
     else defaults delete $RT_SAVED $k 2>/dev/null; fi
   done
   unset RT_SAVED
 }
 zshexit_functions+=(rt_restore)
 rt_launch() { # rt_launch <save-dir>
+  [[ -n $1 ]] || { echo "rt: usage: rt_launch <save-dir>"; return 1 }
   local id; id=$(rt_id) || return 1
   mkdir -p "$1"; RT_DIR="$1"; rt_remember $id
   defaults write $id saveDirectory -string "$1"; defaults write $id showPreview -bool false
@@ -41,7 +42,7 @@ rt_start() { local id; id=$(rt_id) || return 1; osascript -e 'with timeout of 20
 rt_stop() { local id; id=$(rt_id) || return 1; osascript -e "tell application id \"$id\" to stop recording" }
 rt_wait_final() { # waits until no temporary recording/mixing file is left
   [[ -d $RT_DIR ]] || { echo "rt: no save folder, run rt_launch first"; return 1 }
-  for i in {1..${1:-120}}; do sleep 1; ls "$RT_DIR" | grep -q -E '\.(recording|mixing)\.' || return 0; done; echo "rt: still not final"; return 1 }
+  local i; for i in {1..${1:-120}}; do sleep 1; ls "$RT_DIR" | grep -q -E '\.(recording|mixing)\.' || return 0; done; echo "rt: still not final"; return 1 }
 rt_tracks() { ls "$RT_DIR" | grep -E "\.(mp4|m4a|mov)$" | while read n; do f="$RT_DIR/$n"; echo "== ${f:t}"; ffprobe -v error -show_entries stream=index,codec_type,codec_name,sample_rate,duration -of compact "$f" 2>&1; done }
 rt_levels() { # rt_levels <file> <audio-track-index>: level per 2 s, -180 = digital silence
   local raw rc; raw=$(mktemp -t rt_levels) || return 1

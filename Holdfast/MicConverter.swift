@@ -91,10 +91,6 @@ final class MicConverter {
     private let longestDrop: Double = 1
     /// Seconds of arrivals over which the age of late buffers must hold steady before they are taken to lag
     static let steadyWindow: Double = 2
-    /// How far the age of late buffers may vary within `steadyWindow`, and how fast it may fall over a whole run,
-    /// and still count as steady (`LateRun`)
-    static let steadyRange = LateRun.steadyRange
-    static let steadyFall = LateRun.steadyFall
 
     // The buffers that lie before the end of the track are a backlog, which is dropped, or come from a microphone
     // whose clock lags, and are shifted to the end of the track: see `LateRun`, which tells them apart.
@@ -314,13 +310,16 @@ final class MicConverter {
         guard let description = sampleBuffer.formatDescription, description.mediaType == .audio else { return nil }
         let format = AVAudioFormat(cmAudioFormatDescription: description)
         guard format.sampleRate > 0, format.channelCount > 0 else { return nil }
-        if converter == nil || inputFormat != format {
+        if inputFormat != format {
             if let old = inputFormat {
                 formatChanges += 1
                 RecLog.write("Microphone format changed from \(old) to \(format)")
             }
             converter = AVAudioConverter(from: format, to: outputFormat)
             inputFormat = format
+            if converter == nil {
+                RecLog.write("Microphone: no converter from \(format) to \(outputFormat); its audio is left out until the format changes")
+            }
         }
         guard let converter = converter else { return nil }
         let outputRate = Double(MicConverter.sampleRate)

@@ -6,8 +6,6 @@
 //
 
 import SwiftUI
-import Foundation
-import AVFoundation
 import ScreenCaptureKit
 
 struct WinSelector: View {

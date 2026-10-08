@@ -4,7 +4,6 @@
 //
 
 import AVFoundation
-import AudioToolbox
 import CoreAudio
 import CoreMedia
 import Foundation
@@ -136,7 +135,7 @@ struct SystemAudioTapError: LocalizedError {
 /// voice processing. The tap follows the processes, not the device that clocks it. The default output is a poor
 /// clock: AirPods change mode under a call (24 kHz), and an aggregate device clocked by them delivered nothing for a
 /// whole 47-minute meeting. So the order is the built-in output, then no sub-device, then the default output last.
-enum TapClock: String, Equatable, CaseIterable {
+enum TapClock {
     /// The Mac's built-in output (its speakers, there in clamshell mode too), whatever the default output is
     case builtInOutput
     /// No sub-device: the tap alone

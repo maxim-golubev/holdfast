@@ -100,7 +100,8 @@ final class MovieWriter {
 
     private var writer: AVAssetWriter?
     private var videoInput, micInput: AVAssetWriterInput?
-    /// The system audio track (or file, for an audio-only recording), and its backup when the tap is used
+    /// The system audio track (or file, for an audio-only recording), and with the process tap its backup's and the
+    /// call tap's
     private var system: SystemTrack?
     private var backup: SystemTrack?
     /// The call tap's track (or file), there whenever the tap is used and silent while no call plays
@@ -143,6 +144,8 @@ final class MovieWriter {
     private var lastVideoFrame: CMSampleBuffer?
     /// Whether `lastVideoFrame` owns its pixels instead of holding a surface of the stream
     private var lastVideoFrameIsCopy = false
+    /// The copy failed once in this recording, and the log says so
+    private var frameCopyFailed = false
     /// End of the last video frame appended, a repeated one included (its time, when it has no duration). The tracks
     /// are brought to it at the stop.
     private(set) var videoEnd: CMTime?
@@ -238,7 +241,7 @@ final class MovieWriter {
         // the mix also goes by when a file has no titles: system audio, its backup, the call tap's audio, the
         // microphone. The call tap's track is there from the start, since a track cannot be added when a call
         // begins, and is kept going with silence like the others while no call plays.
-        func audioInput(_ title: String, failure: String) throws -> AVAssetWriterInput {
+        func audioInput(_ title: String, failure: String = "The audio settings are not supported by this file format.") throws -> AVAssetWriterInput {
             let input = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: audioSettings)
             input.expectsMediaDataInRealTime = true
             input.metadata = [MovieWriter.titleItem(title)]
@@ -252,10 +255,10 @@ final class MovieWriter {
         if recording.systemAudio {
             let title = recording.systemAudioBackup ? TrackTitle.tap : TrackTitle.system
             system = SystemTrack(name: "System audio", fromTap: recording.systemAudioBackup,
-                                 input: try audioInput(title, failure: "The audio settings are not supported by this file format."))
+                                 input: try audioInput(title))
             if recording.systemAudioBackup {
-                backup = SystemTrack(name: "System audio backup", input: try audioInput(TrackTitle.backup, failure: "The audio settings are not supported by this file format."))
-                call = SystemTrack(name: "Call audio", fromTap: true, input: try audioInput(TrackTitle.call, failure: "The audio settings are not supported by this file format."))
+                backup = SystemTrack(name: "System audio backup", input: try audioInput(TrackTitle.backup))
+                call = SystemTrack(name: "Call audio", fromTap: true, input: try audioInput(TrackTitle.call))
             }
         }
         var micInput: AVAssetWriterInput?
@@ -289,12 +292,10 @@ final class MovieWriter {
         silentTap = SilentTap()
         func log(_ url: URL?) throws -> TapSpanLog? {
             guard let url else { return nil }
-            guard !FileManager.default.fileExists(atPath: url.path) else {
-                throw RecordingError(String(format: "A file named \"%@\" is already in the save folder.", url.lastPathComponent))
-            }
-            let made = try TapSpanLog(url: url)
+            try checkIsFree(url)
+            // Listed first: a log whose file was created and could not be opened must not outlive a failed start
             createdAlongside.append(url)
-            return made
+            return try TapSpanLog(url: url)
         }
         tapSpans = try log(recording.tapSpansURL)
         // The same record for the call tap, when its audio has a track or a file
@@ -329,16 +330,12 @@ final class MovieWriter {
                              file: try AVAudioFile(forWriting: systemAudioURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false))
         if let backupURL = recording.backupAudioURL {
             // In the package, or next to the file under a name of its own; never over another file
-            guard !FileManager.default.fileExists(atPath: backupURL.path) else {
-                throw RecordingError(String(format: "A file named \"%@\" is already in the save folder.", backupURL.lastPathComponent))
-            }
+            try checkIsFree(backupURL)
             if recording.micAudioURL == nil { createdAlongside.append(backupURL) }
             backup = SystemTrack(name: "System audio backup", file: try AVAudioFile(forWriting: backupURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false))
         }
         if let callURL = recording.callAudioURL {
-            guard !FileManager.default.fileExists(atPath: callURL.path) else {
-                throw RecordingError(String(format: "A file named \"%@\" is already in the save folder.", callURL.lastPathComponent))
-            }
+            try checkIsFree(callURL)
             if recording.micAudioURL == nil { createdAlongside.append(callURL) }
             call = SystemTrack(name: "Call audio", fromTap: true, file: try AVAudioFile(forWriting: callURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false))
         }
@@ -369,7 +366,7 @@ final class MovieWriter {
             audioSettings[AVEncoderBitRateKey] =  bitRate
         default:
             // An unknown format must not cost the recording: AAC goes into every container used here
-            print("Unknown audio format \"\(format)\", using AAC")
+            RecLog.write("Unknown audio format \"\(format)\", using AAC")
             audioSettings[AVFormatIDKey] = kAudioFormatMPEG4AAC
             audioSettings[AVEncoderBitRateKey] = bitRate
         }
@@ -449,8 +446,12 @@ final class MovieWriter {
     /// The writer never writes over a file: AVAudioFile would truncate it, and a failed start would remove it.
     /// `RecordingFileStore.newBase` chooses a name no file has, so this only catches one that appeared since.
     private func checkNameIsFree() throws {
-        guard !FileManager.default.fileExists(atPath: recording.rawURL.path) else {
-            throw RecordingError(String(format: "A file named \"%@\" is already in the save folder.", recording.rawURL.lastPathComponent))
+        try checkIsFree(recording.rawURL)
+    }
+
+    private func checkIsFree(_ url: URL) throws {
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw RecordingError(String(format: "A file named \"%@\" is already in the save folder.", url.lastPathComponent))
         }
     }
 
@@ -464,7 +465,6 @@ final class MovieWriter {
             isResume = false
             if let last = lastPTS {
                 timeOffset = Timeline.pauseOffset(resumingAt: raw, last: last, current: timeOffset)
-                print("time removed for pauses: \(CMTimeGetSeconds(timeOffset))")
             }
         }
         return CMTimeSubtract(raw, timeOffset)
@@ -773,12 +773,15 @@ final class MovieWriter {
         guard let placed = placeSystemAudio(track, from: pts, to: endPTS, end: track.end ?? sessionStart) else { return }
         var audio = samples
         var length = CMTimeSubtract(endPTS, pts)
+        // Held until the write: a PCM buffer only points into the sample buffer it was made of
+        var stretchedBuffer: CMSampleBuffer?
         if placed.frames != 0, let stretched = stretch(sampleBuffer, by: placed.frames, in: track), let pcm = stretched.asPCMBuffer {
             audio = pcm
             length = stretched.duration
+            stretchedBuffer = stretched
         }
         do {
-            try track.file?.write(from: audio)
+            try withExtendedLifetime(stretchedBuffer) { try track.file?.write(from: audio) }
             delivered(track, from: placed.start, to: CMTimeAdd(placed.start, length), peak: silentTap == nil ? 0 : MovieWriter.peak(of: sampleBuffer))
         } catch {
             fail(MovieWriter.writeFailure(error))
@@ -1110,7 +1113,8 @@ final class MovieWriter {
     private func detachLastVideoFrame() {
         guard !lastVideoFrameIsCopy, let frame = lastVideoFrame else { return }
         guard let copy = MovieWriter.detachedCopy(of: frame) else {
-            print("The last video frame could not be copied")
+            if !frameCopyFailed { RecLog.write("The last video frame could not be copied; it holds one of the stream's surfaces until it can be") }
+            frameCopyFailed = true
             return
         }
         lastVideoFrame = copy
@@ -1167,7 +1171,8 @@ final class MovieWriter {
 
     /// One track of system audio as it is written: the input of a video's track or the file of an audio-only
     /// recording, where its audio ends (silence included), the format it was last delivered in, and how its
-    /// buffers' times were taken. The system audio has one; with the process tap its backup has another.
+    /// buffers' times were taken. The system audio has one; with the process tap its backup and the call tap's audio
+    /// have one each.
     private final class SystemTrack {
         let name: String
         /// Whether the process tap feeds it: its buffers are stamped by their arrival in the tap's IOProc and go
@@ -1339,7 +1344,8 @@ final class TapSpanLog {
         do {
             try handle?.write(contentsOf: Data(line.utf8))
         } catch {
-            // The mix then judges the sources by their sound alone where the file is missing lines
+            // The mix goes by the lines that are there: without a "dead" line the tap counts as alive from its last
+            // "alive" on, without an "alive" line the rest is the backup's
             if !failed { RecLog.write("System audio: the tap's spans could not be written to \(url.lastPathComponent): \(error.localizedDescription)") }
             failed = true
         }

@@ -33,7 +33,8 @@ enum RecordingMixer {
 
     /// The audio tracks of a recording: the system audio (the tap's, when there is a backup), the backup of the
     /// system audio, the call tap's audio, the microphone. Told by their titles (`MovieWriter.TrackTitle`); in a
-    /// file without titles, one written before there were any, by their order: system audio, then microphone.
+    /// file without titles, one written before there were any, by their order: system audio, then microphone; with
+    /// three, the tap, its backup, the microphone; with four, the tap, its backup, the call tap, the microphone.
     struct Layout {
         var system: AVAssetTrack?
         var backup: AVAssetTrack?
@@ -336,7 +337,7 @@ enum RecordingMixer {
     /// stretches are on the timeline of the tracks as they are). With a call tap's track (`call`) that has sound:
     /// how far its audio is from the tap's, which hold it alike while both run, and the stretches in which it is
     /// added to the backup's. A call tap's track without sound changes nothing.
-    private static func choose(tap: AVAssetTrack, backup: AVAssetTrack, call: AVAssetTrack? = nil, in asset: AVAsset, spans: TapSpans?,
+    private static func choose(tap: AVAssetTrack, backup: AVAssetTrack, call: AVAssetTrack?, in asset: AVAsset, spans: TapSpans?,
                                align: Bool = true) async throws -> Chosen {
         let tapLevels = try blockLevels(of: tap, in: asset)
         let backupLevels = try blockLevels(of: backup, in: asset)
@@ -515,7 +516,7 @@ enum RecordingMixer {
                     problem = String(format: "Mixing made no progress for %d seconds and was given up.", Int(stallLimit))
                 }
                 guard let problem = problem, state.end(problem) else { return }
-                print("Mix watchdog: \(problem) writer: \(String(describing: writer.error)), reader: \(String(describing: reader.error))")
+                RecLog.write("Mix watchdog: \(problem) writer: \(String(describing: writer.error)), reader: \(String(describing: reader.error))")
                 // Lets a read that is still waiting return
                 reader.cancelReading()
             }
@@ -687,9 +688,8 @@ enum RecordingMixer {
     /// measures between them, written to `output` with `settings`, as long as the longer file. With the call tap's
     /// file (`call`) its audio is added to the backup's wherever the tap is not the source and it has sound, moved
     /// by what it is apart from the tap's, as in the mix of a video; a call tap's file that is missing, does not
-    /// open or has no sound there changes nothing. Returns
-    /// the stretches; throws, leaving `output` incomplete, when it cannot be written or is not as long as the tap's
-    /// file. Blocks while it renders, so not on the main thread.
+    /// open or has no sound there changes nothing. Returns the stretches; throws, leaving `output` incomplete, when
+    /// it cannot be written or is not as long as the longer of the tap's and the backup's files. Blocks while it renders, so not on the main thread.
     @discardableResult
     static func mergeSystemAudio(tap: URL, backup: URL, call: URL? = nil, spans: TapSpans?, to output: URL, settings: [String: Any]) throws -> [SystemAudioChoice.Segment] {
         var files = try [tap, backup].map { try AVAudioFile(forReading: $0) }

@@ -32,7 +32,6 @@ struct WindowAccessor: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
-            onWindowOpen: onWindowOpen,
             onWindowActive: onWindowActive,
             onWindowDeactivate: onWindowDeactivate,
             onWindowClose: onWindowClose
@@ -41,16 +40,13 @@ struct WindowAccessor: NSViewRepresentable {
 
     class Coordinator: NSObject, NSWindowDelegate {
         weak var window: NSWindow?
-        var onWindowOpen: ((NSWindow?) -> Void)?
         var onWindowActive: ((NSWindow?) -> Void)?
         var onWindowDeactivate: ((NSWindow?) -> Void)?
         var onWindowClose: (() -> Void)?
 
-        init(onWindowOpen: ((NSWindow?) -> Void)? = nil,
-             onWindowActive: ((NSWindow?) -> Void)? = nil,
+        init(onWindowActive: ((NSWindow?) -> Void)? = nil,
              onWindowDeactivate: ((NSWindow?) -> Void)? = nil,
              onWindowClose: (() -> Void)? = nil) {
-            self.onWindowOpen = onWindowOpen
             self.onWindowClose = onWindowClose
             self.onWindowActive = onWindowActive
             self.onWindowDeactivate = onWindowDeactivate

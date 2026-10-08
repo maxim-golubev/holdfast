@@ -24,7 +24,6 @@ struct RecordingFileStore {
     static let framePrefix = "Capturing at "
     static let rawMarker = "recording"
     static let mixMarker = "mixing"
-    static let unmixedSuffix = unmixedSuffix(tracks: 2)
     /// The tap's spans next to a recording made with the process tap: `<base>.tap-alive.txt`
     static let tapSpansEnding = "tap-alive.txt"
     /// The same for the call tap: `<base>.call-alive.txt`
@@ -92,7 +91,7 @@ struct RecordingFileStore {
         return URL(fileURLWithPath: "\(base).\(marker).\(ending)")
     }
 
-    static func unmixedURL(base: String, ending: String, tracks: Int = 2) -> URL {
+    static func unmixedURL(base: String, ending: String, tracks: Int) -> URL {
         return URL(fileURLWithPath: "\(base)\(unmixedSuffix(tracks: tracks)).\(ending)")
     }
 
@@ -365,7 +364,7 @@ struct RecordingFiles {
          systemAudioBackup: Bool = false) {
         let backup = systemAudio && systemAudioBackup
         self.base = base
-        tapSpansURL = backup ? URL(fileURLWithPath: "\(base).\(RecordingFileStore.tapSpansEnding)") : nil
+        tapSpansURL = backup ? RecordingFileStore.tapSpansURL(base: base) : nil
         callSpansURL = backup ? RecordingFileStore.callSpansURL(base: base) : nil
         if audioOnly {
             // Written under a temporary name and renamed once closed: an audio file that was not closed does not
@@ -482,9 +481,6 @@ enum RecoveryNames {
     /// A recording that does not open
     static let damaged = "damaged"
     static let recovered = "recovered"
-    /// "unmixed, 2 audio tracks": the label of the recording as it was written, as after an ordinary mix
-    static let unmixed = unmixed(tracks: 2)
-
     /// "unmixed, 4 audio tracks" for a recording with the tap, its backup, the call tap and the microphone
     static func unmixed(tracks: Int) -> String {
         return String(RecordingFileStore.unmixedSuffix(tracks: tracks).dropFirst(2).dropLast())
@@ -506,7 +502,7 @@ enum RecoveryNames {
 
     /// The recording itself, which is only ever renamed. `mixed` says whether its mix was written and checked;
     /// `tracks` is how many audio tracks it has.
-    static func recording(complete: Bool, mixed: Bool, tracks: Int = 2) -> String {
+    static func recording(complete: Bool, mixed: Bool, tracks: Int) -> String {
         if mixed { return complete ? unmixed(tracks: tracks) : recovered + ", " + unmixed(tracks: tracks) }
         return complete ? unmixed(tracks: tracks) : recovered
     }

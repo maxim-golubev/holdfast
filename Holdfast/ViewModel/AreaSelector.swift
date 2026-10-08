@@ -7,7 +7,6 @@
 
 import SwiftUI
 import ScreenCaptureKit
-import Quartz
 
 /// The Esc monitor of the area selector, and whether its area is being dragged or resized with the mouse
 private var keyMonitor: Any?
@@ -28,7 +27,7 @@ struct DashWindow: View {
     }
 }
 
-struct resizeView: View {
+struct AreaSizeFields: View {
     private enum Field: Int, Hashable { case width, height }
     @FocusState private var focusedField: Field?
     
@@ -126,7 +125,7 @@ struct AreaSelector: View {
                         SymbolButton("Back", symbol: "arrow.uturn.backward.circle.fill", color: .secondary, help: "Back to the area selector") {
                             resizePopoverShowing = false
                         }
-                        resizeView(screen: screen)
+                        AreaSizeFields(screen: screen)
                     }.padding()
                 }
             }
@@ -137,10 +136,11 @@ struct AreaSelector: View {
         .focusable(false)
         .background(WindowAccessor(onWindowOpen: { w in nsWindow = w }, onWindowClose: {
             DispatchQueue.main.async {
-                // Its own screen's window. After a move to another display the selector there stays, and so
-                // does the monitor that follows the pointer.
-                for w in NSApp.windows(.areaSelector) where w.frame == screen.nsScreen?.frame { w.close() }
+                // Another panel is up: the selector was opened again or moved to another display. Whatever opened
+                // it closed this one's overlay itself; the overlay there now is the new one's, and the monitors
+                // go on serving it.
                 guard !NSApp.windows(.areaPanel).contains(where: { $0.isVisible }) else { return }
+                for w in NSApp.windows(.areaSelector) where w.frame == screen.nsScreen?.frame { w.close() }
                 if let monitor = keyMonitor {
                     NSEvent.removeMonitor(monitor)
                     keyMonitor = nil

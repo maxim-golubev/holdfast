@@ -7,12 +7,10 @@
 
 import AppKit
 import SwiftUI
-import AVFoundation
 import ScreenCaptureKit
 import UserNotifications
 import KeyboardShortcuts
 
-let fd = FileManager.default
 let mousePointer = NSWindow(contentRect: NSRect(x: -70, y: -70, width: 70, height: 70), styleMask: [.borderless], backing: .buffered, defer: false)
 let screenMagnifier = NSWindow(contentRect: NSRect(x: -402, y: -402, width: 402, height: 348), styleMask: [.borderless], backing: .buffered, defer: false)
 let countdownPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 120), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
@@ -22,9 +20,9 @@ struct HoldfastApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     var body: some Scene {
-        DocumentGroup(newDocument: qmaPackageHandle()) { file in
+        DocumentGroup(newDocument: QmaPackage()) { file in
             if let fileURL = file.fileURL {
-                qmaPlayerView(document: file.$document, fileURL: fileURL)
+                QmaPlayerView(document: file.$document, fileURL: fileURL)
                     .frame(minWidth: 400, minHeight: 100, maxHeight: 100)
                     .focusable(false)
             }
@@ -160,7 +158,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func showAreaSelectorFollowingPointer() {
         stopAreaSelectorMonitor()
         for w in NSApp.windows(.areaSelector, .areaPanel) { w.close() }
-        showAreaSelector(size: NSSize(width: 600, height: 450))
+        guard showAreaSelector(size: AppDelegate.firstAreaSize) else {
+            UserNotice.showAlertLater(title: "Failed to Record", message: "The display under the pointer was not found. Try again.")
+            return
+        }
         var currentDisplay = ScreenContent.getSCDisplayWithMouse()
         areaSelectorMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .rightMouseDown, .leftMouseDown, .otherMouseDown]) { [self] _ in
             let display = ScreenContent.getSCDisplayWithMouse()
@@ -168,9 +169,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             currentDisplay = display
             // Only the selector's own windows: a recording's frame, Settings or a trimmer stay
             for w in NSApp.windows(.areaSelector, .areaPanel) { w.close() }
-            showAreaSelector(size: NSSize(width: 600, height: 450))
+            showAreaSelector(size: AppDelegate.firstAreaSize)
         }
     }
+
+    /// The area a display's selector opens with when none was chosen on it before
+    private static let firstAreaSize = NSSize(width: 600, height: 450)
     
     /// Without this the system shows no banner while the app is active, which it is right after Start was clicked
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
@@ -192,7 +196,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // app ever be terminated past it, the recording is stopped the same way and given a moment to be saved:
         // the run loop is run, not blocked, because saving continues on the main thread. That works only outside a
         // main-queue block, which is why every terminate of the app's own runs as a run loop block.
-        // The log is written in the background: its last lines (where the recording was saved) must reach the file
+        // The log is written in the background: its last lines (where the recording was saved) must reach the file.
         // A process tap left by a recording that could not be stopped in time is torn down first; being private to
         // the process, it would go with it anyway
         defer {

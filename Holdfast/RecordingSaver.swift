@@ -42,11 +42,11 @@ enum RecordingSaver {
             report(nothingTitle, of: recording, (earlyReason.map { $0 + " " } ?? "") + nothing)
         } else if !recording.audioOnly {
             if !closed {
-                print("Video writing failed with status: \(String(describing: writer?.status)), error: \(String(describing: writer?.error))")
+                RecLog.write("The video file could not be closed: writer status \(String(describing: writer?.status.rawValue)), error \(String(describing: writer?.error))")
                 var body = earlyReason ?? ""
                 if let error = writer?.error?.localizedDescription, !body.contains(error) { body += (body.isEmpty ? "" : " ") + error }
                 if body.isEmpty { body = "Unknown error." }
-                if fd.fileExists(atPath: recording.rawURL.path) {
+                if FileManager.default.fileExists(atPath: recording.rawURL.path) {
                     // The file is written in fragments, so it plays up to the last few seconds without having been closed.
                     // It leaves its temporary name; no mix is attempted on it.
                     let kept = recording.unmixedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
@@ -68,12 +68,12 @@ enum RecordingSaver {
             // the system audio when it is a file of its own
             let kept = recording.closedURL.map { RecordingFileStore.keep(written: recording.rawURL, as: $0) } ?? recording.rawURL
             if recording.micAudioURL == nil, let written = recording.backupAudioURL, let closedBackup = recording.backupClosedURL,
-               fd.fileExists(atPath: written.path) {
+               FileManager.default.fileExists(atPath: written.path) {
                 _ = RecordingFileStore.keep(written: written, as: closedBackup)
             }
             // And the call tap's
             if recording.micAudioURL == nil, let written = recording.callAudioURL, let closedCall = recording.callClosedURL,
-               fd.fileExists(atPath: written.path) {
+               FileManager.default.fileExists(atPath: written.path) {
                 _ = RecordingFileStore.keep(written: written, as: closedCall)
             }
             if recording.recordMic, let writer = writer, !closed {
@@ -142,7 +142,7 @@ enum RecordingSaver {
                 }
                 try await RecordingMixer.verify(source: raw, output: mixURL, plan: plan)
                 // A rename within the folder: the final name appears with the complete file or not at all
-                try fd.moveItem(at: mixURL, to: final)
+                try FileManager.default.moveItem(at: mixURL, to: final)
             } catch {
                 print("Failed to mix the audio tracks: \(error)")
                 failure = error.localizedDescription
@@ -150,9 +150,9 @@ enum RecordingSaver {
         }
         if let failure = failure {
             // What the mix wrote is incomplete or not to be trusted, and the recording has everything
-            try? fd.removeItem(at: mixURL)
+            try? FileManager.default.removeItem(at: mixURL)
             let kept = RecordingFileStore.keep(written: raw, as: unmixedURL)
-            guard fd.fileExists(atPath: kept.path) else {
+            guard FileManager.default.fileExists(atPath: kept.path) else {
                 // Not a place to claim the recording is: the writer kept writing through its open file, wherever that went
                 report("Audio Mix Failed", of: recording, early + String(format: "Mixing the audio failed: %@", failure) + " " + movedNote(for: raw))
                 return
@@ -170,7 +170,7 @@ enum RecordingSaver {
             if kept != unmixedURL { leftover = kept }
         } else {
             do {
-                try fd.removeItem(at: raw)
+                try FileManager.default.removeItem(at: raw)
             } catch {
                 print("Failed to remove the unmixed recording: \(error.localizedDescription)")
                 leftover = RecordingFileStore.keep(written: raw, as: unmixedURL)
@@ -196,24 +196,31 @@ enum RecordingSaver {
         // Inside whatever the package is called now
         let tap = inPackage ? kept.appendingPathComponent(written.lastPathComponent) : kept
         let backup = inPackage ? kept.appendingPathComponent(backupClosed.lastPathComponent)
-            : (fd.fileExists(atPath: backupClosed.path) ? backupClosed : (recording.backupAudioURL ?? backupClosed))
+            : (FileManager.default.fileExists(atPath: backupClosed.path) ? backupClosed : (recording.backupAudioURL ?? backupClosed))
         let keptTap = inPackage ? kept.appendingPathComponent(tapKept.lastPathComponent) : tapKept
         // The call tap's file, when there is one
         var call: URL?
         if let callClosed = recording.callClosedURL {
             let found = inPackage ? kept.appendingPathComponent(callClosed.lastPathComponent)
-                : (fd.fileExists(atPath: callClosed.path) ? callClosed : (recording.callAudioURL ?? callClosed))
-            if fd.fileExists(atPath: found.path) { call = found }
+                : (FileManager.default.fileExists(atPath: callClosed.path) ? callClosed : (recording.callAudioURL ?? callClosed))
+            if FileManager.default.fileExists(atPath: found.path) { call = found }
         }
-        guard fd.fileExists(atPath: tap.path), fd.fileExists(atPath: backup.path) else {
+        guard FileManager.default.fileExists(atPath: tap.path), FileManager.default.fileExists(atPath: backup.path) else {
             RecLog.write("System audio: the tap's or the backup's file is missing, nothing to merge")
             return
         }
         let staged = RecordingFileStore.stagingURL(for: tap)
         let spans = recording.tapSpansURL.flatMap { TapSpans.read($0) }
         let settings = recording.audioSettings
+        let notMerged = "The system audio from the process tap and from its backup could not be merged: %@ The recording keeps the system audio of the process tap; what screen capture recorded as its backup is next to it: %@"
+        // Before anything is written, and apart from what follows: a file in the way is not this merge's to remove
         do {
             try RecordingFileStore.checkFree(staging: staged)
+        } catch {
+            report("System Audio Not Merged", of: recording, String(format: notMerged, error.localizedDescription, backup.path))
+            return
+        }
+        do {
             guard RecordingFileStore.hasRoomForCopy(of: tap) else { throw RecordingError(DiskSpace.noRoom(to: "merge the system audio")) }
             try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -222,9 +229,8 @@ enum RecordingSaver {
             }
             try RecordingFileStore.adoptMergedSystemAudio(merged: staged, tap: tap, keptTap: keptTap, backup: backup, call: call, keepSources: recording.keepUnmixed)
         } catch {
-            try? fd.removeItem(at: staged)
-            let body = String(format: "The system audio from the process tap and from its backup could not be merged: %@ The recording keeps the system audio of the process tap; what screen capture recorded as its backup is next to it: %@", error.localizedDescription, backup.path)
-            report("System Audio Not Merged", of: recording, body)
+            try? FileManager.default.removeItem(at: staged)
+            report("System Audio Not Merged", of: recording, String(format: notMerged, error.localizedDescription, backup.path))
         }
     }
 
@@ -239,7 +245,7 @@ enum RecordingSaver {
             do {
                 try await convertToMP3(file, to: recording.finalURL, bitrate: recording.audioQuality)
                 // Only now that the MP3 is known to be complete
-                try? fd.removeItem(at: file)
+                try? FileManager.default.removeItem(at: file)
                 present(recording.finalURL, image: audioIcon, recording: recording, earlyReason: earlyReason)
             } catch {
                 let reason = String(format: "Converting to MP3 failed: %@", error.localizedDescription)
@@ -268,7 +274,7 @@ enum RecordingSaver {
     /// path), then the trimmer of a video when it opens after every recording. A file that is not there is reported
     /// instead: the writer kept writing through its open file wherever the save folder went.
     private static func present(_ url: URL, image: NSImage?, recording: RecordingContext, earlyReason: String?, note: String? = nil) {
-        guard fd.fileExists(atPath: url.path) else {
+        guard FileManager.default.fileExists(atPath: url.path) else {
             let reason = earlyReason.map { $0 + " " } ?? ""
             report(earlyReason == nil ? "Recording Not Found" : "Recording Stopped Early", of: recording, reason + movedNote(for: url))
             return
@@ -298,7 +304,7 @@ enum RecordingSaver {
     /// `sentence` (a format with the path) when the recording is at `url`, where it was written; where to look for it
     /// when it is not.
     private static func keptNote(_ url: URL, _ sentence: String) -> String {
-        return fd.fileExists(atPath: url.path) ? String(format: sentence, url.path) : movedNote(for: url)
+        return FileManager.default.fileExists(atPath: url.path) ? String(format: sentence, url.path) : movedNote(for: url)
     }
 
     /// Shows the floating preview for a finished recording, in place of the one before. `image` is that recording's
@@ -350,12 +356,12 @@ enum RecordingSaver {
                                                 volumes: (info.sysVol, info.micVol), levelVoices: levelVoices, to: mixed, settings: settings)
             if saveAsMP3 {
                 try await convertToMP3(mixed, to: output, bitrate: audioQuality, replacing: replacing)
-                try? fd.removeItem(at: mixed)
+                try? FileManager.default.removeItem(at: mixed)
             } else {
                 try RecordingFileStore.publish(mixed, as: output, replacing: replacing)
             }
         } catch {
-            try? fd.removeItem(at: mixed)
+            try? FileManager.default.removeItem(at: mixed)
             throw error
         }
     }
@@ -382,7 +388,7 @@ enum RecordingSaver {
             try RecordingMixer.verifyConversion(source: source, output: staged)
             try RecordingFileStore.publish(staged, as: output, replacing: replacing)
         } catch {
-            try? fd.removeItem(at: staged)
+            try? FileManager.default.removeItem(at: staged)
             throw error
         }
     }

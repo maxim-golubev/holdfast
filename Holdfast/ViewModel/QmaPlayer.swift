@@ -9,8 +9,8 @@ import Foundation
 import AVFoundation
 import SwiftUI
 
-struct qmaPlayerView: View {
-    @Binding var document: qmaPackageHandle
+struct QmaPlayerView: View {
+    @Binding var document: QmaPackage
     @State var fileURL: URL
     @State private var overPlay: Bool = false
     @State private var overStop: Bool = false
@@ -321,7 +321,7 @@ struct PlayerSlider: View {
 
 /// A .qma package opened in the player. Only its `info.json` is read and written (`QmaInfo`): the player reads the
 /// audio files from disk, and saving a changed volume leaves them as they are.
-struct qmaPackageHandle: FileDocument {
+struct QmaPackage: FileDocument {
     static var readableContentTypes: [UTType] { [.qma, .quickRecorderQma] }
     
     var info: QmaInfo
@@ -534,7 +534,11 @@ class AudioPlayerManager: ObservableObject {
             let frameCount = AVAudioFrameCount(clamping: remaining)
             lastStartFramePosition = startFrame
             playerNode1.scheduleSegment(audioFile1, startingFrame: startFrame, frameCount: frameCount, at: nil, completionHandler: nil)
-            playerNode2.scheduleSegment(audioFile2, startingFrame: startFrame, frameCount: frameCount, at: nil, completionHandler: nil)
+            // The second file may be the shorter one (a recovered package): only what it has from there on
+            let remaining2 = audioFile2.length - startFrame
+            if remaining2 > 0 {
+                playerNode2.scheduleSegment(audioFile2, startingFrame: startFrame, frameCount: AVAudioFrameCount(clamping: min(remaining, remaining2)), at: nil, completionHandler: nil)
+            }
             scheduled = true
             progress = time / audioLength
             if isPlaying || shouldPlay {

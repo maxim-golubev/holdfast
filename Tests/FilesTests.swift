@@ -129,26 +129,26 @@ func filesTests() async {
         expect(found.allSatisfy { $0.base == URL(fileURLWithPath: base).path }, "they lead back to the final name")
         let recording = try require(found.first { !$0.isMix }, "the recording")
         expectEqual(RecordingFileStore.temporaryURL(base: recording.base, marker: RecordingFileStore.mixMarker, ending: recording.ending), mixURL, "the mix of a leftover is written where the mix of the recording was")
-        expectEqual(RecordingFileStore.unmixedURL(base: recording.base, ending: recording.ending), unmixedURL, "and the recording gets the same name")
+        expectEqual(RecordingFileStore.unmixedURL(base: recording.base, ending: recording.ending, tracks: 2), unmixedURL, "and the recording gets the same name")
     }
 
     await test("Leftovers: what each file is renamed to") {
-        expectEqual(RecoveryNames.unmixed, "unmixed, 2 audio tracks", "label of the recording as written")
-        expectEqual(" (\(RecoveryNames.unmixed))", RecordingFileStore.unmixedSuffix, "the same name an ordinary mix leaves")
+        expectEqual(RecoveryNames.unmixed(tracks: 2), "unmixed, 2 audio tracks", "label of the recording as written")
+        expectEqual(" (\(RecoveryNames.unmixed(tracks: 2)))", RecordingFileStore.unmixedSuffix(tracks: 2), "the same name an ordinary mix leaves")
         expect(RecoveryNames.mix(complete: true) == nil, "the mix of a closed recording gets the final name")
         expectEqual(RecoveryNames.mix(complete: false), "recovered", "the mix of an unclosed one says so")
-        expectEqual(RecoveryNames.recording(complete: true, mixed: true), "unmixed, 2 audio tracks", "closed and mixed")
-        expectEqual(RecoveryNames.recording(complete: false, mixed: true), "recovered, unmixed, 2 audio tracks", "not closed, mixed")
-        expectEqual(RecoveryNames.recording(complete: true, mixed: false), "unmixed, 2 audio tracks", "closed, mix failed")
-        expectEqual(RecoveryNames.recording(complete: false, mixed: false), "recovered", "not closed, mix failed")
+        expectEqual(RecoveryNames.recording(complete: true, mixed: true, tracks: 2), "unmixed, 2 audio tracks", "closed and mixed")
+        expectEqual(RecoveryNames.recording(complete: false, mixed: true, tracks: 2), "recovered, unmixed, 2 audio tracks", "not closed, mixed")
+        expectEqual(RecoveryNames.recording(complete: true, mixed: false, tracks: 2), "unmixed, 2 audio tracks", "closed, mix failed")
+        expectEqual(RecoveryNames.recording(complete: false, mixed: false, tracks: 2), "recovered", "not closed, mix failed")
         let base = "/save/Recording at X"
         expectEqual(RecordingFileStore.freeURL(base: base, label: RecoveryNames.mix(complete: true), ending: "mp4").path, base + ".mp4", "complete mix")
         expectEqual(RecordingFileStore.freeURL(base: base, label: RecoveryNames.mix(complete: false), ending: "mp4").path, base + " (recovered).mp4", "recovered mix")
-        expectEqual(RecordingFileStore.freeURL(base: base, label: RecoveryNames.recording(complete: false, mixed: true), ending: "mov").path, base + " (recovered, unmixed, 2 audio tracks).mov", "recovered recording")
+        expectEqual(RecordingFileStore.freeURL(base: base, label: RecoveryNames.recording(complete: false, mixed: true, tracks: 2), ending: "mov").path, base + " (recovered, unmixed, 2 audio tracks).mov", "recovered recording")
         expectEqual(RecordingFileStore.freeURL(base: base, label: RecoveryNames.damaged, ending: "mp4").path, base + " (damaged).mp4", "damaged recording")
         expectEqual(RecordingFileStore.freeURL(base: base, label: RecoveryNames.incompleteMix, ending: "mp4").path, base + " (incomplete mix).mp4", "interrupted mix")
-        expectEqual(RecordingFileStore.freeURL(base: base, label: RecoveryNames.recording(complete: true, mixed: true), ending: "mp4"), RecordingFileStore.unmixedURL(base: base, ending: "mp4"), "a complete recording gets the name an ordinary mix gives it")
-        for label in [RecoveryNames.damaged, RecoveryNames.incompleteMix, RecoveryNames.recovered, RecoveryNames.unmixed] {
+        expectEqual(RecordingFileStore.freeURL(base: base, label: RecoveryNames.recording(complete: true, mixed: true, tracks: 2), ending: "mp4"), RecordingFileStore.unmixedURL(base: base, ending: "mp4", tracks: 2), "a complete recording gets the name an ordinary mix gives it")
+        for label in [RecoveryNames.damaged, RecoveryNames.incompleteMix, RecoveryNames.recovered, RecoveryNames.unmixed(tracks: 2)] {
             let name = RecordingFileStore.freeURL(base: base, label: label, ending: "mp4").deletingPathExtension().pathExtension
             expect(name != RecordingFileStore.rawMarker && name != RecordingFileStore.mixMarker, "\"\(label)\" is not a temporary name")
         }

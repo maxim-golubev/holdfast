@@ -66,7 +66,7 @@ enum UserNotice {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
         UNUserNotificationCenter.current().add(request) { error in
-            if let error = error { print("Notification failed to send：\(error.localizedDescription)") }
+            if let error = error { RecLog.write("A notification could not be posted: \(error.localizedDescription)") }
         }
     }
     

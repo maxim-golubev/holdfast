@@ -154,6 +154,13 @@ final class RecordingRecovery {
             RecordingFileStore.removeTapSpans(RecordingFileStore.tapSpansURL(base: leftover.base))
             RecordingFileStore.removeTapSpans(RecordingFileStore.callSpansURL(base: leftover.base))
         }
+        // An interrupted merge or conversion of a sound-only recording leaves only its staged file: the recording
+        // it was made from has its final name already, and its spans have nothing left to serve. Last, so the mix
+        // of a video above still had them.
+        for leftover in found where leftover.isMix {
+            RecordingFileStore.removeTapSpans(RecordingFileStore.tapSpansURL(base: leftover.base))
+            RecordingFileStore.removeTapSpans(RecordingFileStore.callSpansURL(base: leftover.base))
+        }
         return lines
     }
 
@@ -208,7 +215,7 @@ final class RecordingRecovery {
         formatter.unitsStyle = .abbreviated
         return formatter.string(from: seconds) ?? ""
     }
-    
+
     /// Deals with one recording left under its temporary name and returns what to tell the user about it.
     /// A file that does not open becomes `X (damaged)`. One that opens is mixed under the rules of `RecordingSaver.mix`:
     /// the mix is written to `X.mixing`, checked, and only then renamed, and the recording itself is only ever renamed.

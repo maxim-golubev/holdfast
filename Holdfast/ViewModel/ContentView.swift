@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import AVFoundation
 import ScreenCaptureKit
 
 /// The main panel: what to record, the microphone, Settings. Shown as a floating panel that is as large as
@@ -101,7 +100,7 @@ struct TileButtonStyle: ButtonStyle {
 private var countdownTimer: Timer?
 
 struct CountdownView: View {
-    @State var countdownValue: Int = 00
+    @State var countdownValue: Int = 0
     var atEnd: () -> Void
 
     var body: some View {
@@ -227,9 +226,11 @@ extension AppDelegate {
         EnvironmentValues().openSettings()
     }
 
-    func showAreaSelector(size: NSSize, noPanel: Bool = false) {
-        guard let scDisplay = ScreenContent.getSCDisplayWithMouse() else { return }
-        guard let screen = scDisplay.nsScreen else { return }
+    /// False, with nothing shown, when the display under the pointer is not among those known (the list could not
+    /// be fetched, or the display was connected since)
+    @discardableResult
+    func showAreaSelector(size: NSSize, noPanel: Bool = false) -> Bool {
+        guard let scDisplay = ScreenContent.getSCDisplayWithMouse(), let screen = scDisplay.nsScreen else { return false }
         let screenshotWindow = ScreenshotWindow(contentRect: screen.frame, backing: .buffered, defer: false, size: size, force: noPanel)
         screenshotWindow.title = "Area Selector"
         screenshotWindow.identifier = .areaSelector
@@ -259,6 +260,7 @@ extension AppDelegate {
             // the app in front
             areaPanel.makeKey()
         }
+        return true
     }
     
     /// The dashed frame around the area that is about to be recorded, `border` points outside `rect` (global

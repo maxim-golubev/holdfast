@@ -19,7 +19,8 @@ struct LoudnessMeter {
 
     static let absoluteGate = -70.0
     static let relativeGate = -10.0
-    /// The 100 ms pieces a block is made of
+    /// A block is made of pieces this long, a quarter of it each
+    private static let pieceSeconds = 0.1
     private static let piecesInBlock = 4
 
     /// One second-order section, transposed direct form II
@@ -51,7 +52,7 @@ struct LoudnessMeter {
     /// A meter for interleaved audio of `channels` channels (one or two: each counts fully) at `rate`
     init(rate: Double, channels: Int) {
         self.channels = max(1, channels)
-        pieceFrames = max(1, Int((rate * 0.1).rounded()))
+        pieceFrames = max(1, Int((rate * LoudnessMeter.pieceSeconds).rounded()))
         // The two filters of BS.1770 as analogue prototypes, so that any sample rate gets the same curve; at 48 kHz
         // these are the coefficients the recommendation lists
         let shelfK = tan(Double.pi * 1681.974450955533 / rate), shelfQ = 0.7071752369554196
@@ -104,7 +105,7 @@ struct LoudnessMeter {
         let threshold = heard.reduce(0, +) / Double(heard.count) * pow(10, LoudnessMeter.relativeGate / 10)
         let gated = heard.filter { $0 > threshold }
         guard !gated.isEmpty else { return Reading(loudness: nil, gatedSeconds: 0) }
-        return Reading(loudness: LoudnessMeter.loudness(ofPower: gated.reduce(0, +) / Double(gated.count)), gatedSeconds: Double(gated.count) * 0.1)
+        return Reading(loudness: LoudnessMeter.loudness(ofPower: gated.reduce(0, +) / Double(gated.count)), gatedSeconds: Double(gated.count) * LoudnessMeter.pieceSeconds)
     }
 }
 

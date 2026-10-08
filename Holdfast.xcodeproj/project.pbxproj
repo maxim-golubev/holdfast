@@ -12,7 +12,7 @@
 		189BD5ED2BDE971B0056D06C /* Trimmer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 189BD5EC2BDE971B0056D06C /* Trimmer.swift */; };
 		18A551F62D0749C3008FC5F6 /* AppleScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A551EE2D0749C3008FC5F6 /* AppleScript.swift */; };
 		18A551F72D0749C3008FC5F6 /* RecordingControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A551EF2D0749C3008FC5F6 /* RecordingControls.swift */; };
-		18A551F82D0749C3008FC5F6 /* SleepPreventer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A551F12D0749C3008FC5F6 /* SleepPreventer.swift */; };
+		18A551F82D0749C3008FC5F6 /* SleepAssertion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A551F12D0749C3008FC5F6 /* SleepAssertion.swift */; };
 		18FEBDAE2BCF8300003F09BC /* DiskSpace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDAD2BCF8300003F09BC /* DiskSpace.swift */; };
 		18FEBDB42BCF8600003F09BC /* RecLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDB32BCF8600003F09BC /* RecLog.swift */; };
 		18FEBDF12BCF9900003F09BC /* ScreenSharingPrivacy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDF02BCF9900003F09BC /* ScreenSharingPrivacy.swift */; };
@@ -66,7 +66,7 @@
 		18A551EE2D0749C3008FC5F6 /* AppleScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleScript.swift; sourceTree = "<group>"; };
 		18A551EF2D0749C3008FC5F6 /* RecordingControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingControls.swift; sourceTree = "<group>"; };
 		18A551F02D0749C3008FC5F6 /* Scriptable.sdef */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Scriptable.sdef; sourceTree = "<group>"; };
-		18A551F12D0749C3008FC5F6 /* SleepPreventer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepPreventer.swift; sourceTree = "<group>"; };
+		18A551F12D0749C3008FC5F6 /* SleepAssertion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepAssertion.swift; sourceTree = "<group>"; };
 		18FEBDAD2BCF8300003F09BC /* DiskSpace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskSpace.swift; sourceTree = "<group>"; };
 		18FEBDB32BCF8600003F09BC /* RecLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecLog.swift; sourceTree = "<group>"; };
 		18FEBDF02BCF9900003F09BC /* ScreenSharingPrivacy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSharingPrivacy.swift; sourceTree = "<group>"; };
@@ -136,7 +136,7 @@
 			children = (
 				18A551EE2D0749C3008FC5F6 /* AppleScript.swift */,
 				18A551F02D0749C3008FC5F6 /* Scriptable.sdef */,
-				18A551F12D0749C3008FC5F6 /* SleepPreventer.swift */,
+				18A551F12D0749C3008FC5F6 /* SleepAssertion.swift */,
 				18FEBDAD2BCF8300003F09BC /* DiskSpace.swift */,
 				18FEBDB32BCF8600003F09BC /* RecLog.swift */,
 				18FEBDF02BCF9900003F09BC /* ScreenSharingPrivacy.swift */,
@@ -308,7 +308,7 @@
 				18D3BDFF2BCE5E4B006CFFC0 /* StatusItem.swift in Sources */,
 				18A551F62D0749C3008FC5F6 /* AppleScript.swift in Sources */,
 				18A551F72D0749C3008FC5F6 /* RecordingControls.swift in Sources */,
-				18A551F82D0749C3008FC5F6 /* SleepPreventer.swift in Sources */,
+				18A551F82D0749C3008FC5F6 /* SleepAssertion.swift in Sources */,
 				18FEBDAE2BCF8300003F09BC /* DiskSpace.swift in Sources */,
 				18FEBDB42BCF8600003F09BC /* RecLog.swift in Sources */,
 				18FEBDF12BCF9900003F09BC /* ScreenSharingPrivacy.swift in Sources */,

@@ -1,8 +1,8 @@
 # What was measured
 
 The measurements behind the claims in the [README](../README.md) and the design
-in [architecture.md](architecture.md). They were taken on October 4, 2026, on
-the developer's M-series MacBook Pro with macOS 15.7 and AirPods Pro 2.
+in [architecture.md](architecture.md). They were taken from October 4 to 7, 2026 (each section says when
+where it was not the 4th), on the developer's M-series MacBook Pro with macOS 15.7 and AirPods Pro 2.
 
 A "simulated call" is `Tools/fakecall.swift`: a second process that opens the
 default input with voice processing, as a call app does, holds it for the
@@ -103,15 +103,15 @@ synthetic buffers and read them back.
 | Microphone converter | 23 | Format changes (24 → 48 → 24 kHz, 44.1 kHz stereo), gaps as silence, jitter, a backlog with its own timestamps dropped where silence was filled with no offset after it (drained at 3, 1.1 and 1.05 times real time, held 13 s or 40 s), a lagging clock shifted, full-length track, silence generation |
 | System audio and timeline | 10 | Placement at the end of what was written, holes filled past 0.1 s, pause offsets; stream audio stamped 1.2 s behind at real-time pace placed by its arrival within 2 s, a backlog never; the tap's rule (back to back within 0.1 s of its arrival either way, a hole filled first, left out only when the track holds more than 0.1 s beyond it, the first buffer of a recording); the tap's drift (nothing for jitter, a frame every 0.1 s of audio from 10 ms off until 2 ms, a device 50 ppm slow or fast followed for 90 minutes within 12.5 ms) |
 | Writer | 14 | One file with three tracks of the same length, pause, mute, a source that stops, late frames, no empty file, every audio format |
-| Session | 18 | Every state in order, stop while starting, repeated stops, failures, quitting while recording, starting or exporting, pause and the timer; the monitor stopped as the capture stops, with the main thread held up before the writer is taken |
+| Session | 19 | Every state in order, stop while starting, repeated stops, failures, quitting while recording, starting or exporting, pause and the timer; the monitor stopped as the capture stops, with the main thread held up before the writer is taken |
 | Instant start | 8 | A recording started while the one before is held before its mix: it starts at once, is stopped and saved while the first still waits, and both files are complete, under their own names, each with only its own sound; three in a row with two mixes running while the third records; a mix that fails reported for its own recording, by name, the running one untouched; a stop, a pause and a late failure reaching only their own recording; quitting waiting for all of them, the Mac kept awake until the last; what the status item and its menu show in each combination; names taken by recordings that have no file yet |
-| Monitor | 11 | Fills and warnings for each track, the start warning, late ticks, resume, a source that keeps dropping out notified once, a microphone back with only zeros not back, system audio missing only when neither the tap nor its backup delivers (a quiet tap logged after 5 s, shown as "Call audio is not being recorded" after 15 s until it is back, never as a warning or a notification) |
+| Monitor | 13 | Fills and warnings for each track, the start warning, late ticks, resume, a source that keeps dropping out notified once, a microphone back with only zeros not back, system audio missing only when neither the tap nor its backup delivers (a quiet tap logged after 5 s, shown as "Call audio is not being recorded" after 15 s until it is back, never as a warning or a notification) |
 | Files, names, disk | 19 | Temporary and final names, leftovers, staging, free-space thresholds, a moved or deleted folder; a copy that must leave 2 GB while a recording is starting or running |
-| Mixer and recovery | 14 | Mix and its checks, MP3 and package mixes, every recovery outcome; the folders recorded to remembered most recent first, eight at most; a launch that finds leftovers in the save folder and in an earlier folder (each recovered, one report with a part for each folder, the file of another app untouched, nothing deleted), forgets a folder that is gone, is a file or has none, and passes over one it may not list and one on a disk that is not connected, which are searched again at the next launch; a folder whose leftover could not be renamed stays remembered |
+| Mixer and recovery | 15 | Mix and its checks, MP3 and package mixes, every recovery outcome; the folders recorded to remembered most recent first, eight at most; a launch that finds leftovers in the save folder and in an earlier folder (each recovered, one report with a part for each folder, the file of another app untouched, nothing deleted), forgets a folder that is gone, is a file or has none, and passes over one it may not list and one on a disk that is not connected, which are searched again at the next launch; a folder whose leftover could not be renamed stays remembered |
 | Package mix | 6 | The mix of a sound-only recording's two files by the mixer's own sum against the audio engine's mix it replaces, in 32 bit float files of 12.5 s with both sides speaking at once: all 1,200,000 samples equal at the volumes 1 and 1, 1 and 0.5, 2 and 1, 4 and 0.25, 0 and 1; at 0.3 and 0.7, 60,382 samples differ, by 1.5e-8 at most (rounding). From files of each format: ALAC, FLAC and Opus equal sample for sample, AAC 71,760 samples different by 3.7e-8 at most; a package as the writer makes it (AAC, 3 s) 57,238 of 288,000 different by 1.2e-7 at most (the two readers do not decode AAC to the same last bit). With Level Voices: files recorded at -26.0 and -14.0 LUFS given +10.0 and -2.0 dB, each at -16 LUFS in the mix, every sample the two files at their gains, the same gains the player is given; with the volumes 0.5 and 4 on top the first side 6 dB lower and the second held by the limiter (5.5 dB taken off, every sample at or under -1 dBFS; between the samples of this noise-like test sound 0.939, measured at eight times the rate, which is -0.55 dBTP: the limiter's estimate from 12 samples reads low on sound up to half the sample rate); two loud voices at once in AAC and FLAC (-6 dB each, the limiter acting, the length kept); a silent side given nothing and a quiet one +12 dB; a file that does not open failing the mix |
 | Level Voices | 11 | The loudness meter: a 1 kHz sine at -23 dBFS in both channels read as -22.99 LUFS at 48 and at 44.1 kHz, the same fed in pieces, 30 s of it between 40 s of silence -23.04 LUFS, beside a stretch 30 dB quieter -23.02 LUFS, silence without a reading. The gain rule (to -16 LUFS within -6 and +12 dB; nothing for a silent side, under 3 s of sound or under -50 LUFS). The limiter: tones up to 1.9 times full scale, and one at a quarter of the sample rate whose samples stay under the ceiling while its wave reaches 1.2, held at -1.00 dBFS and -1.00 dBTP (measured at eight times the rate), the same whatever pieces it comes in; quiet sound and everything from 1.9 s after a click passed bit for bit; a click of three times full scale at its sample. The mix, read back from a 32 bit float file: other side recorded at -26.4 LUFS and microphone at -14.5 LUFS, gains +10.4 and -1.5 dB, each -16.0 LUFS in the mix; a side at -30.5 LUFS given +12.0 dB and no more (-18.5 LUFS), a silent microphone nothing; two sides with the same sound and a click, 11.4 dB taken off, peak -1.00 dBFS; a click at frame 144,000 in the recording, the plain mix and the leveled one, every sample of the leveled mix the plain one times the gain, and with gains of 0 dB all 384,000 frames bit for bit the plain mix; with the setting off all 576,000 frames the sum of the two tracks, bit for bit; the check passing the mix it was made for and rejecting a mix without the gains, one with gains it was not told of, and a leveled one without the microphone; a leftover recording mixed with the setting as it is |
-| Settings | 8 | Keys, defaults and stored types of earlier installations; a recording keeps the Level Voices setting it was started with |
-| Status item | 7 | Every state's symbol, title and sentence, the timer text, the item's width, the call-audio warning |
+| Settings | 9 | Keys, defaults and stored types of earlier installations; a recording keeps the Level Voices setting it was started with |
+| Status item | 6 | Every state's symbol, title and sentence, the timer text, the item's width, the call-audio warning |
 | Package | 1 | `.qma` info files of earlier versions |
 | Timestamps and length | 13 | The timeline never past the present: a buffer of the stream's audio stamped 1100 s in the future near the end of a call recorded at its arrival time, a tap buffer its device stamped 1100 s ahead recorded like the others (its source hands it on ending when it arrived), a frame and an audio buffer stamped 12 s ahead as a call connects (no video hole, no fill past the present, the microphone not shifted), a microphone stamped 400 s before its arrival, a microphone backlog 40 s old left to the converter, audio of unknown arrival in the future left out and such a frame written at the present, fills and repeats cut off a second after the present, the stop's padding up to the video's end (sound only: the present), a mix whose audio is over 2 s longer or shorter than its video rejected and the recording kept unmixed |
 | System audio tap | 22 | Build and teardown order against fake Core Audio calls with each clock (built-in output, no sub-device, default output) and the order of constructions, cleanup after each failed step, the IOProc's stream usage (only the tap's stream), the IOProc's copy (interleaved, non-interleaved, behind other input streams, turned-off streams, malformed lists), nothing handed on once the rate changes or the clock device goes away, the IOProc called with the device's time stamp 12 s and 5 s ahead, 10 s and 1100 s behind and invalid (the buffer ends at the host time of the call each time), conversion and resampling to 48 kHz stereo, the choice between the tap with its backup and screen capture alone, with its notice and warning; the repair: a tap that hands on nothing rebuilt at once and the next construction after two failures, around and around, the waits (at once, then 0.5 s doubling to 2 s), the source as the app builds it (its stall limit of 1 s and check every 0.25 s: the second tap between 1 and 1.6 s), every listener removed as the one installed, a tap that cannot be built at the start built in the background, a rate change, nothing of an old tap after the new one, the real tap on fake hardware falling back from the built-in output to no sub-device to the default output, and a tap whose IOProc is never called; a sound-only file written from the tap's buffers; the failure injection of a device test in the source: a dead span in which every tap is held back and rebuilt as a dead one is (the same construction once more, then the next) until the span ends and the newest tap stays, a zeros span in which every buffer handed on is zeros, in the tap's own format and a converted one, and nowhere else, and a source without an injection untouched |
@@ -135,24 +135,26 @@ recording:
   listened to. Covered by tests of the mix against the mix it replaces.
 - Recovery in a folder that is no longer the save folder, after a real kill.
   Covered by tests on real folders and files.
-- A recording started while the previous one is still being saved: that it
-  starts at once, that the earlier one's mix does not disturb it, and both
-  files. Covered by tests with the real writer and mixer, not yet by a real
-  capture.
+- A recording started while a long one is still being saved. Seen once with a
+  short one, on 2026-10-07: a recording of 5 min 12 s was stopped at
+  22:32:25.5, the next one began 0.5 s later, and the first was mixed and
+  saved 3 s into it (the log; both files saved). Not yet with a mix that
+  takes most of a minute, as an hour's does, nor were the two files measured.
 - The app's floating windows on a full-screen Space.
 - "Leave Holdfast's Own Windows Out" with windows that open during the
   recording.
-- The call tap, in any real call. It has never been built on the device:
-  that `avconferenced` gets an audio process object when a FaceTime or phone
-  call starts and loses it when it ends (the tests change the list of a fake
-  Core Audio); that a tap of that process alone, in an aggregate device
-  without a sub-device, delivers the call (`build/tapprobe calltap`, in a
-  bundle with Holdfast's identity, is that construction and has not been run
-  during a call; `tapprobe calls`, the same tap clocked by the default output,
-  has not either); whether its IOProc keeps being called while that process
-  plays nothing, or stops and is rebuilt again and again; how far its audio
-  is from the process tap's in a real recording; and the mix of a real call
-  in which the process tap was dead, which has not happened since.
+- The call tap during a real call. With no call on it was built and ran in
+  the recordings of the evening of 2026-10-07 (see "The call tap with no call on", below):
+  `avconferenced` has an audio process object outside calls too, so the tap
+  exists for the whole recording. Not yet seen: that it delivers a live
+  FaceTime or phone call (`build/tapprobe calltap`, in a bundle with
+  Holdfast's identity, is that construction and has not been run during a
+  call; `tapprobe calls`, the same tap clocked by the default output, has
+  not either); how far its audio is from the process tap's in a real
+  recording; and the mix of a real call in which the process tap was dead,
+  which has not happened since.
+- A live recording of 60 to 90 minutes. The longest live recording measured
+  here is six minutes; the 90-minute simulation below is not a capture.
 - The app's own wiring of the newest parts, which the tests do not compile
   (they cover the parts themselves, through stand-ins for the capture): that
   a recording's start creates the call tap's source and hands it to the
@@ -162,27 +164,27 @@ recording:
   gets the recording's own Level Voices choice. The build fails when the
   capture is made without a call tap argument or lacks the rebuild; the rest
   is first shown by a recording on the device.
-- The failure tests of "Failure tests on the device", below: the process tap
-  made dead, or made to deliver zeros, for a span of a real recording, and
-  what its repair, the backup and the call tap then do.
+- The failure tests of "Failure tests on the device", below, with sound
+  playing: the dead span was run once in silence (its log is in that
+  section), the zeros span not at all, and neither during a call.
 - The watch for a process tap that delivers only zeros, on the device: that a
   healthy tap is never taken for one (with the output muted or at volume zero,
   with AirPods in call mode, at the start and end of sounds), and what a real
   recording without the permission logs and shows.
-- System audio through the process tap with its backup, in a real recording
-  measured here: the process tap has recorded real FaceTime calls in the build
-  before this one (the owner's recordings; no figures of them are in this
-  file), not yet a browser
-  call on AirPods that go to 24 kHz, the final file having the other side
-  throughout; the tap clocked by the built-in output in such a recording (the
-  constructions were measured with `Tools/tapexp`, below, not yet in the app);
-  a tap that dies being rebuilt within about a second, with the log's lines and
-  no warning; the mixed sound in step with the picture (against the backup's
-  track it is, see "The tap against its backup"; the backup's own step with
-  the picture is ScreenCaptureKit's and was not measured);
-  its permission prompt and what the permission reads as before and after; the
-  sync of tap audio with the picture over a long recording; that with AirPods
-  as the output the tap leaves their microphone closed.
+- System audio through the process tap with its backup, beyond what "The tap
+  against its backup" measures. The process tap has recorded real FaceTime
+  calls (the owner's recordings; no figures of them are in this file). Not
+  yet seen or not measured:
+  - a real browser call on AirPods that go to 24 kHz, the final file having
+    the other side throughout;
+  - a tap that dies by itself being rebuilt within about a second, with the
+    log's lines and no warning (the built-in failure of "Failure tests on the
+    device" was);
+  - the mixed sound in step with the picture (against the backup's track it
+    is; the backup's own step with the picture is ScreenCaptureKit's and was
+    not measured), and the same over a long recording;
+  - the permission prompt and what the permission reads as before and after;
+  - that with AirPods as the output the tap leaves their microphone closed.
 
 ## The tap against its backup
 
@@ -242,8 +244,8 @@ recording with quiet speech played three times, the unmixed file kept.
 
 ## Failure tests on the device
 
-Not yet run: this section says how, and what the log must show. Nothing in it
-is a measurement.
+This section says how they are run and what the log must show. Only its last
+part, "The dead span, run once", is a measurement.
 
 A real process tap cannot be made to fail on demand, so the app can be
 launched with a failure built in. Two environment variables of the app's
@@ -341,6 +343,52 @@ while the app runs).
 A value that is not a span logs, at launch only, `Test hook:
 HOLDFAST_TEST_TAP_DEAD="…" is not a span of seconds like 10-22 and is
 ignored`.
+
+### The dead span, run once
+
+On 2026-10-07 at 22:37 the installed app was launched with
+`HOLDFAST_TEST_TAP_DEAD=10-22` and recorded the screen for 35.6 s with nothing
+playing and a silent microphone, so this run shows the repair and the choice
+of source, not sound. The log, with the seconds of the recording:
+
+| At | Log line |
+| ---: | --- |
+| launch, start | `Test hook: HOLDFAST_TEST_TAP_DEAD is set: from 10 to 22 s …` (both times) |
+| 9.8 s | `Test hook: from here the process tap's buffers are not handed on (HOLDFAST_TEST_TAP_DEAD, until 22 s)` |
+| 10.9 s | failed after 1.1 s, `rebuilding at once`; rebuilt with the built-in output 0.07 s later |
+| 12.1 s | failed after 1.1 s, `rebuilding in 0.5 s`; rebuilt with no sub-device |
+| 13.8 s | failed after 1.1 s, `rebuilding in 1.0 s`; rebuilt with no sub-device |
+| 15.0 s | `the process tap has delivered nothing for 5 s; the backup (screen capture) records the system audio meanwhile` |
+| 16.1 s | failed after 1.2 s, `rebuilding in 2.0 s`; rebuilt with the built-in output |
+| 19.4 s | failed after 1.1 s, `rebuilding in 2.0 s`; rebuilt with the built-in output |
+| 21.8 s | `Test hook: from here the process tap's buffers are handed on unchanged again` |
+| 22.0 s | `System audio: the process tap delivers again` |
+| 31.8 s | `the process tap with the built-in output "MacBook Pro Speakers" has delivered for 10 s` |
+| stop | `process tap stopped (5 rebuilds, 5 failed attempts)`; `call tap stopped (0 rebuilds, 0 failed attempts)` |
+| mix | `System audio in the mix: 23.7 s from the process tap, 12.0 s from the backup in 1 stretch` |
+
+The order of constructions went from the built-in output to no sub-device and
+back: the default output was the built-in device, which is not tried a second
+time as such. No system audio warning and no "Call audio is not being
+recorded" line came (no call was on); the one notification of the run,
+"Microphone Is Not Being Recorded" after 20 s of zeros, was the silent
+microphone's. Alignment was not measured (no sound in either track). Still to
+do: the same with sound playing, so that the final file can be heard and
+measured across the span, and the zeros span.
+
+## The call tap with no call on
+
+From the log of the six recordings made with the call tap on 2026-10-07 (12 s
+to 5 min 12 s, with no call on; one of them was killed and recovered): at
+every start `Call audio: avconferenced has an
+audio object (…); a call tap is set up for it` and `Call audio: call tap with
+no sub-device (…)`, in 48000 Hz or, with the AirPods in call mode, 24000 Hz;
+at each of the five stops `call tap stopped (0 rebuilds, 0 failed attempts)`;
+after each of those saves `the call tap delivered for N s in 1 stretch, between 0.0 s and N s of
+the recording`, N the recording's length. So outside a call the process keeps
+its audio object, the tap's IOProc keeps being called while that process
+plays nothing, and its track is filled by the tap itself, with zeros. What it
+delivers during a call has not been seen.
 
 ## Process tap constructions (Tools/tapexp)
 

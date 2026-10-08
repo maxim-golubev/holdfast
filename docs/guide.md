@@ -392,12 +392,12 @@ or the call tap had sound), never both at once.
 Screen capture cannot stand in for the tap during a FaceTime or phone call, so
 call audio has a safety net of its own: the **call tap**, a second process tap
 of only the part of macOS that plays those calls, built in another way than
-the first and recorded on a track of its own. It is built only while that
-part of macOS has audio open, which is expected to be only during a call
-(not yet confirmed on a real call); without it nothing extra runs, and
-outside a call its track is silence either way. Where the first tap was not the source during a call, the file you
-keep has the backup's sound plus the call tap's, which together are what the
-first tap would have recorded.
+the first and recorded on a track of its own. It runs for as long as that
+part of macOS has audio open, which on the Mac it was measured on is all the
+time, call or not; outside a call its track is silence. Where the first tap
+was not the source during a call, the file you keep has the backup's sound
+plus the call tap's, which together are what the first tap would have
+recorded.
 
 The tap does not depend on your output device: switching to AirPods or
 headphones, or AirPods going into their call mode, changes nothing for it. If

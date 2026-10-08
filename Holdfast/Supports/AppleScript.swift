@@ -186,12 +186,14 @@ class setPreferences: NSScriptCommand {
         if let sound = self.evaluatedArguments?["sound"] as? Bool { AppSettings.recordWinSound = sound }
         if let microphone = self.evaluatedArguments?["microphone"] as? Bool { AppSettings.recordMic = microphone }
         if let quality = self.evaluatedArguments?["quality"] as? Int {
-            if [1,2,3].contains(quality) {
-                switch quality {
-                    case 1: AppSettings.videoQuality = 0.3
-                    case 2: AppSettings.videoQuality = 0.7
-                    default: AppSettings.videoQuality = 1.0
-                }
+            switch quality {
+            case 1: AppSettings.videoQuality = 0.3
+            case 2: AppSettings.videoQuality = 0.7
+            case 3: AppSettings.videoQuality = 1.0
+            default:
+                // The other settings above were applied; the quality stays as it was
+                scriptErrorNumber = errAEParamMissed
+                scriptErrorString = "The quality must be 1 (low), 2 (medium) or 3 (high); \(quality) was given."
             }
         }
         if let micname = self.evaluatedArguments?["micname"] as? String, !MicSelection.selectMic(named: micname) {

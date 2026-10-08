@@ -1,5 +1,5 @@
 // Compares microphone capture strategies under a mid-capture "call" (run fakecall alongside).
-// Usage: micprobe <engine|engine-restart|capture|sck> [seconds]
+// Usage: micprobe [engine|engine-restart|capture|sck] [seconds] (engine when none is given)
 // Prints buffers received and RMS per second so stalls are visible.
 import AVFoundation
 import ScreenCaptureKit

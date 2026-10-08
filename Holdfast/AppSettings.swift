@@ -95,8 +95,8 @@ extension AppStorage {
 enum AppSettings {
     static let store = UserDefaults.standard
 
-    // General. Holdfast is a menu bar app: the item is always there, there is no Dock icon, and the main panel does
-    // not open by itself when the app launches (`opensPanelAtLaunch`).
+    // General. Holdfast is a menu bar app: by default the item is there, there is no Dock icon, and the main panel
+    // does not open by itself when the app launches (`opensPanelAtLaunch`).
     @Setting("showOnDock", default: false) static var showOnDock: Bool
     @Setting("showMenubar", default: true) static var showMenubar: Bool
     /// "Open the Panel When Holdfast Opens"

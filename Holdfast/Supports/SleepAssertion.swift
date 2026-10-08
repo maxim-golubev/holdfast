@@ -1,5 +1,5 @@
 //
-//  SleepPreventer.swift
+//  SleepAssertion.swift
 //  Holdfast
 //
 //  Created by apple on 2024/12/9.
@@ -24,7 +24,7 @@ final class SleepAssertion {
         if result == kIOReturnSuccess {
             assertionID = id
         } else {
-            print("Failure to prevent sleep, error: \(result)")
+            RecLog.write("Sleep could not be prevented (error \(result)): the Mac may sleep while this recording is recorded or saved")
         }
     }
 
@@ -38,6 +38,6 @@ final class SleepAssertion {
         lock.unlock()
         guard let id = id else { return }
         let result = IOPMAssertionRelease(id)
-        if result != kIOReturnSuccess { print("Failed to release assertion, error: \(result)") }
+        if result != kIOReturnSuccess { RecLog.write("A sleep assertion could not be released (error \(result))") }
     }
 }

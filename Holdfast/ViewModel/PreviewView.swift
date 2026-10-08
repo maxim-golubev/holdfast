@@ -22,6 +22,7 @@ struct PreviewView: View {
     @State private var isSharing: Bool = false
     /// The Move to Trash question is open
     @State private var isConfirming: Bool = false
+    @State private var closeWaits = 0
     @State private var nsWindow: NSWindow?
     @State private var opacity: Double = 0.0
     @AppStorage(AppSettings.$trimAfterRecord)  private var trimAfterRecord: Bool
@@ -58,7 +59,7 @@ struct PreviewView: View {
             Button("Show in Finder") { showInFinder() }
             Divider()
             Button("Copy") {
-                if fd.fileExists(atPath: fileURL.path) {
+                if FileManager.default.fileExists(atPath: fileURL.path) {
                     let pasteboard = NSPasteboard.general
                     pasteboard.clearContents()
                     pasteboard.writeObjects([fileURL as NSURL])
@@ -70,7 +71,7 @@ struct PreviewView: View {
             // Audio-only recordings have nothing the trimmer can export
             if !trimAfterRecord && TrimmerModel.canTrim(fileURL) {
                 Button("Trim") {
-                    if fd.fileExists(atPath: fileURL.path) {
+                    if FileManager.default.fileExists(atPath: fileURL.path) {
                         AppDelegate.shared.openTrimmer(fileURL)
                     }
                     closeWindow()
@@ -147,16 +148,19 @@ struct PreviewView: View {
     }
 
     /// Closes the preview after a while, unless the pointer is on it, the share sheet or the Trash question is open
+    /// Counted from the last time the pointer left: an earlier wait that ends meanwhile closes nothing
     private func closeLaterUnlessUsed() {
+        closeWaits += 1
+        let wait = closeWaits
         DispatchQueue.main.asyncAfter(deadline: .now() + PreviewView.staysFor) {
-            if !isHovered && !isSharing && !isConfirming { closeWindow() }
+            if wait == closeWaits && !isHovered && !isSharing && !isConfirming { closeWindow() }
         }
     }
 
     /// A .qma package opens in Holdfast's own player: the system's default for it may be another app (QuickRecorder,
     /// whose type for it LaunchServices may prefer). Everything else opens in its default app.
     private func openRecording() {
-        guard fd.fileExists(atPath: fileURL.path) else { return }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         let url = fileURL
         if url.pathExtension.lowercased() == RecordingFileStore.packageEnding {
             // The player's window must come to the front: without a Dock icon Holdfast is usually not active
@@ -173,7 +177,7 @@ struct PreviewView: View {
     }
 
     private func showInFinder() {
-        if fd.fileExists(atPath: fileURL.path) {
+        if FileManager.default.fileExists(atPath: fileURL.path) {
             NSWorkspace.shared.activateFileViewerSelecting([fileURL])
         }
         closeWindow()
@@ -207,7 +211,7 @@ struct PreviewView: View {
 
     private func moveToTrash() {
         do {
-            try fd.trashItem(at: fileURL, resultingItemURL: nil)
+            try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil)
             RecLog.write("Recording moved to the Trash from its preview: \(fileURL.path)")
         } catch {
             UserNotice.showAlertLater(title: "Not Moved to Trash", message: "\(fileURL.path) could not be moved to the Trash: \(error.localizedDescription)")

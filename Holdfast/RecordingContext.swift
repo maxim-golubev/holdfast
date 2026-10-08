@@ -8,7 +8,7 @@ import Foundation
 
 /// Where one recording is written and the settings its stop and what follows it (audio mix, preview,
 /// notifications) work from, so changing a setting in the meantime cannot redirect them to another file. Built
-/// once in `RecorderController.start`. The settings of the stream and the encoder are not here: `CaptureSource`
+/// once in `RecorderController.startPrepared`. The settings of the stream and the encoder are not here: `CaptureSource`
 /// and `MovieWriter.prepareVideo` read them from `AppSettings` once, while the recording starts.
 ///
 /// The URLs of its files are those of `files` and read as its own: `recording.rawURL` is `recording.files.rawURL`.
