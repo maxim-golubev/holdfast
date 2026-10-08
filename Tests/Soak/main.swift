@@ -257,7 +257,7 @@ case "record", "kill":
         do {
             var lastPercent = -10
             let plan = try await RecordingMixer.mix(source: recording.rawURL, output: mixURL, fileType: recording.fileType, audioSettings: recording.audioSettings,
-                                                    tapSpans: spans) { fraction in
+                                                    tapSpans: spans, levelVoices: recording.levelVoices) { fraction in
                 let percent = Int(fraction * 100)
                 if percent >= lastPercent + 25 { lastPercent = percent; say("    mixing \(percent)%") }
             }
@@ -267,6 +267,18 @@ case "record", "kill":
                 say(String(format: "    the backup from %.3f s to %.3f s", segment.start, segment.end))
             }
             say("  alignment: " + (plan.alignment?.text ?? "none"))
+            say("  level voices: " + (plan.leveling?.text ?? "off"))
+            // The settings of the run have it on: each side has sound for the whole meeting, so each must have been
+            // measured and given a gain within the range
+            if let leveling = plan.leveling, let microphone = leveling.microphone {
+                for (name, side) in [("system audio", leveling.system), ("microphone", microphone)] {
+                    if side.reading.loudness == nil || side.reading.gatedSeconds < 600 || !VoiceLeveling.range.contains(side.gain) || side.gain == 0 {
+                        Found.problems.append("Level Voices did not measure the \(name) or gave it no gain: \(side.text)")
+                    }
+                }
+            } else {
+                Found.problems.append("the mix was not leveled")
+            }
             // The tap is the source wherever it was alive: the backup's stretches are the gaps between the tap's
             // spans and nothing else, each moved by no more than the alignment allows
             if let spans {
@@ -321,7 +333,7 @@ case "recover":
     let inspection = await RecordingMixer.inspect(leftover.url)
     say("  inspect: \(inspection.seconds.map { String(format: "%.3f s", $0) } ?? "does not open"), \(inspection.fragmented ? "still in fragments (never closed)" : "closed"), \(inspection.mixable ? "one video and \(inspection.audioTracks) audio tracks" : "not mixable")")
     let recovering = Date()
-    let lines = await RecordingRecovery.recover(found, audioSettings: ["mp4": MovieWriter.audioSettings(videoFormat: "mp4")]) { _ in }
+    let lines = await RecordingRecovery.recover(found, audioSettings: ["mp4": MovieWriter.audioSettings(videoFormat: "mp4")], levelVoices: AppSettings.levelVoices) { _ in }
     say(String(format: "  recovery took %.1f s and reports:", Date().timeIntervalSince(recovering)))
     for line in lines { say("    " + line) }
     let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()

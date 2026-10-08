@@ -38,7 +38,19 @@ enum TestMovie {
     /// track per entry of `audio`, in that order, each a 440 Hz tone as loud as its closure says. The audio is
     /// `audioSeconds` long when given, else as long as the video.
     static func write(to url: URL, seconds: Double, audioSeconds: Double? = nil, audio: [Loudness]) async throws {
-        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        try await write(to: url, seconds: seconds, audioSeconds: audioSeconds, samples: audio.map { loudness in
+            { index in
+                let at = Double(index) / 48000
+                return loudness(at) * Float(sin(2 * Double.pi * 440 * at))
+            }
+        })
+    }
+
+    /// The same movie with any sound: each entry of `samples` gives a track's value at a frame (both channels)
+    /// encoded as `settings` say, in a file of `fileType`
+    static func write(to url: URL, seconds: Double, audioSeconds: Double? = nil, samples audio: [(Int) -> Float],
+                      settings: [String: Any] = aac, fileType: AVFileType = .mp4) async throws {
+        let writer = try AVAssetWriter(outputURL: url, fileType: fileType)
         let video = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 240
         ])
@@ -51,7 +63,7 @@ enum TestMovie {
         writer.add(video)
         var tracks = [AVAssetWriterInput]()
         for _ in audio {
-            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: aac)
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
             input.expectsMediaDataInRealTime = false
             guard writer.canAdd(input) else { throw TestError("the writer does not take the audio input") }
             writer.add(input)
@@ -81,7 +93,7 @@ enum TestMovie {
                     return true
                 }
             }
-            for (index, loudness) in audio.enumerated() {
+            for (index, sample) in audio.enumerated() {
                 let input = tracks[index]
                 let total = Int((audioSeconds ?? seconds) * 48000)
                 var position = 0
@@ -92,8 +104,7 @@ enum TestMovie {
                         guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)), let data = pcm.floatChannelData else { problem = "no audio buffer"; return false }
                         pcm.frameLength = AVAudioFrameCount(count)
                         for offset in 0..<count {
-                            let at = Double(position + offset) / 48000
-                            let value = loudness(at) * Float(sin(2 * Double.pi * 440 * at))
+                            let value = sample(position + offset)
                             data[0][offset * 2] = value
                             data[0][offset * 2 + 1] = value
                         }

@@ -36,6 +36,7 @@
 		18FEBDAA2BCF8200003F09BC /* RecordingStart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDA92BCF8200003F09BC /* RecordingStart.swift */; };
 		18FEBDAC2BCF8200003F09BC /* MicConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDAB2BCF8200003F09BC /* MicConverter.swift */; };
 		18FEBDB22BCF8500003F09BC /* RecordingLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDB12BCF8500003F09BC /* RecordingLogic.swift */; };
+		18FEBDC42BCF8600003F09BD /* Loudness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC32BCF8600003F09BD /* Loudness.swift */; };
 		18FEBDE22BCF8900003F09BC /* StatusDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDE12BCF8900003F09BC /* StatusDisplay.swift */; };
 		18FEBDD42BCF8700003F09BC /* RecordingRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBDC42BCF8700003F09BC /* RecordingRecovery.swift */; };
 		18FEBE202BCF8900003F09BC /* RecordingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FEBE102BCF8900003F09BC /* RecordingSession.swift */; };
@@ -88,6 +89,7 @@
 		18FEBDA92BCF8200003F09BC /* RecordingStart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingStart.swift; sourceTree = "<group>"; };
 		18FEBDAB2BCF8200003F09BC /* MicConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicConverter.swift; sourceTree = "<group>"; };
 		18FEBDB12BCF8500003F09BC /* RecordingLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingLogic.swift; sourceTree = "<group>"; };
+		18FEBDC32BCF8600003F09BD /* Loudness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Loudness.swift; sourceTree = "<group>"; };
 		18FEBF132E92000000A1B2C3 /* SystemAudioSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAudioSource.swift; sourceTree = "<group>"; };
 		18FEBF112E92000000A1B2C3 /* SystemAudioTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAudioTap.swift; sourceTree = "<group>"; };
 		18FEBDE12BCF8900003F09BC /* StatusDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusDisplay.swift; sourceTree = "<group>"; };
@@ -170,6 +172,7 @@
 				18FEBDA92BCF8200003F09BC /* RecordingStart.swift */,
 				18FEBDAB2BCF8200003F09BC /* MicConverter.swift */,
 				18FEBDB12BCF8500003F09BC /* RecordingLogic.swift */,
+				18FEBDC32BCF8600003F09BD /* Loudness.swift */,
 				18FEBDE12BCF8900003F09BC /* StatusDisplay.swift */,
 				18FEBDC42BCF8700003F09BC /* RecordingRecovery.swift */,
 				18FEBE102BCF8900003F09BC /* RecordingSession.swift */,
@@ -319,6 +322,7 @@
 				18FEBDAA2BCF8200003F09BC /* RecordingStart.swift in Sources */,
 				18FEBDAC2BCF8200003F09BC /* MicConverter.swift in Sources */,
 				18FEBDB22BCF8500003F09BC /* RecordingLogic.swift in Sources */,
+				18FEBDC42BCF8600003F09BD /* Loudness.swift in Sources */,
 				18FEBDE22BCF8900003F09BC /* StatusDisplay.swift in Sources */,
 				18FEBDD42BCF8700003F09BC /* RecordingRecovery.swift in Sources */,
 				18FEBE202BCF8900003F09BC /* RecordingSession.swift in Sources */,

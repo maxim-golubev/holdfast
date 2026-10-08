@@ -93,7 +93,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 193 tests in about two minutes (119 to 142 s measured), without the
+`Tools/test.sh` runs 205 tests in about two and a half minutes (155 s measured), without the
 app, a screen or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
@@ -108,7 +108,8 @@ synthetic buffers and read them back.
 | Monitor | 11 | Fills and warnings for each track, the start warning, late ticks, resume, a source that keeps dropping out notified once, a microphone back with only zeros not back, system audio missing only when neither the tap nor its backup delivers (a quiet tap logged after 5 s, shown as "Call audio is not being recorded" after 15 s until it is back, never as a warning or a notification) |
 | Files, names, disk | 19 | Temporary and final names, leftovers, staging, free-space thresholds, a moved or deleted folder; a copy that must leave 2 GB while a recording is starting or running |
 | Mixer and recovery | 11 | Mix and its checks, MP3 and package mixes, every recovery outcome |
-| Settings | 7 | Keys, defaults and stored types of earlier installations |
+| Level Voices | 11 | The loudness meter: a 1 kHz sine at -23 dBFS in both channels read as -22.99 LUFS at 48 and at 44.1 kHz, the same fed in pieces, 30 s of it between 40 s of silence -23.04 LUFS, beside a stretch 30 dB quieter -23.02 LUFS, silence without a reading. The gain rule (to -16 LUFS within -6 and +12 dB; nothing for a silent side, under 3 s of sound or under -50 LUFS). The limiter: tones up to 1.9 times full scale, and one at a quarter of the sample rate whose samples stay under the ceiling while its wave reaches 1.2, held at -1.00 dBFS and -1.00 dBTP (measured at eight times the rate), the same whatever pieces it comes in; quiet sound and everything from 1.9 s after a click passed bit for bit; a click of three times full scale at its sample. The mix, read back from a 32 bit float file: other side recorded at -26.4 LUFS and microphone at -14.5 LUFS, gains +10.4 and -1.5 dB, each -16.0 LUFS in the mix; a side at -30.5 LUFS given +12.0 dB and no more (-18.5 LUFS), a silent microphone nothing; two sides with the same sound and a click, 11.4 dB taken off, peak -1.00 dBFS; a click at frame 144,000 in the recording, the plain mix and the leveled one, every sample of the leveled mix the plain one times the gain, and with gains of 0 dB all 384,000 frames bit for bit the plain mix; with the setting off all 576,000 frames the sum of the two tracks, bit for bit; the check passing the mix it was made for and rejecting a mix without the gains, one with gains it was not told of, and a leveled one without the microphone; a leftover recording mixed with the setting as it is |
+| Settings | 8 | Keys, defaults and stored types of earlier installations; a recording keeps the Level Voices setting it was started with |
 | Status item | 7 | Every state's symbol, title and sentence, the timer text, the item's width, the call-audio warning |
 | Package | 1 | `.qma` info files of earlier versions |
 | Timestamps and length | 13 | The timeline never past the present: a buffer of the stream's audio stamped 1100 s in the future near the end of a call recorded at its arrival time, a tap buffer its device stamped 1100 s ahead recorded like the others (its source hands it on ending when it arrived), a frame and an audio buffer stamped 12 s ahead as a call connects (no video hole, no fill past the present, the microphone not shifted), a microphone stamped 400 s before its arrival, a microphone backlog 40 s old left to the converter, audio of unknown arrival in the future left out and such a frame written at the present, fills and repeats cut off a second after the present, the stop's padding up to the video's end (sound only: the present), a mix whose audio is over 2 s longer or shorter than its video rejected and the recording kept unmixed |
@@ -122,6 +123,9 @@ Set in code and covered where a test can reach them, but not yet seen in a real
 recording:
 
 - The warning panel over a full-screen meeting.
+- Level Voices on a real call: what real voices measure and how the leveled
+  mix sounds. Covered by tests with synthetic sound and by the 90-minute
+  simulation.
 - A recording started while the previous one is still being saved: that it
   starts at once, that the earlier one's mix does not disturb it, and both
   files. Covered by tests with the real writer and mixer, not yet by a real
@@ -310,6 +314,11 @@ machine.
   it.
 - **Resources:** the whole run, mix and checks included, took 109 to 112 s (the mix
   of the 88 minutes 34 to 36 s, its first pass reading both system audio
-  tracks included). Memory: 50 to 57 MB once the writer had caught up; 183 MB
+  tracks included). With Level Voices, which reads the audio tracks once more
+  to measure them and runs the limiter, the mix took 48 s and the whole run
+  124 to 125 s (two runs): the system audio measured -27.0 LUFS and got +11.0 dB, the
+  microphone -19.8 LUFS and +3.8 dB, the limiter took off 7.8 dB at most (the
+  marker tones, half of full scale as recorded), and the check passed with
+  those gains. Memory: 50 to 57 MB once the writer had caught up; 183 MB
   at most (two runs) while it was fed about 120 times faster than real
   time.

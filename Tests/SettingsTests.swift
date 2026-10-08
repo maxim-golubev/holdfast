@@ -49,6 +49,7 @@ func settingsTests() async {
         check(AppSettings.$recordMic, "recordMic", false)
         check(AppSettings.$remuxAudio, "remuxAudio", true)
         check(AppSettings.$keepUnmixed, "keepUnmixed", true)
+        check(AppSettings.$levelVoices, "levelVoices", true)
         check(AppSettings.$audioFormat, "audioFormat", .aac)
         check(AppSettings.$audioQuality, "audioQuality", .high)
         check(AppSettings.$micDeviceID, "micDeviceID", "default")
@@ -71,6 +72,7 @@ func settingsTests() async {
             expectEqual(AppSettings.recordMic, false, "recordMic")
             expectEqual(AppSettings.remuxAudio, true, "remuxAudio")
             expectEqual(AppSettings.keepUnmixed, true, "keepUnmixed")
+            expectEqual(AppSettings.levelVoices, true, "levelVoices")
             expectEqual(AppSettings.frameRate, 30, "frameRate")
             expectEqual(AppSettings.videoQuality, 0.7, "videoQuality")
             expectEqual(AppSettings.videoFormat, .mp4, "videoFormat")
@@ -85,6 +87,19 @@ func settingsTests() async {
             expect(AppSettings.hiddenApps.isEmpty, "no hidden apps")
             expect(AppSettings.savedAreas.isEmpty, "no saved areas")
             expect(AppSettings.dismissedTips.isEmpty, "no dismissed tips")
+        }
+    }
+
+    await test("Settings: Level Voices is on unless switched off, and a recording keeps what it was started with") {
+        let folder = NSTemporaryDirectory()
+        withStored([:]) {
+            expectEqual(RecordingContext(audioOnly: false, recordMic: true, fastStart: false, saveDirectory: folder).levelVoices, true, "nothing stored")
+        }
+        withStored(["levelVoices": false]) {
+            expectEqual(AppSettings.levelVoices, false, "switched off")
+            let recording = RecordingContext(audioOnly: false, recordMic: true, fastStart: false, saveDirectory: folder)
+            UserDefaults.standard.setVolatileDomain(["levelVoices": true], forName: UserDefaults.argumentDomain)
+            expectEqual(recording.levelVoices, false, "a recording started with it off stays so when the setting changes")
         }
     }
 

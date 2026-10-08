@@ -6,6 +6,7 @@
 cd "$(dirname "$0")/.."
 sources=(
   Holdfast/AppSettings.swift
+  Holdfast/Loudness.swift
   Holdfast/MicConverter.swift
   Holdfast/MovieWriter.swift
   Holdfast/RecorderController.swift

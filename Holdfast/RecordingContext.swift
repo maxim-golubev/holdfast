@@ -35,6 +35,8 @@ struct RecordingContext {
     let audioQuality: Int
     /// Whether the recording as it was written stays next to the mixed one
     let keepUnmixed: Bool
+    /// Whether the mix brings system audio and microphone to the same loudness ("Level Voices")
+    let levelVoices: Bool
     let files: RecordingFiles
 
     subscript<T>(dynamicMember file: KeyPath<RecordingFiles, T>) -> T { files[keyPath: file] }
@@ -77,6 +79,7 @@ struct RecordingContext {
         self.saveDirectory = saveDirectory
         self.audioQuality = AppSettings.audioQuality.rawValue
         self.keepUnmixed = AppSettings.keepUnmixed
+        self.levelVoices = AppSettings.levelVoices
 
         files = RecordingFiles(base: RecordingFileStore(directory: saveDirectory).newBase(reserved: reserved), audioOnly: audioOnly,
                                recordMic: recordMic, systemAudio: systemAudio, remuxAudio: remuxAudio,

@@ -161,6 +161,7 @@ struct AudioSettings: View {
     @AppStorage(AppSettings.$audioQuality) private var audioQuality: AudioQuality
     @AppStorage(AppSettings.$remuxAudio)   private var remuxAudio: Bool
     @AppStorage(AppSettings.$keepUnmixed)  private var keepUnmixed: Bool
+    @AppStorage(AppSettings.$levelVoices)  private var levelVoices: Bool
     @AppStorage(AppSettings.$micDeviceID)  private var micDeviceID: String
     @AppStorage(AppSettings.$recordMic)    private var recordMic: Bool
     @State private var micIsUnavailable = false
@@ -185,6 +186,11 @@ struct AudioSettings: View {
                 }
                 Toggle(isOn: $keepUnmixed) {
                     RowLabel("Keep the Unmixed Recording", "After a video recording, the recording as it was written stays next to the final file as \"<name> (unmixed, N audio tracks)\": system audio and microphone, and with the process tap also screen capture's system audio, recorded as its backup. After a sound-only recording with the process tap, its two system audio files stay next to the one made from them. The .qma package of an audio-only recording is always kept.")
+                }
+            }
+            Section("Loudness") {
+                Toggle(isOn: $levelVoices) {
+                    RowLabel("Level Voices", "In the mixed file of a video recording, the other side of the call and your microphone are each brought to the same loudness, the one spoken content is usually played at, and a limiter keeps the sum from clipping. The unmixed recording keeps every track as it was recorded.")
                 }
             }
             Section("Encoding") {

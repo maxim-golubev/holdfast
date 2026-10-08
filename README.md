@@ -20,7 +20,7 @@ Holdfast lives in the menu bar: no Dock icon, and no window when it opens.
 Start a recording from its menu, its panel, or a shortcut. Holdfast records the
 screen, the sound the Mac plays, and your microphone. When you stop, it mixes
 the sound sources into one audio track, so the whole meeting plays in any
-player, and keeps the recording as written, with its tracks separate, next to
+player, with both sides of the call brought to the same loudness, and keeps the recording as written, with its tracks separate, next to
 it.
 
 - **Nothing goes silent:** the microphone keeps recording when the meeting app
@@ -97,7 +97,7 @@ One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
 final file. A recording starts the moment it is asked for: one that was stopped
 goes on being closed and mixed by itself, under its own name, while the next
-one runs. 193 tests run in about two minutes without the app, a screen, or
+one runs. 205 tests run in about two and a half minutes without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 
@@ -141,7 +141,7 @@ identifier in Xcode.
 
 ```sh
 Tools/build.sh      # Release build into build/, prints BUILD SUCCEEDED
-Tools/test.sh       # the tests, about two minutes, no app, screen or microphone
+Tools/test.sh       # the tests, about two and a half minutes, no app, screen or microphone
 Tools/release.sh    # build/release/Holdfast-<version>.zip, signed and verified
 ```
 

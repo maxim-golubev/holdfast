@@ -116,7 +116,8 @@ enum RecordingSaver {
             let spans = recording.tapSpansURL.flatMap { TapSpans.read($0) }
             do {
                 let plan = try await RecordingMixer.mix(source: raw, output: mixURL, fileType: recording.fileType, audioSettings: settings,
-                                                        tapSpans: spans, separateMicrophone: recording.separatesMicrophone) { fraction in
+                                                        tapSpans: spans, separateMicrophone: recording.separatesMicrophone,
+                                                        levelVoices: recording.levelVoices) { fraction in
                     DispatchQueue.main.async { session.mixProgressed(fraction) }
                 }
                 try await RecordingMixer.verify(source: raw, output: mixURL, plan: plan)

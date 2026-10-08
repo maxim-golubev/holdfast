@@ -149,6 +149,8 @@ enum AppSettings {
     /// "Mix Microphone into the Main Track": system audio and microphone are mixed into one track after the recording
     @Setting("remuxAudio", default: true) static var remuxAudio: Bool
     @Setting("keepUnmixed", default: true) static var keepUnmixed: Bool
+    /// "Level Voices": in the mixed file each side of the call is brought to the same loudness (`VoiceLeveling`)
+    @Setting("levelVoices", default: true) static var levelVoices: Bool
     @Setting("audioFormat", default: .aac) static var audioFormat: AudioFormat
     @Setting("audioQuality", default: .high) static var audioQuality: AudioQuality
     /// The chosen microphone: an `AVCaptureDevice.uniqueID`, or "default" for the system default input. Read it

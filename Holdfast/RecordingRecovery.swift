@@ -44,7 +44,7 @@ final class RecordingRecovery {
         // A token of its own, like every recording's (`SleepAssertion`): a recording may run meanwhile
         let activity = ProcessInfo.processInfo.beginActivity(options: .idleSystemSleepDisabled, reason: "Finishing a recording from an earlier run")
         Task.detached {
-            let lines = await RecordingRecovery.recover(found, audioSettings: settings, separateMicrophone: !AppSettings.remuxAudio) { fraction in
+            let lines = await RecordingRecovery.recover(found, audioSettings: settings, separateMicrophone: !AppSettings.remuxAudio, levelVoices: AppSettings.levelVoices) { fraction in
                 DispatchQueue.main.async {
                     guard self.isRunning else { return }
                     self.progress = fraction
@@ -70,9 +70,10 @@ final class RecordingRecovery {
     /// conversion wrote goes out of the way first: it says nothing about the recording it was made from (the mix of a
     /// recording that was never closed is written under the same marker), and it would be in the way of a new mix.
     /// `audioSettings` are those to mix a video of each ending with; `separateMicrophone` keeps the microphone of a
-    /// recording made with the process tap as a track of its own ("Mix Microphone into the Main Track" off).
+    /// recording made with the process tap as a track of its own ("Mix Microphone into the Main Track" off);
+    /// `levelVoices` mixes with "Level Voices", as the setting is now.
     nonisolated static func recover(_ found: [RecordingFileStore.Leftover], audioSettings: [String: [String: Any]], separateMicrophone: Bool = false,
-                                    progress: @escaping (Double) -> Void) async -> [String] {
+                                    levelVoices: Bool = false, progress: @escaping (Double) -> Void) async -> [String] {
         var lines = [String]()
         for leftover in found where leftover.isMix {
             lines.append(rename(leftover, RecoveryNames.incompleteMix, "\"%@\" is what an interrupted audio mix or MP3 conversion had written. The recording it was made from is kept separately; this file can be deleted."))
@@ -81,7 +82,7 @@ final class RecordingRecovery {
             if leftover.isAudio {
                 lines.append(await recoverAudio(leftover))
             } else {
-                lines.append(await recover(leftover, audioSettings: audioSettings[leftover.ending] ?? [:], separateMicrophone: separateMicrophone, progress: progress))
+                lines.append(await recover(leftover, audioSettings: audioSettings[leftover.ending] ?? [:], separateMicrophone: separateMicrophone, levelVoices: levelVoices, progress: progress))
             }
             // Its final names are given: the tap's spans next to it have served
             RecordingFileStore.removeTapSpans(RecordingFileStore.tapSpansURL(base: leftover.base))
@@ -152,7 +153,7 @@ final class RecordingRecovery {
     /// A recording made with the process tap is mixed by the tap's spans it left next to it (`TapSpans`), like
     /// after a stop.
     nonisolated static func recover(_ leftover: RecordingFileStore.Leftover, audioSettings: [String: Any], separateMicrophone: Bool = false,
-                                    progress: @escaping (Double) -> Void) async -> String {
+                                    levelVoices: Bool = false, progress: @escaping (Double) -> Void) async -> String {
         let raw = leftover.url
         let base = leftover.base
         let ending = leftover.ending
@@ -182,7 +183,7 @@ final class RecordingRecovery {
             do {
                 let spans = TapSpans.read(RecordingFileStore.tapSpansURL(base: base))
                 let plan = try await RecordingMixer.mix(source: raw, output: mixURL, fileType: ending.lowercased() == "mov" ? .mov : .mp4, audioSettings: audioSettings,
-                                                        tapSpans: spans, separateMicrophone: separateMicrophone, progress: progress)
+                                                        tapSpans: spans, separateMicrophone: separateMicrophone, levelVoices: levelVoices, progress: progress)
                 try await RecordingMixer.verify(source: raw, output: mixURL, unfinished: !complete, plan: plan)
                 try FileManager.default.moveItem(at: mixURL, to: final)
             } catch {

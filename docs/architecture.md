@@ -49,6 +49,8 @@ Holdfast/
   RecordingLogic.swift      Pure rules: Timeline (pause offsets, the timer's text), SystemAudioPlacement, TapSpans (where
                             the tap delivered), SystemAudioChoice (tap or backup, stretch by stretch), SystemAudioAlignment
                             (how far apart the two tracks hold the same sound) and GainCurve.
+  Loudness.swift            Pure: LoudnessMeter (ITU-R BS.1770 integrated loudness, streaming), VoiceLeveling (the
+                            gain of each side for "Level Voices") and PeakLimiter (look-ahead, true-peak, -1 dBFS).
   RecordingFileStore.swift  The save folder: names, temporary markers, leftovers of an earlier run, the disk guard;
                             RecordingFiles; QmaInfo (a .qma package's info.json); RecoveryNames.
   RecordingSaver.swift      After the stop (@MainActor): close the file, mix or convert, tell the user where it is.
@@ -698,6 +700,36 @@ and the result is checked), then:
   stretches").
   Anything but `completed` is a failure, and a watchdog cancels when no sample
   has moved for 60 s.
+- **Level Voices** (setting `levelVoices`, on by default, kept in the
+  `RecordingContext`; recovery uses the setting as it is at launch). Before
+  the mix, one more pass over the audio tracks (`RecordingMixer.loudness`)
+  feeds two `LoudnessMeter`s a piece at a time: the system audio as the mix
+  takes it (the tap moved by the alignment, tap and backup by the choice's
+  gain) and the microphone. The meter is ITU-R BS.1770: the two K-weighting
+  filters (worked out for the sample rate; at 48 kHz the recommendation's
+  coefficients), blocks of 400 ms every 100 ms, the absolute gate at -70 LUFS
+  and the relative gate 10 LU under the mean of what passed it; it keeps one
+  number per 100 ms. `VoiceLeveling.gain` is -16 LUFS minus the reading,
+  within -6 to +12 dB, and 0 for a side with no reading, under 3 s past the
+  gates, or under -50 LUFS (the noise of a room, which +12 dB would only make
+  louder). Each side's gain is one factor for the whole recording
+  (`MixedAudio.Part.scale`). The sum then goes through `PeakLimiter`: the
+  largest value in both channels, and between the samples where a sample
+  nearby is high enough for that to matter (three points between two samples,
+  a 12-tap windowed sinc each), gives the gain a frame asks for; the lowest
+  asked for in the 5 ms ahead, released with a time constant of 150 ms, is
+  averaged over those 5 ms, so the gain falls as a ramp before a peak and is
+  at or under what the peak asks for when it plays. One gain for both
+  channels. While nothing is over the ceiling the samples pass bit for bit.
+  Its output is 245 frames behind its input; `MixedAudio` leaves the first
+  245 frames it returns out and feeds it 245 frames of silence at the end, so
+  the audio is where it was against the picture. Not leveled: a mix with the
+  microphone kept as a track of its own (it is copied, not decoded), the
+  `.qma` package mix (`AVAudioEngine` player volumes end at 1, so a gain
+  above it would need another mix) and the unmixed file. With the setting off
+  none of this runs and the mix is the plain sum. The log has "Level Voices:
+  system audio -26.4 LUFS, +10.4 dB; microphone -14.5 LUFS, -1.5 dB; the
+  limiter took off 2.3 dB at most".
 - **The check.** `verify` runs before any rename: one video and one audio
   track, audio no more than 2 s longer or shorter than the video (for a
   leftover that was never closed, up to 12 s shorter: its tracks end where
@@ -709,7 +741,11 @@ and the result is checked), then:
   (as the mix chose it) and the microphone is below a quarter of it, the mix
   must have it at half to one and a half times its level: neither missing, as
   a dead tap would leave it, nor twice; it fails when half or more of either
-  kind do not.
+  kind do not. After Level Voices the levels compared are the tracks' times
+  the gains the mix returned (`MixPlan.leveling`), and where a window's peaks
+  at those gains add up to more than the limiter's ceiling the mix may be
+  lower by as much as the limiter can have taken off there (ceiling over that
+  peak) and no more.
 - **The names.** On success the mix is renamed to `<name>.mp4`, then the
   recording to `<name> (unmixed, N audio tracks).mp4` (3 with the tap, its
   backup and the microphone), or deleted when "Keep the Unmixed Recording" is
@@ -837,7 +873,7 @@ not in the recording.
 ## Tests
 
 `Tools/test.sh` compiles the pipeline sources with `Tests/*.swift` into one
-executable and runs it in about two minutes, without the app, a screen or a
+executable and runs it in about two and a half minutes, without the app, a screen or a
 microphone. What it compiles uses no ScreenCaptureKit stream and no UI, which
 is why the seams exist: the session sees its capture and writer through the
 `RecordingCapture` and `RecordingWriter` protocols, the writer reports through
@@ -854,7 +890,12 @@ buffer lists made in the test, and drive `SystemAudioSource`'s choice, its
 construction order and its repair with fake taps and with the real tap on the
 fake hardware; no tap is created. The backup tests record a tap (440 Hz) and
 its backup (1000 Hz) through the real writer and mixer and find in the mix
-which one each 10 ms holds. Settings are read from the argument domain, never
+which one each 10 ms holds. The leveling tests read the meter against a
+1 kHz sine and silence, run the limiter on tones over full scale and on one
+whose samples stay under the ceiling while its wave does not, and mix
+recordings into a 32 bit float MOV file, from which the mix's samples are read
+back as they were made (with the setting off they must be the sum of the two
+tracks, bit for bit). Settings are read from the argument domain, never
 written, and the log is kept in memory.
 
 ## Key constants
@@ -871,6 +912,7 @@ written, and the log is kept in memory.
 | Watchdog | `RecordingMonitor` | 5 s without audio, 20 s of zeros, 5 s without a first frame: status item; 15 s (`announceSeconds`), returns in between included: notification and on-screen panel; over after 5 s of steady audio (`steadySeconds`) |
 | Capture stop wait | `RecordingSession.stopCapture` | 5 s |
 | Mix stall limit | `RecordingMixer.stallLimit` | 60 s |
+| Level Voices | `VoiceLeveling`, `PeakLimiter` | target -16 LUFS; gain -6 to +12 dB; at least 3 s past the gates and -50 LUFS; ceiling -1 dBFS; look-ahead 5 ms; release 150 ms; delay 245 frames, compensated |
 | Mix check | `RecordingMixer.verify` | audio within 2 s of the video (12 s shorter for a leftover never closed); length within 1 s; 30 windows; silence below -60 dBFS; system audio at 0.5 to 1.5 times its source |
 | Timestamp check | `ArrivalCheck`, `StreamStamps` | the tap's audio has only its arrival time; stream audio and frames stamped over 1 s after their arrival, frames over 1 s before it, the microphone over 300 s before it, get their arrival time; stream audio stamped behind at real-time pace gets it after 1.5 s of arrivals; nothing ends over 1 s after the present |
 | Disk | `DiskSpace` | start 2 GB, stop 500 MB, checked every 5 s |
