@@ -32,11 +32,12 @@ enum RecordingMixer {
     static let sampleRate = 48000.0
 
     /// The audio tracks of a recording: the system audio (the tap's, when there is a backup), the backup of the
-    /// system audio, the microphone. Told by their titles (`MovieWriter.TrackTitle`); in a file without titles, one
-    /// written before there were any, by their order: system audio, then microphone.
+    /// system audio, the call tap's audio, the microphone. Told by their titles (`MovieWriter.TrackTitle`); in a
+    /// file without titles, one written before there were any, by their order: system audio, then microphone.
     struct Layout {
         var system: AVAssetTrack?
         var backup: AVAssetTrack?
+        var call: AVAssetTrack?
         var microphone: AVAssetTrack?
 
         static func read(_ tracks: [AVAssetTrack]) async throws -> Layout {
@@ -49,6 +50,7 @@ enum RecordingMixer {
                 switch title {
                 case MovieWriter.TrackTitle.system, MovieWriter.TrackTitle.tap: layout.system = track
                 case MovieWriter.TrackTitle.backup: layout.backup = track
+                case MovieWriter.TrackTitle.call: layout.call = track
                 case MovieWriter.TrackTitle.microphone: layout.microphone = track
                 default: break
                 }
@@ -58,12 +60,13 @@ enum RecordingMixer {
             case 1: return Layout(system: ordered[0])
             case 2: return Layout(system: ordered[0], microphone: ordered[1])
             case 3: return Layout(system: ordered[0], backup: ordered[1], microphone: ordered[2])
+            case 4: return Layout(system: ordered[0], backup: ordered[1], call: ordered[2], microphone: ordered[3])
             default: return layout
             }
         }
 
         /// The tracks there are, in the order the writer adds them
-        var all: [AVAssetTrack] { [system, backup, microphone].compactMap { $0 } }
+        var all: [AVAssetTrack] { [system, backup, call, microphone].compactMap { $0 } }
     }
 
     /// The title a track was written with, nil when it has none
@@ -82,6 +85,12 @@ enum RecordingMixer {
         var separateMicrophone: Bool
         /// How far the tap's audio was from the backup's, and so how far the mix moved it; nil without a backup
         var alignment: SystemAudioAlignment.Measurement?
+        /// The stretches, on the mix's timeline, in which the call tap's audio was added to the backup's: those not
+        /// the tap's in which the call tap has sound. Empty for a recording without a call tap, without a call, or
+        /// whose tap was alive wherever the call tap has sound: the call tap's track then has no part in the mix.
+        var callStretches = [(start: Double, end: Double)]()
+        /// How far the call tap's audio was from the tap's; nil when the call tap's track has no sound to go by
+        var callAlignment: SystemAudioAlignment.Measurement?
         /// What "Level Voices" did: each side's loudness and gain and the limiter's work; nil when the mix is the
         /// plain sum of the tracks
         var leveling: VoiceLeveling.Applied?
@@ -98,7 +107,11 @@ enum RecordingMixer {
     /// system audio is the tap's or the backup's stretch by stretch, never both (`SystemAudioChoice`, from the tap's
     /// recorded `tapSpans`, nil when they are not known), with the tap's audio moved onto the backup's timeline by
     /// what the two tracks' sound says they are apart (`SystemAudioAlignment`; not moved when that cannot be
-    /// measured); with `separateMicrophone` the microphone is not mixed in but copied as a second audio track.
+    /// measured). Where the system audio is not the tap's and the call tap's track has sound, that is added to the
+    /// backup's: the backup never has call audio and the call tap has nothing else, so the two together are what
+    /// the tap would have held. It is moved onto the same timeline by what it is apart from the tap's audio. A
+    /// recording whose tap was alive wherever the call tap has sound is mixed without the call tap's track.
+    /// With `separateMicrophone` the microphone is not mixed in but copied as a second audio track.
     /// With `levelVoices` each side (the system audio as the mix takes it, the microphone) is first measured over the
     /// whole recording and gets one gain towards `VoiceLeveling.target`, and their sum goes through `PeakLimiter`;
     /// not with the microphone kept apart, whose track is copied as it was recorded. Without it the mix is the plain
@@ -127,21 +140,32 @@ enum RecordingMixer {
         var tapGain: GainCurve?
         // How many frames earlier the tap's audio goes into the mix than it is in its track
         var tapShift: Int64 = 0
+        // The call tap's track, when the mix takes anything from it, and how many frames earlier it goes in
+        var call: AVAssetTrack?
+        var callShift: Int64 = 0
         if let backup = layout.backup {
-            let chosen = try await choose(tap: system, backup: backup, in: asset, spans: tapSpans)
+            let chosen = try await choose(tap: system, backup: backup, call: layout.call, in: asset, spans: tapSpans)
             plan.segments = chosen.segments
             plan.alignment = chosen.alignment
+            plan.callStretches = chosen.callStretches
+            plan.callAlignment = chosen.callAlignment
             tapShift = Int64(((chosen.alignment.offset ?? 0) * sampleRate).rounded())
+            callShift = tapShift + Int64(((chosen.callAlignment?.offset ?? 0) * sampleRate).rounded())
             tapGain = SystemAudioChoice.tapGain(for: plan.segments)
             RecLog.write("System audio alignment: " + chosen.alignment.text)
             RecLog.write("System audio in the mix: " + SystemAudioChoice.summary(plan.segments) + (tapSpans == nil ? " (the tap's spans were not known: it counts as alive throughout)" : ""))
+            if let measured = chosen.callAlignment {
+                RecLog.write("Call audio alignment: " + SystemAudioAlignment.callText(measured))
+                RecLog.write("Call audio in the mix: " + SystemAudioChoice.callSummary(plan.callStretches))
+            }
+            if !plan.callStretches.isEmpty { call = layout.call }
         }
 
         // Up to the end of the longest track that goes into the mix
         var end = 0.0
-        for track in [system, layout.backup, separate ? nil : layout.microphone].compactMap({ $0 }) {
-            // The tap's track where the mix has it
-            let moved = track === system ? Double(tapShift) / sampleRate : 0
+        for track in [system, layout.backup, call, separate ? nil : layout.microphone].compactMap({ $0 }) {
+            // A tap's track where the mix has it
+            let moved = track === system ? Double(tapShift) / sampleRate : track === call ? Double(callShift) / sampleRate : 0
             end = max(end, CMTimeGetSeconds(try await track.load(.timeRange).end) - moved)
         }
         let frames = Int64((end * sampleRate).rounded())
@@ -149,7 +173,8 @@ enum RecordingMixer {
         // How loud each side is, and with that its gain; the microphone kept apart is copied, not mixed
         var leveling: VoiceLeveling.Applied?
         if levelVoices && !separate {
-            let measured = try loudness(of: asset, system: system, backup: layout.backup, microphone: layout.microphone, tapShift: tapShift, tapGain: tapGain, frames: frames)
+            let measured = try loudness(of: asset, system: system, backup: layout.backup, call: call, microphone: layout.microphone, tapShift: tapShift,
+                                        callShift: callShift, tapGain: tapGain, frames: frames)
             leveling = VoiceLeveling.Applied(system: VoiceLeveling.Side(measured.system), microphone: measured.microphone.map { VoiceLeveling.Side($0) })
         }
         let systemScale = leveling?.system.factor ?? 1
@@ -171,6 +196,8 @@ enum RecordingMixer {
         }
         parts.append(MixedAudio.Part(track: try pcm(system, earlier: tapShift), gain: tapGain, complement: false, scale: systemScale))
         if let backup = layout.backup { parts.append(MixedAudio.Part(track: try pcm(backup), gain: tapGain, complement: true, scale: systemScale)) }
+        // The call tap's audio wherever the backup is taken, with the same fades: there the two add up to the tap's
+        if let call { parts.append(MixedAudio.Part(track: try pcm(call, earlier: callShift), gain: tapGain, complement: true, scale: systemScale)) }
         var microphoneOutput: AVAssetReaderTrackOutput?
         var microphoneFormat: CMFormatDescription?
         if let microphone = layout.microphone {
@@ -253,10 +280,10 @@ enum RecordingMixer {
     }
 
     /// The loudness of each side of a recording over its whole length, as the mix takes them: the system audio from
-    /// the tap (moved by `tapShift`) and its backup by `tapGain`, and the microphone. One pass over the tracks, a
-    /// piece at a time.
-    private static func loudness(of asset: AVAsset, system: AVAssetTrack, backup: AVAssetTrack?, microphone: AVAssetTrack?, tapShift: Int64,
-                                 tapGain: GainCurve?, frames: Int64) throws -> (system: LoudnessMeter.Reading, microphone: LoudnessMeter.Reading?) {
+    /// the tap (moved by `tapShift`), its backup and, when the mix takes it (`call`, moved by `callShift`), the call
+    /// tap by `tapGain`, and the microphone. One pass over the tracks, a piece at a time.
+    private static func loudness(of asset: AVAsset, system: AVAssetTrack, backup: AVAssetTrack?, call: AVAssetTrack?, microphone: AVAssetTrack?, tapShift: Int64,
+                                 callShift: Int64, tapGain: GainCurve?, frames: Int64) throws -> (system: LoudnessMeter.Reading, microphone: LoudnessMeter.Reading?) {
         let reader = try AVAssetReader(asset: asset)
         func pcm(_ track: AVAssetTrack, earlier: Int64 = 0) throws -> TrackPCM {
             let output = AVAssetReaderTrackOutput(track: track, outputSettings: trackSettings)
@@ -267,6 +294,7 @@ enum RecordingMixer {
         }
         var systemParts = [MixedAudio.Part(track: try pcm(system, earlier: tapShift), gain: tapGain, complement: false)]
         if let backup { systemParts.append(MixedAudio.Part(track: try pcm(backup), gain: tapGain, complement: true)) }
+        if let call { systemParts.append(MixedAudio.Part(track: try pcm(call, earlier: callShift), gain: tapGain, complement: true)) }
         let microphoneParts = try microphone.map { [MixedAudio.Part(track: try pcm($0), gain: nil, complement: false)] }
         guard let systemSum = MixedAudio(parts: systemParts, frames: frames) else { throw RecordingError("The audio cannot be read to measure its loudness.") }
         var microphoneSum: MixedAudio?
@@ -287,11 +315,23 @@ enum RecordingMixer {
         return (systemMeter.reading, microphoneSum == nil ? nil : microphoneMeter.reading)
     }
 
+    /// What `choose` decides about the system audio of a recording made with the tap
+    private struct Chosen {
+        var segments: [SystemAudioChoice.Segment]
+        var alignment: SystemAudioAlignment.Measurement
+        /// Where the call tap's audio is added (`MixPlan.callStretches`), and how far it is from the tap's; the
+        /// latter nil when the recording has no call tap's track or that track has no sound
+        var callStretches = [(start: Double, end: Double)]()
+        var callAlignment: SystemAudioAlignment.Measurement?
+    }
+
     /// Which source each stretch of the system audio takes, from the tap's spans and the levels of the tap's and the
     /// backup's tracks, and how far apart the two tracks hold the same sound (not measured without `align`: then the
-    /// stretches are on the timeline of the tracks as they are)
-    private static func choose(tap: AVAssetTrack, backup: AVAssetTrack, in asset: AVAsset, spans: TapSpans?,
-                               align: Bool = true) async throws -> (segments: [SystemAudioChoice.Segment], alignment: SystemAudioAlignment.Measurement) {
+    /// stretches are on the timeline of the tracks as they are). With a call tap's track (`call`) that has sound:
+    /// how far its audio is from the tap's, which hold it alike while both run, and the stretches in which it is
+    /// added to the backup's. A call tap's track without sound changes nothing.
+    private static func choose(tap: AVAssetTrack, backup: AVAssetTrack, call: AVAssetTrack? = nil, in asset: AVAsset, spans: TapSpans?,
+                               align: Bool = true) async throws -> Chosen {
         let tapLevels = try blockLevels(of: tap, in: asset)
         let backupLevels = try blockLevels(of: backup, in: asset)
         let end = max(CMTimeGetSeconds(try await tap.load(.timeRange).end), CMTimeGetSeconds(try await backup.load(.timeRange).end))
@@ -301,8 +341,27 @@ enum RecordingMixer {
                 try samples(of: source == .tap ? tap : backup, in: asset, from: first, count: count)
             }
         }
-        let segments = SystemAudioChoice.plan(tap: tapLevels, backup: backupLevels, spans: spans, duration: end, offset: alignment.offset ?? 0)
-        return (segments, alignment)
+        var callLevels = [Float]()
+        var callAlignment: SystemAudioAlignment.Measurement?
+        if let call {
+            let levels = try blockLevels(of: call, in: asset)
+            if levels.contains(where: { $0 > SystemAudioChoice.signal }) {
+                callLevels = levels
+                var measured = SystemAudioAlignment.Measurement.none
+                if align {
+                    // The call tap's track in the tap's place, the tap's in the backup's: how much later the call
+                    // tap has the sound than the tap
+                    measured = try SystemAudioAlignment.measure(tap: levels, backup: tapLevels, duration: end, rate: sampleRate) { source, first, count in
+                        try samples(of: source == .tap ? call : tap, in: asset, from: first, count: count)
+                    }
+                }
+                callAlignment = measured
+            }
+        }
+        let offset = alignment.offset ?? 0, callOffset = callAlignment?.offset ?? 0
+        let segments = SystemAudioChoice.plan(tap: tapLevels, backup: backupLevels, spans: spans, duration: end, offset: offset, call: callLevels, callOffset: callOffset)
+        let stretches = SystemAudioChoice.callStretches(segments, call: callLevels, shift: offset + callOffset)
+        return Chosen(segments: segments, alignment: alignment, callStretches: stretches, callAlignment: callAlignment)
     }
 
     /// `count` frames of a track from frame `first` on (which may be before its start), the two channels added up
@@ -515,16 +574,21 @@ enum RecordingMixer {
     /// The system audio of a sound-only recording made with the process tap, from its two files: the tap's (`tap`)
     /// and the backup's (`backup`), each stretch from the source `SystemAudioChoice` takes (`spans` where the tap
     /// delivered, nil when not known), the tap's moved onto the backup's timeline by what `SystemAudioAlignment`
-    /// measures between them, written to `output` with `settings`, as long as the longer file. Returns
+    /// measures between them, written to `output` with `settings`, as long as the longer file. With the call tap's
+    /// file (`call`) its audio is added to the backup's wherever the tap is not the source and it has sound, moved
+    /// by what it is apart from the tap's, as in the mix of a video; a call tap's file that is missing, does not
+    /// open or has no sound there changes nothing. Returns
     /// the stretches; throws, leaving `output` incomplete, when it cannot be written or is not as long as the tap's
     /// file. Blocks while it renders, so not on the main thread.
     @discardableResult
-    static func mergeSystemAudio(tap: URL, backup: URL, spans: TapSpans?, to output: URL, settings: [String: Any]) throws -> [SystemAudioChoice.Segment] {
-        let files = try [tap, backup].map { try AVAudioFile(forReading: $0) }
+    static func mergeSystemAudio(tap: URL, backup: URL, call: URL? = nil, spans: TapSpans?, to output: URL, settings: [String: Any]) throws -> [SystemAudioChoice.Segment] {
+        var files = try [tap, backup].map { try AVAudioFile(forReading: $0) }
         let format = files[0].processingFormat
         guard files[1].processingFormat == format, format.channelCount > 0, !format.isInterleaved else {
             throw RecordingError("The two system audio files are not in the same format.")
         }
+        // The call tap's file is a help, never a reason to fail: one that cannot be used is left out
+        if let call, let file = try? AVAudioFile(forReading: call), file.processingFormat == format { files.append(file) }
         let readBuffers = try files.map { _ in try require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096)) }
         // The levels, then the plan
         var levels = [[Float]]()
@@ -547,10 +611,30 @@ enum RecordingMixer {
         }
         let shift = AVAudioFramePosition(((alignment.offset ?? 0) * format.sampleRate).rounded())
         let frames = max(files[0].length - shift, files[1].length)
-        let segments = SystemAudioChoice.plan(tap: levels[0], backup: levels[1], spans: spans, duration: Double(frames) / format.sampleRate, offset: Double(shift) / format.sampleRate)
+        // The call tap's audio, when its file has any: how far it is from the tap's
+        var callLevels = [Float]()
+        var callAlignment: SystemAudioAlignment.Measurement?
+        if files.count > 2, levels[2].contains(where: { $0 > SystemAudioChoice.signal }) {
+            callLevels = levels[2]
+            callAlignment = try SystemAudioAlignment.measure(tap: levels[2], backup: levels[0], duration: Double(max(files[0].length, files[2].length)) / format.sampleRate,
+                                                             rate: format.sampleRate) { source, first, count in
+                try samples(of: files[source == .tap ? 2 : 0], into: readBuffers[source == .tap ? 2 : 0], from: first, count: count)
+            }
+        }
+        let callShift = shift + AVAudioFramePosition(((callAlignment?.offset ?? 0) * format.sampleRate).rounded())
+        let segments = SystemAudioChoice.plan(tap: levels[0], backup: levels[1], spans: spans, duration: Double(frames) / format.sampleRate, offset: Double(shift) / format.sampleRate,
+                                              call: callLevels, callOffset: callAlignment?.offset ?? 0)
+        let callStretches = SystemAudioChoice.callStretches(segments, call: callLevels, shift: Double(callShift) / format.sampleRate)
         let curve = SystemAudioChoice.tapGain(for: segments)
         RecLog.write("System audio alignment: " + alignment.text)
         RecLog.write("System audio of the sound-only recording: " + SystemAudioChoice.summary(segments) + (spans == nil ? " (the tap's spans were not known: it counts as alive throughout)" : ""))
+        if let callAlignment {
+            RecLog.write("Call audio alignment: " + SystemAudioAlignment.callText(callAlignment))
+            RecLog.write("Call audio of the sound-only recording: " + SystemAudioChoice.callSummary(callStretches))
+        }
+        // Only the files the merge takes from: the call tap's when it has a stretch
+        let merged = Array(files.prefix(callStretches.isEmpty ? 2 : 3))
+        let shifts = [shift, 0, callShift]
         // The merge
         let outputFile = try AVAudioFile(forWriting: output, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
         let mixed = try require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096))
@@ -561,8 +645,8 @@ enum RecordingMixer {
             let count = AVAudioFrameCount(min(4096, frames - position))
             // Where each file's frames begin in this piece, and how many it has for it
             var leads = [Int](), counts = [Int]()
-            for (index, (file, buffer)) in zip(files, readBuffers).enumerated() {
-                let from = position + (index == 0 ? shift : 0)
+            for (index, (file, buffer)) in zip(merged, readBuffers).enumerated() {
+                let from = position + shifts[index]
                 let first = max(0, from), end = min(file.length, from + AVAudioFramePosition(count))
                 buffer.frameLength = 0
                 if end > first {
@@ -578,12 +662,20 @@ enum RecordingMixer {
             guard let out = mixed.floatChannelData, let tapData = readBuffers[0].floatChannelData, let backupData = readBuffers[1].floatChannelData else {
                 throw RecordingError("The system audio could not be merged.")
             }
+            let callData = merged.count > 2 ? readBuffers[2].floatChannelData : nil
             for channel in 0..<Int(format.channelCount) {
                 for frame in 0..<Int(count) {
                     let tapFrame = frame - leads[0], backupFrame = frame - leads[1]
                     let fromTap = tapFrame >= 0 && tapFrame < counts[0] ? tapData[channel][tapFrame] : 0
                     let fromBackup = backupFrame >= 0 && backupFrame < counts[1] ? backupData[channel][backupFrame] : 0
                     out[channel][frame] = gains[frame] * fromTap + (1 - gains[frame]) * fromBackup
+                }
+                // The call tap's audio wherever the backup is taken
+                if let callData {
+                    for frame in 0..<Int(count) {
+                        let callFrame = frame - leads[2]
+                        if callFrame >= 0 && callFrame < counts[2] { out[channel][frame] += (1 - gains[frame]) * callData[channel][callFrame] }
+                    }
                 }
             }
             try outputFile.write(from: mixed)
@@ -736,7 +828,9 @@ enum RecordingMixer {
         guard let system = layout.system else { return }
         var used = plan ?? MixPlan(segments: [], separateMicrophone: false)
         if plan == nil, let backup = layout.backup {
-            used.segments = try await choose(tap: system, backup: backup, in: raw, spans: nil, align: false).segments
+            let chosen = try await choose(tap: system, backup: backup, call: layout.call, in: raw, spans: nil, align: false)
+            used.segments = chosen.segments
+            used.callStretches = chosen.callStretches
         }
         try checkLevels(layout, in: raw, mixed: mixedAudio, in: mixed, plan: used, seconds: rawSeconds)
     }
@@ -765,8 +859,9 @@ enum RecordingMixer {
 
     /// Looks at up to 30 one-second windows spread over the recording. Where the microphone has sound and system
     /// audio has next to none, the mix must have sound of about the microphone's level. Where the system audio has
-    /// sound from one source (the tap's or the backup's, as the plan took it) and the microphone next to none, the
-    /// mix must have it at its level: not missing, as a dead tap would leave it, and not twice. Throws when either
+    /// sound from one source (the tap's or the backup's, as the plan took it; the backup's together with the call
+    /// tap's when the plan added that) and the microphone next to none, the mix must have it at its level: not
+    /// missing, as a dead tap would leave it, and not twice. Throws when either
     /// fails in half of its windows or more. A recording without such windows passes: there is nothing to tell from.
     /// A mix made with "Level Voices" is held to the same, with each side at the level its gain gives it; where
     /// the peaks of a window, at those gains, are over the limiter's ceiling, the mix may be lower by as much as
@@ -789,7 +884,12 @@ enum RecordingMixer {
             var systemLevel = Level()
             if sources.contains(.tap) { systemLevel = try level(of: system, in: raw, range: range) }
             if sources.contains(.backup), let backup = layout.backup {
-                let level = try level(of: backup, in: raw, range: range)
+                var level = try level(of: backup, in: raw, range: range)
+                // With the call tap's audio added there: two different sounds, whose powers add up
+                if let call = layout.call, plan.callStretches.contains(where: { $0.end > start && $0.start < start + 1 }) {
+                    let added = try self.level(of: call, in: raw, range: range)
+                    level = Level(rms: (level.rms * level.rms + added.rms * added.rms).squareRoot(), peak: level.peak + added.peak)
+                }
                 systemLevel = Level(rms: max(systemLevel.rms, level.rms), peak: max(systemLevel.peak, level.peak))
             }
             let microphoneLevel = try microphone.map { try level(of: $0, in: raw, range: range) } ?? Level()
@@ -869,7 +969,7 @@ enum RecordingMixer {
         /// (`canContainFragments`), also before the first fragment after the header was written. Closing it rewrites
         /// it as an ordinary movie. (`containsFragments` is false for a file cut off within its first fragment.)
         let fragmented: Bool
-        /// One video track and two or three audio tracks
+        /// One video track and two to four audio tracks
         let mixable: Bool
         /// How many audio tracks it has
         var audioTracks = 0
@@ -886,7 +986,7 @@ enum RecordingMixer {
         let fragmented = (try? await asset.load(.canContainFragments)) ?? true
         let video = (try? await asset.loadTracks(withMediaType: .video).count) ?? 0
         let audio = (try? await asset.loadTracks(withMediaType: .audio).count) ?? 0
-        return Inspection(seconds: length, fragmented: fragmented, mixable: video == 1 && (2...3).contains(audio), audioTracks: audio)
+        return Inspection(seconds: length, fragmented: fragmented, mixable: video == 1 && (2...4).contains(audio), audioTracks: audio)
     }
 }
 

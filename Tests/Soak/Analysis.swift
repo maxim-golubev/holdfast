@@ -391,9 +391,10 @@ enum Checks {
         if !unexpected.isEmpty {
             report.append("\(label): \(unexpected.count) runs of unexpected digital silence")
         }
-        // Quiet windows that are not at the edge of a silence: the track should be at the source's level there
+        // Quiet windows that are not at the edge of a silence: the track should be at the source's level there. At an
+        // edge AAC spreads the sound over up to a frame (21 ms) into the silence, read in windows of 10 ms.
         let edges = runs.flatMap { [$0.start, $0.end] }
-        let stray = quietWindows.filter { t in !edges.contains { abs($0 - t) <= 0.03 } }
+        let stray = quietWindows.filter { t in !edges.contains { abs($0 - t) <= 0.035 } }
         if !stray.isEmpty {
             say("      quiet windows away from any silence: \(stray.count), first at \(stray.prefix(5).map { String(format: "%.2f", $0) })")
             report.append("\(label): \(stray.count) windows of 10 ms below -50 dBFS away from any silence")

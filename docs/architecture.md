@@ -30,32 +30,37 @@ Holdfast/
                             endings; RecordingError.
   CaptureSource.swift       CaptureTarget, the SCContentFilter and SCStreamConfiguration for it, and the SCStream with
                             its three outputs, which hand every buffer on as a CaptureSample, plus the recording's
-                            SystemAudioSource when a tap records the system audio; MicDevice and MicrophoneChoice, the
-                            microphone a recording asked for and the one it uses.
-  SystemAudioTap.swift      SystemAudioTap: one Core Audio process tap in a private aggregate device clocked as
-                            TapClock says (built-in output, no sub-device, default output), with its IOProc;
+                            SystemAudioSource and CallAudioSource when a tap records the system audio; MicDevice and
+                            MicrophoneChoice, the microphone a recording asked for and the one it uses.
+  SystemAudioTap.swift      SystemAudioTap: one Core Audio process tap (of everything, or of the call process alone)
+                            in a private aggregate device clocked as TapClock says (built-in output, no sub-device,
+                            default output), with its IOProc;
                             TapHardware (the Core Audio calls, CoreAudioTapHardware the real ones); SystemAudioBuffers
                             (IO buffer to CMSampleBuffer, host time) and SystemAudioConverter (to ScreenCaptureKit's
                             format).
   SystemAudioSource.swift   SystemAudioSource: a recording's tap, rebuilt the moment it stops delivering (TapRepair:
-                            which construction next, how long to wait); SystemAudioSelection (tap with backup, or
-                            ScreenCaptureKit alone, the notice); SystemAudioPermission.
+                            which construction next, how long to wait) or is found to hear nothing; CallAudioSource:
+                            the call tap, a second tap of the call process alone, built while that process has an
+                            audio object; SystemAudioSelection (tap with backup, or ScreenCaptureKit alone, the
+                            notices); SystemAudioPermission.
   MovieWriter.swift         CaptureSample; the AVAssetWriter and its inputs (or the files of a sound-only recording),
-                            the timeline with its pauses, video frames, the placement of system audio and of its
-                            backup, the fills, track titles, the tap's spans (TapSpanLog), finish().
+                            the timeline with its pauses, video frames, the placement of system audio, of its
+                            backup and of the call tap's audio, the fills, track titles, the taps' spans
+                            (TapSpanLog), the watch for a tap that hears nothing (SilentTap), finish().
   MicConverter.swift        Microphone buffers of any format to 48 kHz stereo on a continuous timeline;
                             AudioSilence, the one source of silent audio.
   RecordingMonitor.swift    A 0.5 s timer on the sample queue: keeps every track advancing, and the watchdog.
-  RecordingLogic.swift      Pure rules: Timeline (pause offsets, the timer's text), SystemAudioPlacement, TapSpans (where
-                            the tap delivered), SystemAudioChoice (tap or backup, stretch by stretch), SystemAudioAlignment
-                            (how far apart the two tracks hold the same sound) and GainCurve.
+  RecordingLogic.swift      Pure rules: Timeline (pause offsets, the timer's text), SystemAudioPlacement, SilentTap (a
+                            tap that runs and hears nothing), TapSpans (where a tap delivered), SystemAudioChoice (tap
+                            or backup, stretch by stretch, and where the call tap's audio is added),
+                            SystemAudioAlignment (how far apart two tracks hold the same sound) and GainCurve.
   Loudness.swift            Pure: LoudnessMeter (ITU-R BS.1770 integrated loudness, streaming), VoiceLeveling (the
                             gain of each side for "Level Voices") and PeakLimiter (look-ahead, true-peak, -1 dBFS).
   RecordingFileStore.swift  The save folder: names, temporary markers, leftovers of an earlier run, the disk guard;
                             RecordingFiles; QmaInfo (a .qma package's info.json); RecoveryNames.
   RecordingSaver.swift      After the stop (@MainActor): close the file, mix or convert, tell the user where it is.
   RecordingMixer.swift      The audio mix in one pass (its own: TrackPCM, MixedAudio), its checks (verify,
-                            verifyConversion, checkTiming), the merge of a sound-only recording's two system audio
+                            verifyConversion, checkTiming), the merge of a sound-only recording's system audio
                             files, the .qma package mix, and inspect() for leftovers.
   RecordingRecovery.swift   At launch: every file an earlier run left under a temporary name gets a name that says
                             what it is, and a recording that opens gets its mix.
@@ -87,7 +92,7 @@ Tools/                      build.sh, test.sh, release.sh, app_icon.sh; rt.sh, t
                          │
                          ▼   off the main thread
  record: system audio from a process tap, or the stream when it cannot be started (SystemAudioSelection),
-         SCStreamConfiguration, CaptureSource, prepareVideo, startCapture
+         with the tap a CallAudioSource beside it, SCStreamConfiguration, CaptureSource, prepareVideo, startCapture
                          │
                          ▼   main thread
  enterRecording: starting → recording (log, sleep assertion, disk watch)
@@ -95,22 +100,26 @@ Tools/                      build.sh, test.sh, release.sh, app_icon.sh; rt.sh, t
  SCStream ── screen ──────┐
           ── microphone ──┤
           ── system audio ┤  (the backup while the tap records; the system audio without the tap)
- process tap ─ system audio ┴► sample queue ──► RecordingSession.received ──► MovieWriter.write
+ process tap ─ system audio ┤
+ call tap ──── call audio ──┴► sample queue ──► RecordingSession.received ──► MovieWriter.write
+          (only while the call process has an audio object)
                                                    video: writeFrame
-                                                   system audio and its backup: placeSystemAudio, the tap's spans
+                                                   system audio, its backup, call audio: placeSystemAudio, the taps'
+                                                     spans, SilentTap (a tap of zeros against sound elsewhere)
                                                    microphone: MicConverter.convert
                           RecordingMonitor, every 0.5 s on the same queue:
                             fill silent tracks, repeat the last frame, watchdog
 
  RecordingSession.stop ──► recording → stopping: UI torn down; the session leaves the recorder's place for the
                            running recording, so the next one can start at once
-   await the capture's stop (5 s at most): the tap first, then the stream
+   await the capture's stop (5 s at most): the tap first, then the call tap, then the stream
    the monitor is stopped on the sample queue as the capture's stop returns, whatever the main thread is doing
    on the sample queue: MovieWriter.finish (pad microphone, mark inputs finished)
    stopping → finalizing: RecordingSaver.save
-     finishWriting ─► RecordingMixer.mix to <name>.mixing.mp4 (system audio: the tap or its backup,
-                      by <name>.tap-alive.txt) ─► verify ─► rename to <name>.mp4
-     recording as written ─► <name> (unmixed, 3 audio tracks).mp4; <name>.tap-alive.txt removed
+     finishWriting ─► RecordingMixer.mix to <name>.mixing.mp4 (system audio: the tap, or its backup plus the
+                      call tap's audio, by <name>.tap-alive.txt) ─► verify ─► rename to <name>.mp4
+     recording as written ─► <name> (unmixed, 4 audio tracks).mp4; <name>.tap-alive.txt and
+                      <name>.call-alive.txt removed
    finalizing → idle: the session is dropped; the recorder is idle when none is left
 ```
 
@@ -224,10 +233,13 @@ from a Core Audio process tap (`SystemAudioSelection.choose`), and
 ScreenCaptureKit's system audio is recorded beside it, for the whole recording,
 on a track of its own: the backup. On the owner's Mac ScreenCaptureKit's audio
 was checked to have Zoom, Meet and calls in a browser (2026-10-04), and the tap
-to have FaceTime (2026-10-05). After the stop the mix takes, stretch by
-stretch, the tap's audio where the tap delivered, else the backup's, never
-both, with the tap's audio moved onto the backup's timeline. Without the permission the stream's system audio is the
-system audio, alone. A sound-only recording uses the same sources. The tap is
+to have FaceTime (2026-10-05). The backup cannot stand in for the tap during
+such a call, so a second tap, of `avconferenced` alone, records the call audio
+on a third track while a call may be playing: the call tap. After the stop the
+mix takes, stretch by stretch, the tap's audio where the tap delivered, else
+the backup's plus the call tap's, never the tap's and another's at once, with
+the taps' audio moved onto the backup's timeline. Without the permission the
+stream's system audio is the system audio, alone. A sound-only recording uses the same sources. The tap is
 global whatever is recorded: a window or application recording gets every
 app's sound, because call audio comes from `avconferenced`, not from the call's
 app, and a tap of chosen processes made at the start would miss one that
@@ -322,14 +334,61 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   already handed on is dropped, so nothing of the old tap follows the new one;
   the monitor's silence fill covers the moment between, and the mix takes the
   backup there.
-- **The backup and the tap's spans.** The writer gives the backup its own
-  track (or file), placed and filled exactly like the system audio, so the two
-  share one timeline. While it writes, it records where real buffers of the tap
-  went into the tap's track (`TapSpanLog`: a line at each start and end, in
-  seconds of the file) in `<name>.tap-alive.txt` next to the recording, so a
-  recording that is killed has them too; silence written into the tap's track
-  ends a span. The file is removed once the final files are written (at the
-  end of the save, and by recovery).
+- **The call tap.** While a recording uses the tap, a `CallAudioSource` runs
+  beside it: a process tap of `avconferenced`'s audio process objects only
+  (`CATapDescription(stereoMixdownOfProcesses:)`, private, left audible),
+  found by bundle identifier or executable name among
+  `kAudioHardwarePropertyProcessObjectList`. A process has such an object only
+  while it uses audio, so the list is read at the start and whenever Core Audio
+  says it changed (one listener on the system object; read every 5 s when it
+  cannot be listened to). With no object there is no tap, no aggregate device
+  and no IOProc; when one appears a tap is built for it, when the set of
+  objects changes it is rebuilt for the new set, and when the last one goes it
+  is taken down. It is built differently from the process tap on purpose
+  (`TapClock.callOrder`): the tap alone in its aggregate device, with no
+  sub-device, and the built-in output as its clock only after that failed
+  twice, so that what stops one tap is less likely to stop both. Everything
+  else is the process tap's code: the same `SystemAudioTap` with its IOProc
+  (stamped with the host time it reads, the device's stamps not read), the same
+  `SystemAudioSource` with its stall check and repair (role `callAudio`, its
+  log lines beginning "Call audio:"), the same converter, and its buffers reach
+  the writer as `.callAudio` samples. `start` does not throw and nothing it
+  does reaches the recording but those buffers and `CallAudioState` (`idle`,
+  `active`, or `unknown` when it cannot run), which the monitor uses.
+- **A tap that hears nothing** (`SilentTap`, in the writer). A tap whose
+  process lacks the permission runs and delivers exact zeros, and so does a
+  healthy one while nothing plays; the other sources tell them apart. The
+  writer takes the largest sample of every buffer it writes to the three
+  tracks. When the tap's track has held exact zeros for 3 s and the backup or
+  the call tap had a sample above -60 dBFS more than 0.5 s from both ends of
+  those zeros (a sound that begins or ends is in one track up to a quarter of
+  a second before the other), the tap does not hear the Mac: the writer logs
+  it and reports `rebuild`, the session has its capture rebuild the tap
+  (`SystemAudioSource.rebuildDeaf`: torn down and built like one that stopped,
+  the next construction after two failures, and not counted healthy while it
+  hears nothing), and the comparison goes on with the new tap. After two
+  rebuilds without a sample other than zero it reports `notice`, once: the
+  session posts "Call Audio Not Included" with how to allow System Audio
+  Recording (once while the app runs), and from then on the tap is rebuilt
+  only once a minute. The backup and the call tap record throughout. The first
+  sample that is not zero ends it (`hears`). Silence written in the tap's
+  place, and a pause, break the run of zeros: a tap that delivers nothing at
+  all is the stall check's. Nothing of this runs on the IO thread.
+- **The backup, the call tap's track and the spans.** The writer gives the
+  backup and the call tap's audio each a track (or file) of its own, placed
+  and filled exactly like the system audio, so the three share one timeline.
+  The call tap's track is there from the start of every recording made with
+  the tap (a track cannot be added when a call begins, and one that is not fed
+  keeps fragments from reaching the disk): it is silence, written by the
+  monitor's fill, whenever no call plays, and is brought to the recording's
+  end at the stop. While it writes, the writer records where real buffers of
+  the tap went into the tap's track (`TapSpanLog`: a line at each start and
+  end, in seconds of the file) in `<name>.tap-alive.txt` next to the
+  recording, so a recording that is killed has them too; silence written into
+  the tap's track ends a span. The call tap has the same record in
+  `<name>.call-alive.txt`, which the save logs ("Call audio: the call tap
+  delivered for … s in N stretches"). Both files are removed once the final
+  files are written (at the end of the save, and by recovery).
 - **The choice** (`SystemAudioChoice`). The tap is the source for every
   stretch in which its spans say it delivered, whatever it delivered: a tap
   that is alive is not judged by its sound. The backup is the source where the
@@ -339,8 +398,9 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   through the codec) while the backup has signal (above -70 dBFS) more than
   0.3 s inside that silence. That is a tap that runs and delivers nothing, as
   a process without the permission gets; the 0.3 s keep the end of a sound the
-  two tracks hold a little apart from counting as the backup's signal. Silence
-  in both switches nothing. Less than 0.25 s without the tap at the very start
+  two tracks hold a little apart from counting as the backup's signal. The
+  call tap's signal counts like the backup's there (a FaceTime call, which the
+  backup does not hear). Silence in all of them switches nothing. Less than 0.25 s without the tap at the very start
   or end of the recording stays the tap's, since the two tracks never begin and
   end on the same sample. So a recording whose tap was alive throughout has
   nothing from the backup, FaceTime, which only the tap hears, is the tap's,
@@ -354,6 +414,21 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   of an outage only one source has the sound, and a call may have no quiet
   moment for seconds. Without the spans (a file of an earlier version) the tap
   counts as alive for the whole of its track.
+- **Call audio in the mix.** The backup never has call audio and the call tap
+  has nothing else, so where the tap is not the source the two together are
+  what the tap would have held: in every such stretch in which the call tap's
+  track has signal (`SystemAudioChoice.callStretches`), its audio is added to
+  the backup's, with the gain of the backup (one minus the tap's, so the same
+  5 ms fades). It is moved onto the mix's timeline by the tap's offset plus
+  what `SystemAudioAlignment` measures between the call tap's track and the
+  tap's, which hold the call alike wherever both ran; when that cannot be
+  measured (the tap was dead for the whole call) it is moved like the tap's
+  audio, both being stamped in an IOProc. A recording whose tap was the source
+  wherever the call tap has sound, and one whose call tap's track is silent,
+  has nothing of that track in its mix (it is read only for its levels and
+  its offset, before the mix): the mix is then the one made before there was
+  a call tap, sample for sample (compared on a lossless recording with the
+  mixer of the version before).
 - **The alignment** (`SystemAudioAlignment`). The two tracks do not hold the
   same sound at the same time. Measured on the owner's Mac on 2026-10-07
   (AirPods in 24 kHz call mode, voice processing switched on mid-recording) by
@@ -384,15 +459,18 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   1024 frames come to 1858 of the 2515 frames measured. They are logged at
   every build ("System audio tap: its device reports …") to be held against
   what the mix measures.
-- **Warnings.** System audio is reported missing only when neither the tap nor
-  the backup has delivered for the monitor's 5 s; a tap that stops while the
-  backup goes on is logged ("the process tap has delivered nothing for 5 s; the
-  backup (screen capture) records the system audio meanwhile", and when it is
-  back), and shown, as a notice, only when it has lasted 15 s. Sound-only
-  recordings are watched the same way.
+- **Warnings.** System audio is reported missing only when neither the tap,
+  the backup nor the call tap has delivered for the monitor's 5 s; a tap that
+  stops while the backup goes on is logged ("the process tap has delivered
+  nothing for 5 s; the backup (screen capture) records the system audio
+  meanwhile", and when it is back), and shown, as a notice, only when it has
+  lasted 15 s and the call tap does not record the call either: a call may be
+  playing and the call tap has delivered nothing for 15 s, or nothing looks
+  for a call. Sound-only recordings are watched the same way.
 - **Teardown.** The device is stopped, then the IOProc, the aggregate device
-  and the tap are destroyed, in that order, once: at the stop (the tap before
-  the stream, both before the writer's inputs are finished), when a start
+  and the tap are destroyed, in that order, once, for the tap and for the call
+  tap alike: at the stop (the tap, then the call tap with its listener, then
+  the stream, all before the writer's inputs are finished), when a start
   fails or the stream ends (`releaseStream`), at quit
   (`SystemAudioSource.stopAll`) and in `deinit`. Tap and aggregate device are
   private to the process, and Core Audio destroys them with it, so a crash
@@ -414,10 +492,14 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   recording show "Call audio is not being recorded" for as long as it runs
   (`Health.notice`); a tap that cannot be built yet is repaired, and reported
   the same way only once it has been dead for 15 s, until it delivers again.
-- **Not yet verified in a real recording.** That the tap hears FaceTime was
-  verified on 2026-10-05; a recording with this version during a FaceTime
-  call, and during a browser call whose AirPods switch to 24 kHz, has not been
-  made.
+- **Not yet verified in a real recording.** The process tap has recorded real
+  FaceTime calls in the build before this one. The call tap has not been run
+  during a call at all: that `avconferenced` gets and loses its audio object
+  with a call, that a tap of it alone in its aggregate device delivers the
+  call, how far its audio is from the process tap's, and what its IOProc does
+  while that process plays nothing. Nor has the watch for a tap of zeros been
+  run on the device (among other things with the output muted), nor a browser
+  call whose AirPods switch to 24 kHz with this version.
 
 `MicDevices` installs CoreAudio listeners at launch. A change of the default
 input, or the chosen device going or coming back, arms a check 0.7 s later that
@@ -428,10 +510,11 @@ come and go.
 
 ## The writer
 
-`MovieWriter` owns the `AVAssetWriter` and up to four inputs: video, system
-audio, its backup (with the tap), microphone, added in that order and titled
-("System audio (tap)" or "System audio", "System audio (backup)",
-"Microphone"), which is how the mix and players tell them apart. One is made
+`MovieWriter` owns the `AVAssetWriter` and up to five inputs: video, system
+audio, its backup and the call tap's audio (both with the tap), microphone,
+added in that order and titled ("System audio (tap)" or "System audio",
+"System audio (backup)", "Call audio (second tap)", "Microphone"), which is
+how the mix and players tell them apart. One is made
 per recording and nothing in it outlives the recording.
 
 **The timeline.** The writer's session starts at the first complete frame (the
@@ -548,7 +631,9 @@ of it could not be. The two sources differ in what may leave a buffer out:
 The tap's spans (`TapSpanLog`) are made from the buffers written to its track
 and end where silence is written into it, so they say where the track holds
 the tap's audio, not when its IOProc was called. The backup is filled the same
-way on its own track. In a sound-only recording, whose files have no
+way on its own track, and so is the call tap's, which is placed like the
+tap's (by arrival, back to back, with its own `TapDrift`) and has spans of
+its own. In a sound-only recording, whose files have no
 timestamps, either source's first buffer starts the recording, and the file of
 the source that began later starts with silence up to it.
 
@@ -624,8 +709,8 @@ arrived plus the uptime since then (`clockAnchor`; a buffer that waited for
 the sample queue counts from when it arrived, and one whose arrival is not
 known from its end). No timestamp of a device moves it, ahead or back.
 
-Each tick fills the microphone, the system audio and its backup with silence up
-to 1 s behind the present, once at least half a second is missing, and has the writer repeat
+Each tick fills the microphone, the system audio, its backup and the call
+tap's track with silence up to 1 s behind the present, once at least half a second is missing, and has the writer repeat
 the last frame when none has come for a second. A track whose source goes quiet
 is therefore continued after about 1.5 s, and the file keeps its fragments. A
 tick that comes late is passed over, but only one in a row: buffers that piled
@@ -633,15 +718,20 @@ up may be queued behind it, yet a timer that is always late must still fill and
 warn. After a resume it waits one tick for the first buffer.
 
 It is also the watchdog. No microphone audio written for 5 s, only exact zeros
-for 20 s, or no system audio for 5 s from either of its sources (no first frame
-5 s after the start) sets
+for 20 s, or no system audio for 5 s from any of its sources (the tap, its
+backup, the call tap; no first frame 5 s after the start) sets
 the session's warning, which the status item shows, and writes a log line.
 A tap that is silent while its backup records is no such problem: it is logged
 after 5 s, and after 15 s (`tapLostSeconds`) the recording shows "Call audio is
 not being recorded" as its notice (`Display.notice` → `Health.notice`, shown
-where no warning is) until the tap's audio is back, because the backup does
-not hear a FaceTime or phone call and nothing else would say that one is being
-lost. It is not notified and is not the system audio warning.
+where no warning is), because the backup does not hear a FaceTime or phone
+call and nothing else would say that one is being lost. That holds only while
+the call tap does not record the call: its source says whether a call may be
+playing (`CallAudioState`, passed on by the session), and the notice needs a
+call that may be playing whose tap has delivered nothing for 15 s, or a
+recording nothing looks for a call in. It goes when the tap's audio is back,
+when the call tap delivers, or when no call is on any more. It is not notified
+and is not the system audio warning.
 A problem is over only once its source has delivered steadily for
 `steadySeconds` (5 s): audio written up to within `steadyGap` (2 s) of the
 present on every tick, and for the microphone audio that is not digital
@@ -686,7 +776,9 @@ and the result is checked), then:
   with the tap, the tap's and the backup's tracks by the gain the choice gives
   them (`SystemAudioChoice.tapGain`, the backup one minus it), from the tap's
   spans in `<name>.tap-alive.txt`, the tap's track moved by what
-  `SystemAudioAlignment` measured (`TrackPCM`'s `earlier`). Its own mix rather than
+  `SystemAudioAlignment` measured (`TrackPCM`'s `earlier`), and the call tap's
+  track, when it has sound in a stretch that is not the tap's, added with the
+  backup's gain and moved by its own offset. Its own mix rather than
   `AVAssetReaderAudioMixOutput` with an `AVAudioMix`: the audio mix's volume
   ramps came out about 25 ms long and late (a 5 ms ramp at 1.5 s crossed half
   way at 1.5125 s), and a switch must land where the tap stopped. With "Mix
@@ -697,7 +789,12 @@ and the result is checked), then:
   is moved onto the backup's timeline", or "not measured (…): the tap's audio
   is used as it was stamped") and where the system audio came from ("System
   audio in the mix: … s from the process tap, … s from the backup in N
-  stretches").
+  stretches"), and, when the call tap's track has sound, the same for it
+  ("Call audio alignment: …", "Call audio in the mix: … s from the call tap
+  in N stretches, added to the backup there", or "none needed: the process
+  tap was alive wherever the call tap has sound"). The check after the mix
+  holds a stretch with the call tap's audio to the backup's and the call
+  tap's levels together.
   Anything but `completed` is a failure, and a watchdog cancels when no sample
   has moved for 60 s.
 - **Level Voices** (setting `levelVoices`, on by default, kept in the
@@ -747,24 +844,26 @@ and the result is checked), then:
   lower by as much as the limiter can have taken off there (ceiling over that
   peak) and no more.
 - **The names.** On success the mix is renamed to `<name>.mp4`, then the
-  recording to `<name> (unmixed, N audio tracks).mp4` (3 with the tap, its
-  backup and the microphone), or deleted when "Keep the Unmixed Recording" is
-  off. On any failure what the mix wrote is removed,
+  recording to `<name> (unmixed, N audio tracks).mp4` (4 with the tap, its
+  backup, the call tap and the microphone), or deleted when "Keep the Unmixed
+  Recording" is off. On any failure what the mix wrote is removed,
   the recording gets the unmixed name, and "Audio Mix Failed" says where it
   is. The recording as written is never touched until a complete, checked mix
   sits under the final name. Renames never replace a file.
 
 A sound-only recording is renamed from its temporary name once closed, before
 any MP3 conversion or package mix, because an audio file that was never closed
-does not open. With the tap it has two system audio files, the tap's
-(`sys.<ext>` in the package, or the recording's file) and the backup's
-(`sys-backup.<ext>`, or `<name> (system audio backup).<ext>`);
+does not open. With the tap it has three system audio files, the tap's
+(`sys.<ext>` in the package, or the recording's file), the backup's
+(`sys-backup.<ext>`, or `<name> (system audio backup).<ext>`) and the call
+tap's (`sys-call.<ext>`, or `<name> (call audio).<ext>`);
 `RecordingMixer.mergeSystemAudio` makes one of them by the same choice and
-alignment, written
+alignment, the call tap's audio added where the tap is not the source, written
 under a staging name, checked for its length, and only then given the tap's
-file's name; the two sources are kept beside it with "Keep the Unmixed
+file's name; the sources are kept beside it with "Keep the Unmixed
 Recording" (`sys-tap.<ext>`, `<name> (system audio tap).<ext>`) and deleted
-otherwise. A merge that fails leaves the files as they are and is reported
+otherwise. A call tap's file that is missing or does not open is left out of
+the merge and never fails it. A merge that fails leaves the files as they are and is reported
 ("System Audio Not Merged"). Every file made from a recording (a mix, an MP3, a `.qma`
 export) is written under a `.mixing.` name, checked (it opens, and its length
 matches to within 1 s; a package mix also has its first 30 s compared with its
@@ -800,8 +899,9 @@ Whether a file was closed is read from the file itself: a recording still laid
 out for fragments was not (`canContainFragments`). A recording made with the tap
 is mixed by the spans it left in `X.tap-alive.txt` (a span still open lasts to
 the end of the file; past the end of the tap's last fragment the backup's
-audio is taken), and that file is removed once the
-recording has its names. `recover` is the whole table
+audio is taken), with the call tap's audio where the tap is not the source,
+and that file and `X.call-alive.txt` are removed once the recording has its
+names. A file with one video and two to four audio tracks can be mixed. `recover` is the whole table
 and runs in the tests against real files. It deletes nothing but its own failed
 mix, uses the current audio settings (those of the lost run are not known),
 holds its own sleep assertion, and is not a recording state: a new recording
@@ -873,7 +973,7 @@ not in the recording.
 ## Tests
 
 `Tools/test.sh` compiles the pipeline sources with `Tests/*.swift` into one
-executable and runs it in about two and a half minutes, without the app, a screen or a
+executable and runs it in about three and a half minutes, without the app, a screen or a
 microphone. What it compiles uses no ScreenCaptureKit stream and no UI, which
 is why the seams exist: the session sees its capture and writer through the
 `RecordingCapture` and `RecordingWriter` protocols, the writer reports through
@@ -890,7 +990,13 @@ buffer lists made in the test, and drive `SystemAudioSource`'s choice, its
 construction order and its repair with fake taps and with the real tap on the
 fake hardware; no tap is created. The backup tests record a tap (440 Hz) and
 its backup (1000 Hz) through the real writer and mixer and find in the mix
-which one each 10 ms holds. The leveling tests read the meter against a
+which one each 10 ms holds. The call audio tests run the call tap's source
+and the real tap against the fake hardware, whose list of process objects the
+test changes mid-recording; record the tap, its backup and the call tap, each
+with a sound of its own, through the real writer and mixer; feed `SilentTap`
+by the tenth of a second; and compare, sample for sample in lossless files,
+the mix of a recording whose tap was alive throughout with the mix of the
+same recording without a call tap's track. The leveling tests read the meter against a
 1 kHz sine and silence, run the limiter on tones over full scale and on one
 whose samples stay under the ceiling while its wave does not, and mix
 recordings into a 32 bit float MOV file, from which the mix's samples are read
@@ -917,10 +1023,12 @@ written, and the log is kept in memory.
 | Timestamp check | `ArrivalCheck`, `StreamStamps` | the tap's audio has only its arrival time; stream audio and frames stamped over 1 s after their arrival, frames over 1 s before it, the microphone over 300 s before it, get their arrival time; stream audio stamped behind at real-time pace gets it after 1.5 s of arrivals; nothing ends over 1 s after the present |
 | Disk | `DiskSpace` | start 2 GB, stop 500 MB, checked every 5 s |
 | Device switch | `MicDevices` | check 0.7 s after a change; 3 retries, 2 s apart |
-| Tap repair | `SystemAudioSource`, `TapRepair` | dead after 1 s without a buffer (checked every 0.25 s); rebuilt at once, then waits of 0.5 s doubling to 2 s, for the whole recording; next construction after two failures; healthy after 10 s; shown as "Call audio is not being recorded" after 15 s without tap audio (`RecordingMonitor.tapLostSeconds`) |
+| Tap repair | `SystemAudioSource`, `TapRepair` | dead after 1 s without a buffer (checked every 0.25 s); rebuilt at once, then waits of 0.5 s doubling to 2 s, for the whole recording; next construction after two failures; healthy after 10 s; shown as "Call audio is not being recorded" after 15 s without tap audio (`RecordingMonitor.tapLostSeconds`) unless the call tap records the call or no call is on |
+| Call tap | `CallAudioSource`, `TapClock.callOrder` | exists while `avconferenced` has an audio process object; no sub-device, then the built-in output; the list read on change, or every 5 s when it cannot be listened to |
+| Tap of zeros | `SilentTap` | exact zeros for 3 s while the backup or the call tap has a sample above -60 dBFS more than 0.5 s from both ends of them: rebuilt at once; after 2 rebuilds without effect one notice and a rebuild every 60 s |
 | Tap drift | `TapDrift` | smoothed over 2 s; one frame every 0.1 s of audio from 10 ms off until 2 ms |
 | Room for a copy | `DiskSpace.copyReserve` | 500 MB to spare; 2 GB while a recording is starting or running |
-| Tap or backup | `SystemAudioChoice` | the tap wherever its spans say it delivered; the backup elsewhere, and where the tap's track is digital silence (below -100 dBFS) for 2 s or more while the backup has signal (above -70 dBFS) more than 0.3 s inside it; less than 0.25 s at an end of the recording stays the tap's; 5 ms crossfade |
+| Tap or backup | `SystemAudioChoice` | the tap wherever its spans say it delivered; the backup elsewhere, and where the tap's track is digital silence (below -100 dBFS) for 2 s or more while the backup or the call tap has signal (above -70 dBFS) more than 0.3 s inside it; less than 0.25 s at an end of the recording stays the tap's; 5 ms crossfade; the call tap's audio added to the backup's in every stretch not the tap's in which it has signal |
 | Tap against backup | `SystemAudioAlignment` | up to 16 windows of 1 s, searched 0.3 s either way; likeness 0.5, no rival peak at 0.9 of the best; accepted up to 250 ms; at least 3 windows and two in three within 5 ms of the median |
 | Quit wait | `applicationWillTerminate` | 30 s |
 | Track format | `MicConverter.sampleRate`, `CaptureSource`, `SystemAudioConverter` | 48 kHz stereo |

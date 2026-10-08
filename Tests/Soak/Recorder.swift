@@ -52,6 +52,9 @@ final class SimulatedClockWriter: RecordingWriter {
     var hasSystemAudio: Bool { real.hasSystemAudio }
     var hasBackupAudio: Bool { real.hasBackupAudio }
     func fillBackupAudio(upTo time: CMTime) { real.fillBackupAudio(upTo: time) }
+    var callEndPTS: CMTime? { real.callEndPTS }
+    var hasCallAudio: Bool { real.hasCallAudio }
+    func fillCallAudio(upTo time: CMTime) { real.fillCallAudio(upTo: time) }
     var hasMicrophoneTrack: Bool { real.hasMicrophoneTrack }
     var isMicrophoneMuted: Bool { real.isMicrophoneMuted }
     func startCapturing() { real.startCapturing() }
@@ -87,6 +90,11 @@ struct RunStats {
     var tapSkipped = 0
     /// Tap buffers its device stamped with another time than theirs
     var tapMisstamped = 0
+    /// Buffers the call tap delivered, and those its track's input did not take
+    var callBuffers = 0
+    var callNotTaken = 0
+    /// What the call tap's source said about a call, and when
+    var callStates = [(time: Double, state: CallAudioState)]()
     var micBuffers = 0
     var ticks = 0
     /// Times the feed waited for a writer input that was not ready, and for how long in all
@@ -132,6 +140,14 @@ final class SimulatedRecording {
     /// queue of its own, from which the feed takes them when they arrive on the sample queue.
     private var tapSource: SystemAudioSource?
     private var tap: SimulatedTap?
+    /// The call tap's source, as in the app, on a Core Audio of the simulation's: the call process has an audio
+    /// object while `callOn`, the list's listener is called by the feed, and the tap it builds is a `SimulatedTap`
+    private var callSource: CallAudioSource?
+    private var callTap: SimulatedTap?
+    private var callOn = false
+    private var processListChanged: (() -> Void)?
+    private var reportedStates = [CallAudioState]()
+    private var callSignal = SplitMix(seed: 0x4353_4947)
     private let tapQueue = DispatchQueue(label: "Soak.tap-hand-off")
     private var handedOn = [CaptureSample]()
     /// When the tap's IOProc is called, on the stream's clock
@@ -162,16 +178,17 @@ final class SimulatedRecording {
         func inputs(of subject: Any) -> [AVAssetWriterInput] {
             return Mirror(reflecting: subject).children.flatMap { child -> [AVAssetWriterInput] in
                 if let input = child.value as? AVAssetWriterInput { return [input] }
-                guard let label = child.label, label == "system" || label == "backup" || label == "some" else { return [] }
+                guard let label = child.label, label == "system" || label == "backup" || label == "call" || label == "some" else { return [] }
                 return inputs(of: child.value)
             }
         }
         self.inputs = inputs(of: writer)
-        guard self.inputs.count == 4 else { throw SoakError("expected four writer inputs, found \(self.inputs.count)") }
+        guard self.inputs.count == 5 else { throw SoakError("expected five writer inputs, found \(self.inputs.count)") }
         writer.events.failed = { [unowned self] reason in stats.failures.append(String(format: "%.3f s: ", RecLog.now) + reason) }
         writer.events.microphoneWritten = { [monitor] end, peak in monitor.microphoneWritten(upTo: end, peak: peak) }
         writer.events.systemAudioWritten = { [monitor] end in monitor.systemAudioWritten(upTo: end) }
         writer.events.backupAudioWritten = { [monitor] end in monitor.backupAudioWritten(upTo: end) }
+        writer.events.callAudioWritten = { [monitor] end in monitor.callAudioWritten(upTo: end) }
         monitor.notify = { [unowned self] title, _ in stats.notifications.append((RecLog.now, title)) }
         let attributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -193,6 +210,62 @@ final class SimulatedRecording {
         try source.start()
         tapSource = source
         guard tap != nil else { throw SoakError("no tap was built") }
+        // The call tap's source as `record()` starts it, beside the tap's
+        let callFactory = CallAudioSource.Factory(processes: { [unowned self] in callOn ? [501] : [] }, watch: { [unowned self] queue, changed in
+            processListChanged = { queue.async(execute: changed) }
+            return TapListener(object: CoreAudioTapHardware.system)
+        }, unwatch: { _ in }, constructions: { TapClock.callOrder(builtIn: nil) }, makeTap: { [unowned self] _, _, _, deliver, _ in
+            let made = SimulatedTap(deliver: deliver)
+            callTap = made
+            return made
+        })
+        let calls = CallAudioSource(factory: callFactory, sampleQueue: tapQueue, stallSeconds: 1_000_000, clock: { [unowned self] in Plan.stamp(ioTime) },
+                                    onSample: { [unowned self] sample in handedOn.append(sample) }, onState: { [unowned self] state in reportedStates.append(state) })
+        calls.start()
+        callSource = calls
+        guard callTap == nil else { throw SoakError("a call tap was built without a call") }
+    }
+
+    /// The call process gets or loses its audio object: the list of process objects changes, the call tap's source
+    /// hears of it on its queue and builds or takes down its tap. What it reports reaches the monitor on the sample queue.
+    private func setCall(_ on: Bool) {
+        callOn = on
+        if !on { callTap = nil }
+        processListChanged?()
+        callSource?.control.sync {}
+        callSource?.control.sync {}
+        passOnCallStates()
+    }
+
+    private func passOnCallStates() {
+        guard let source = callSource else { return }
+        let states = source.control.sync { () -> [CallAudioState] in
+            defer { reportedStates = [] }
+            return reportedStates
+        }
+        for state in states {
+            stats.callStates.append((RecLog.now, state))
+            monitor.callAudioChanged(state)
+        }
+    }
+
+    /// The call tap's IOProc is called at `buffer.io`; what its source hands on
+    private func callSamples(_ buffer: SystemBuffer) throws -> [CaptureSample] {
+        guard let callTap else { return [] }
+        ioTime = buffer.io
+        let first = buffer.index * Plan.systemFrames
+        callTap.deliver(try pcmBuffer(rate: Plan.systemRate, channels: 2, frames: Plan.systemFrames, at: Plan.stamp(buffer.pts)) { data in
+            for i in 0..<Plan.systemFrames {
+                let tone = Plan.callTone(at: Double(first + i) / Plan.systemRate)
+                data[0][i] = tone + Plan.systemNoise * callSignal.noise()
+                data[1][i] = tone + Plan.systemNoise * callSignal.noise()
+            }
+        })
+        return tapQueue.sync {
+            let samples = handedOn
+            handedOn = []
+            return samples
+        }
     }
 
     /// The tap's IOProc is called at `buffer.io` with a buffer its device stamped `stamp`; what its source hands on
@@ -262,7 +335,8 @@ final class SimulatedRecording {
             for i in 0..<Plan.systemFrames {
                 // When the sample was played: the tap's device counts its samples by a clock of its own
                 let t = Double(first + i) / (backup ? Plan.systemRate : Plan.tapRate)
-                let tone = Plan.tone(at: t, first: 10, frequencyBase: 1000)
+                // The tap hears the call too; ScreenCaptureKit never does
+                let tone = Plan.tone(at: t, first: 10, frequencyBase: 1000) + (backup ? 0 : Plan.callTone(at: t))
                 data[0][i] = tone + Plan.systemNoise * (backup ? backupSignal.noise() : systemSignal.noise())
                 data[1][i] = tone + Plan.systemNoise * (backup ? backupSignal.noise() : systemSignal.noise())
             }
@@ -284,12 +358,13 @@ final class SimulatedRecording {
     // MARK: - The run
 
     private enum Next {
-        case frame(VideoFrame), system(SystemBuffer), backup(SystemBuffer), mic(MicBuffer), tick(Double), control(Double, String)
+        case frame(VideoFrame), system(SystemBuffer), backup(SystemBuffer), call(SystemBuffer), mic(MicBuffer), tick(Double), control(Double, String)
         var time: Double {
             switch self {
             case .frame(let f): return f.arrival
             case .system(let s): return s.arrival
             case .backup(let s): return s.arrival
+            case .call(let s): return s.arrival
             case .mic(let m): return m.arrival
             case .tick(let t): return t
             case .control(let t, _): return t
@@ -327,7 +402,13 @@ final class SimulatedRecording {
         var controls: [(Double, String)] = [
             (Plan.pause.start, "pause"), (Plan.pause.end, "resume"),
             (Plan.mute.start, "mute"), (Plan.mute.end, "unmute"),
-        ]
+            (Plan.call.start - 0.5, "call begins"), (Plan.call.end + 0.5, "call ends"),
+        ].sorted { $0.0 < $1.0 }
+        // The call tap's buffers: only those of the call are ever delivered
+        var callSchedule = SystemSchedule(seed: 0x6361_6C6C)
+        var nextCall: SystemBuffer? = callSchedule.next()
+        while let buffer = nextCall, buffer.pts < Plan.call.start { nextCall = callSchedule.next() }
+        passOnCallStates()
         var nextFrame = video.next()
         var nextSystem = system.next()
         var nextBackup = backup.next()
@@ -341,6 +422,7 @@ final class SimulatedRecording {
         while true {
             var candidates: [Next] = [.frame(nextFrame), .system(nextSystem), .backup(nextBackup), .tick(nextTick)]
             if let m = nextMic { candidates.append(.mic(m)) }
+            if let c = nextCall { candidates.append(.call(c)) }
             if let c = controls.first { candidates.append(.control(c.0, c.1)) }
             guard let next = candidates.min(by: { $0.time < $1.time }), next.time <= stop else { break }
             let now = next.time
@@ -396,6 +478,16 @@ final class SimulatedRecording {
                     if taking && writer.backupEndPTS == before { stats.backupNotTaken += 1 }
                     stats.backupBuffers += 1
                     nextBackup = backup.next()
+                case .call(let buffer):
+                    let before = writer.callEndPTS
+                    let samples = try callSamples(buffer)
+                    for sample in samples { clockWriter.deliver(sample, at: uptime) }
+                    if !samples.isEmpty {
+                        if taking && writer.callEndPTS == before { stats.callNotTaken += 1 }
+                        stats.callBuffers += 1
+                    }
+                    nextCall = callSchedule.next()
+                    if let following = nextCall, following.pts >= Plan.call.end { nextCall = nil }
                 case .mic(let buffer):
                     let dropped = writer.micConverter?.buffersDropped ?? 0
                     clockWriter.deliver(CaptureSample(kind: .microphone, buffer: try micBuffer(buffer), pts: Plan.stamp(buffer.pts), arrival: Plan.stamp(now)), at: uptime)
@@ -421,7 +513,9 @@ final class SimulatedRecording {
                         monitor.pauseToggled()
                         _ = writer.togglePause()
                     case "mute": writer.setMicrophoneMuted(true)
-                    default: writer.setMicrophoneMuted(false)
+                    case "unmute": writer.setMicrophoneMuted(false)
+                    case "call begins": setCall(true)
+                    default: setCall(false)
                     }
                     RecLog.write("control: \(action)")
                     controls.removeFirst()
@@ -436,6 +530,7 @@ final class SimulatedRecording {
     /// What `RecordingSession.takeWriter` does on the sample queue once the capture has stopped
     func finish() -> MovieWriter.Finished {
         tapSource?.stopNow()
+        callSource?.stopNow()
         return queue.sync {
             monitor.stop()
             return writer.finish()

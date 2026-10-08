@@ -71,6 +71,11 @@ enum RecordingSaver {
                fd.fileExists(atPath: written.path) {
                 _ = RecordingFileStore.keep(written: written, as: closedBackup)
             }
+            // And the call tap's
+            if recording.micAudioURL == nil, let written = recording.callAudioURL, let closedCall = recording.callClosedURL,
+               fd.fileExists(atPath: written.path) {
+                _ = RecordingFileStore.keep(written: written, as: closedCall)
+            }
             if recording.recordMic, let writer = writer, !closed {
                 // The microphone file did not close: the package is kept as it is and is not mixed
                 var body = earlyReason ?? ""
@@ -84,8 +89,23 @@ enum RecordingSaver {
                 await finishAudioRecording(recording, at: kept, earlyReason: earlyReason)
             }
         }
-        // The final files are written: the tap's spans have served
+        // The final files are written: the taps' spans have served
         RecordingFileStore.removeTapSpans(recording.tapSpansURL)
+        logCallSpans(recording.callSpansURL)
+        RecordingFileStore.removeTapSpans(recording.callSpansURL)
+    }
+
+    /// What the call tap recorded, for the log, from the spans the writer kept of it: how long it delivered. A
+    /// recording without a call has none.
+    private static func logCallSpans(_ url: URL?) {
+        guard let url, let spans = TapSpans.read(url) else { return }
+        guard let last = spans.spans.last else {
+            RecLog.write("Call audio: the call tap delivered nothing in this recording (no call played)")
+            return
+        }
+        let end = last.end.isFinite ? last.end : last.start
+        RecLog.write(String(format: "Call audio: the call tap delivered for %.1f s in %d %@, between %.1f s and %.1f s of the recording",
+                            spans.aliveSeconds(upTo: end), spans.spans.count, spans.spans.count == 1 ? "stretch" : "stretches", spans.spans[0].start, end))
     }
 
     /// Reports a failure of `recording` (`UserNotice.reportFailure`). While another recording is starting or running,
@@ -137,7 +157,7 @@ enum RecordingSaver {
                 report("Audio Mix Failed", of: recording, early + String(format: "Mixing the audio failed: %@", failure) + " " + movedNote(for: raw))
                 return
             }
-            let tracks = recording.systemAudioBackup ? "with each audio track as it was recorded (system audio from the process tap, its backup from screen capture, the microphone)" : "with system audio and microphone as two separate audio tracks"
+            let tracks = recording.systemAudioBackup ? "with each audio track as it was recorded (system audio from the process tap, its backup from screen capture, call audio from the call tap, the microphone)" : "with system audio and microphone as two separate audio tracks"
             let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept %@ in: %@", failure, tracks, kept.path)
             report("Audio Mix Failed", of: recording, body)
             if recording.showPreview { showPreview(url: kept, image: frame) }
@@ -178,6 +198,13 @@ enum RecordingSaver {
         let backup = inPackage ? kept.appendingPathComponent(backupClosed.lastPathComponent)
             : (fd.fileExists(atPath: backupClosed.path) ? backupClosed : (recording.backupAudioURL ?? backupClosed))
         let keptTap = inPackage ? kept.appendingPathComponent(tapKept.lastPathComponent) : tapKept
+        // The call tap's file, when there is one
+        var call: URL?
+        if let callClosed = recording.callClosedURL {
+            let found = inPackage ? kept.appendingPathComponent(callClosed.lastPathComponent)
+                : (fd.fileExists(atPath: callClosed.path) ? callClosed : (recording.callAudioURL ?? callClosed))
+            if fd.fileExists(atPath: found.path) { call = found }
+        }
         guard fd.fileExists(atPath: tap.path), fd.fileExists(atPath: backup.path) else {
             RecLog.write("System audio: the tap's or the backup's file is missing, nothing to merge")
             return
@@ -190,10 +217,10 @@ enum RecordingSaver {
             guard RecordingFileStore.hasRoomForCopy(of: tap) else { throw RecordingError(DiskSpace.noRoom(to: "merge the system audio")) }
             try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
                 DispatchQueue.global(qos: .userInitiated).async {
-                    done.resume(with: Result { _ = try RecordingMixer.mergeSystemAudio(tap: tap, backup: backup, spans: spans, to: staged, settings: settings) })
+                    done.resume(with: Result { _ = try RecordingMixer.mergeSystemAudio(tap: tap, backup: backup, call: call, spans: spans, to: staged, settings: settings) })
                 }
             }
-            try RecordingFileStore.adoptMergedSystemAudio(merged: staged, tap: tap, keptTap: keptTap, backup: backup, keepSources: recording.keepUnmixed)
+            try RecordingFileStore.adoptMergedSystemAudio(merged: staged, tap: tap, keptTap: keptTap, backup: backup, call: call, keepSources: recording.keepUnmixed)
         } catch {
             try? fd.removeItem(at: staged)
             let body = String(format: "The system audio from the process tap and from its backup could not be merged: %@ The recording keeps the system audio of the process tap; what screen capture recorded as its backup is next to it: %@", error.localizedDescription, backup.path)

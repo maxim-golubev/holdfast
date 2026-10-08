@@ -72,6 +72,26 @@ enum Plan {
     static func tapDeviceStamp(_ t: Double) -> Double {
         return t + (tapClockJumps.first { t >= $0.start && t < $0.end }?.by ?? 0)
     }
+    // A FaceTime call that spans the tap's outage: `avconferenced` gets its audio object half a second before the
+    // call's audio begins and loses it half a second after it ends. The call's sound (low noise and four tone bursts)
+    // is in the process tap's audio while that tap is alive and in the call tap's, never in ScreenCaptureKit's. Two
+    // of the bursts fall in the tap's outage, where only the call tap has them.
+    static let call = (start: 2200.0, end: 2260.0)
+    static let callMarkers = [2205.0, 2225.0, 2235.0, 2250.0].enumerated().map { Marker(index: $0.offset, time: $0.element, frequency: 5200 + 40 * Double($0.offset)) }
+    /// The tone of the call's marker that sounds at `t`, if any
+    @inline(__always)
+    static func callTone(at t: Double) -> Float {
+        guard t >= call.start, t < call.end else { return 0 }
+        for marker in callMarkers where t >= marker.time && t < marker.time + burst {
+            return burstAmplitude * Float(sin(2 * Double.pi * marker.frequency * (t - marker.time)))
+        }
+        return 0
+    }
+    /// Where the call tap's audio begins and ends: at the edges of the buffers it delivered (those that start in the call)
+    static var callAudio: (start: Double, end: Double) {
+        func edge(_ t: Double) -> Double { (t * systemRate / Double(systemFrames)).rounded(.up) * Double(systemFrames) / systemRate }
+        return (edge(call.start), edge(call.end))
+    }
     static let systemRate = 48000.0
     /// The device that clocks the tap runs this much slow against the stream's clock: the tap delivers its 48,000
     /// samples in a little more than a second, 0.27 s of audio less than time passes in the 90 minutes

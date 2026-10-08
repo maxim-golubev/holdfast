@@ -210,6 +210,15 @@ extension RecorderController {
         if case .screenCaptureKit(let reason, _) = route {
             RecLog.write("System audio: screen capture, without call audio (\(reason))")
         }
+        // Beside the tap, a second one of the process that plays FaceTime and phone calls alone, on a track of its
+        // own: screen capture, the tap's backup, never has that audio. It only exists while a call may be playing,
+        // and nothing it does can stop the recording.
+        var callAudio: CallAudioSource?
+        if systemAudio != nil {
+            let source = CallAudioSource(factory: .coreAudio, sampleQueue: session.queue, onSample: deliver, onState: { session.callAudioChanged($0) })
+            source.start()
+            callAudio = source
+        }
         // A tap that cannot run at all is also shown where the track warnings are, for the whole recording
         if let warning = SystemAudioSelection.warning(for: route) { await session.showNotice(warning) }
         let conf = CaptureSource.configuration(for: recording, target: target, filter: filter, microphoneDeviceID: microphone?.captureDeviceID,
@@ -228,7 +237,7 @@ extension RecorderController {
 
         // The stream hands its buffers to this session and reports its end to it, so neither can reach another recording
         let capture = CaptureSource(filter: filter, configuration: conf, recording: recording, microphone: microphone,
-                                    systemAudio: systemAudio, queue: session.queue, onSample: deliver,
+                                    systemAudio: systemAudio, callAudio: callAudio, queue: session.queue, onSample: deliver,
                                     onStop: { [weak session] capture, error in
             let nsError = error as NSError
             let userStopped = nsError.domain == SCStreamErrorDomain && nsError.code == SCStreamError.Code.userStopped.rawValue

@@ -29,8 +29,10 @@ it.
 - **The other side of the call is always there:** the sound the Mac plays comes
   from a Core Audio process tap, which hears FaceTime, and screen capture's
   system audio is recorded beside it as a backup. A tap that has delivered
-  nothing for a second is rebuilt at once, and the backup fills the gap in the
-  final file.
+  nothing for a second, or only silence while the Mac played sound, is rebuilt
+  at once, and the backup fills the gap in the final file. FaceTime and phone
+  calls, which screen capture cannot hear, are recorded a second time by a tap
+  of their own.
 - **A crash costs seconds, not the meeting:** the file is written in
   10-second fragments. After a `kill -9` 35 s into a recording, the next launch
   found the file, recovered 30 s of it, and mixed it. Quitting during a
@@ -84,7 +86,14 @@ Most of the work went into six problems:
   way after two failures, for as long as the recording runs, and records
   screen capture's system audio beside it the whole time. The final file takes
   the tap's sound where the tap delivered and the backup's where it did not,
-  switching where the tap stopped, never both at once.
+  switching where the tap stopped, never both at once. Screen capture never
+  has a FaceTime or phone call, so while one may be playing a second tap, of
+  the system process that plays it and nothing else, built in another way,
+  records the call on a third track, and the final file adds it to the
+  backup's sound wherever the first tap was not the source. A tap that runs
+  and delivers only zeros, which is what an app without the permission gets,
+  is told from silence by the other two sources and rebuilt while the
+  recording runs.
 - **A dead track must be seen during the meeting, a hiccup must not interrupt
   it.** No microphone audio for 5 seconds, only digital zeros for 20, or no
   system audio for 5 turns the menu bar item into a warning. Once the problem
@@ -97,18 +106,20 @@ One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
 final file. A recording starts the moment it is asked for: one that was stopped
 goes on being closed and mixed by itself, under its own name, while the next
-one runs. 205 tests run in about two and a half minutes without the app, a screen, or
+one runs. 221 tests run in about three and a half minutes without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 
 ## Limits
 
 - ScreenCaptureKit leaves out the audio of FaceTime calls and of phone calls
-  taken on the Mac. Holdfast records system audio through a Core Audio process
-  tap, which was checked to hear a FaceTime call, with screen capture's as a
-  backup; a stretch in which the tap was dead has only the backup's sound,
-  without FaceTime audio. Without the System Audio Recording permission it
-  falls back to ScreenCaptureKit alone, says so, and call audio is missing.
+  taken on the Mac. Holdfast records them through a Core Audio process tap,
+  which has recorded real FaceTime calls, and a second time through a tap of
+  the call audio alone, which fills in where the first was dead or silent.
+  That second tap is covered by tests and a simulation and has not yet been
+  run during a real call. Without the System Audio Recording permission
+  neither tap can be used: Holdfast falls back to ScreenCaptureKit alone,
+  says so, and call audio is missing.
 - A file that was never closed (a crash, a kill, a power loss) misses up to
   about its last 12 seconds.
 - Only the current save folder is searched for interrupted recordings.
@@ -141,7 +152,7 @@ identifier in Xcode.
 
 ```sh
 Tools/build.sh      # Release build into build/, prints BUILD SUCCEEDED
-Tools/test.sh       # the tests, about two and a half minutes, no app, screen or microphone
+Tools/test.sh       # the tests, about three and a half minutes, no app, screen or microphone
 Tools/release.sh    # build/release/Holdfast-<version>.zip, signed and verified
 ```
 

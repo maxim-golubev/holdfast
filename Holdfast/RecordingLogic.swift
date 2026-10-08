@@ -428,6 +428,128 @@ struct TapDrift {
     }
 }
 
+/// Tells, while a recording runs, a process tap that runs and hears nothing from one that has nothing to hear. A tap
+/// built by a process without the System Audio Recording grant delivers buffers at its usual pace, every sample an
+/// exact zero, and nothing in Core Audio says so; a tap that is merely idle delivers the same while nothing plays.
+/// The other sources decide: the tap is deaf when its track has held exact zeros for `zeroSeconds` and the backup
+/// (ScreenCaptureKit's system audio) or the call tap had a sample above `level` in that time. Their signal must lie
+/// more than `inside` from both ends of the zeros: the tracks hold the same sound up to a quarter of a second apart,
+/// so a sound that begins or ends is in one track a moment before it is in the other, and that is not a deaf tap.
+///
+/// A deaf tap is rebuilt at once (`rebuild`), and the comparison goes on with the new one. After `quickRebuilds`
+/// rebuilds that changed nothing (no sample other than zero in between) it is the grant that is missing, or
+/// something a rebuild does not cure: the user is told once (`notice`) and the tap is rebuilt only every `backoff`
+/// seconds from then on. The backup and the call tap record meanwhile. The first sample that is not zero ends all
+/// of it (`hears`, when a rebuild came before).
+///
+/// Times are seconds on the recording's timeline, of audio as it was written to the tracks. Pure: the writer feeds
+/// it on the sample queue with the peak of each buffer it wrote, nothing here runs on the IO thread.
+struct SilentTap: Equatable {
+    /// How long the tap's track must hold exact zeros
+    static let zeroSeconds = 3.0
+    /// How far from the ends of those zeros the other sources' signal must be
+    static let inside = 0.5
+    /// A sample above this in the backup or the call tap is signal: -60 dBFS
+    static let level: Float = 0.001
+    /// Rebuilds at once before backing off
+    static let quickRebuilds = 2
+    /// Seconds between rebuilds after that
+    static let backoff = 60.0
+
+    enum Action: Equatable {
+        case none
+        /// Rebuild the tap now; `attempt` counts the rebuilds since it last heard anything, this one included
+        case rebuild(attempt: Int)
+        /// `quickRebuilds` rebuilds changed nothing: tell the user, once
+        case notice
+        /// The tap delivers sound again after it was rebuilt for delivering none
+        case hears
+    }
+
+    /// Where the exact zeros in the tap's track began and where they end now; nil while its last audio was not zeros
+    private(set) var zerosSince: Double?
+    private var zerosEnd = 0.0
+    /// The last stretch in which another source had signal, and the earliest time in the tap's zeros, `inside`
+    /// from their beginning, at which one had
+    private var signal: (start: Double, end: Double)?
+    private var signalAt: Double?
+    /// Rebuilds since the tap last delivered a sample that was not zero, and where the last one was
+    private(set) var rebuilds = 0
+    private var lastRebuild: Double?
+    private(set) var noticed = false
+
+    static func == (a: SilentTap, b: SilentTap) -> Bool {
+        return a.zerosSince == b.zerosSince && a.zerosEnd == b.zerosEnd && a.signal?.start == b.signal?.start && a.signal?.end == b.signal?.end
+            && a.signalAt == b.signalAt && a.rebuilds == b.rebuilds && a.lastRebuild == b.lastRebuild && a.noticed == b.noticed
+    }
+
+    /// Audio the tap delivered went into its track from `start` to `end`; `peak` is its largest sample
+    mutating func tap(from start: Double, to end: Double, peak: Float) -> Action {
+        guard peak == 0 else {
+            zerosSince = nil
+            signalAt = nil
+            let rebuilt = rebuilds > 0
+            rebuilds = 0
+            lastRebuild = nil
+            return rebuilt ? .hears : .none
+        }
+        if zerosSince == nil {
+            zerosSince = start
+            signalAt = nil
+            // The other tracks may already hold this time
+            if let signal, signal.end >= start + SilentTap.inside { signalAt = max(signal.start, start + SilentTap.inside) }
+        }
+        zerosEnd = max(zerosEnd, end)
+        return judge()
+    }
+
+    /// Audio of the backup or of the call tap went into its track from `start` to `end`
+    mutating func other(from start: Double, to end: Double, peak: Float) -> Action {
+        guard peak > SilentTap.level, end > start else { return .none }
+        if let known = signal, start >= known.start, start <= known.end + 0.1 {
+            signal = (known.start, max(known.end, end))
+        } else {
+            signal = (start, end)
+        }
+        if let since = zerosSince, signalAt == nil, end >= since + SilentTap.inside { signalAt = max(start, since + SilentTap.inside) }
+        return judge()
+    }
+
+    /// Silence was written into the tap's track in its place (it delivered nothing, which its source repairs), or
+    /// the recording was paused: the zeros before it are not continued by the ones after it
+    mutating func tapInterrupted() {
+        zerosSince = nil
+        signalAt = nil
+    }
+
+    private mutating func judge() -> Action {
+        guard let since = zerosSince, let signalAt, zerosEnd - since >= SilentTap.zeroSeconds, signalAt <= zerosEnd - SilentTap.inside else { return .none }
+        if rebuilds >= SilentTap.quickRebuilds {
+            if !noticed {
+                noticed = true
+                return .notice
+            }
+            guard let last = lastRebuild, zerosEnd - last >= SilentTap.backoff else { return .none }
+        }
+        rebuilds += 1
+        lastRebuild = zerosEnd
+        // The next tap is judged by what it delivers
+        zerosSince = nil
+        self.signalAt = nil
+        return .rebuild(attempt: rebuilds)
+    }
+}
+
+/// What a recording knows about the call tap, the second tap that records only what `avconferenced` plays
+enum CallAudioState: Equatable {
+    /// Nothing looks for a call (no call tap source runs): the recording cannot tell whether one is on
+    case unknown
+    /// No call: `avconferenced` has no audio object, and there is no call tap
+    case idle
+    /// A call may be playing: `avconferenced` has an audio object, and the call tap is built for it
+    case active
+}
+
 /// The stretches of a recording in which the process tap delivered audio: where real buffers of the tap went into
 /// its track, on the file's timeline (seconds from the start of the file), as the writer recorded them while it
 /// wrote (`TapSpanLog`). Anywhere else the tap's track holds silence written in place of a tap that delivered
@@ -574,7 +696,14 @@ enum SystemAudioChoice {
     /// digital silence against the backup's signal gives a stretch to the backup). `offset` is how many seconds the
     /// tap's audio is later in its track than the same audio in the backup's (`SystemAudioAlignment`): the mix moves
     /// the tap's audio that much earlier, and the stretches with it.
-    static func plan(tap: [Float], backup: [Float], spans: TapSpans?, duration: Double, offset: Double = 0) -> [Segment] {
+    ///
+    /// `call` are the levels of the call tap's track, which holds only what `avconferenced` plays (FaceTime and phone
+    /// calls) and which ScreenCaptureKit's audio never has; `callOffset` is how many seconds its audio is later in
+    /// its track than the same audio in the tap's. A tap that is digital silence for `silentRun` while the call tap
+    /// has signal there delivers nothing either, and that stretch is not the tap's: the mix has the backup plus the
+    /// call tap's audio in every stretch that is not the tap's (`callStretches`).
+    static func plan(tap: [Float], backup: [Float], spans: TapSpans?, duration: Double, offset: Double = 0,
+                     call: [Float] = [], callOffset: Double = 0) -> [Segment] {
         guard duration > 0 else { return [] }
         // On the timeline of the tap's track first. Where the tap's track has ended there is no tap.
         let tapEnd = min(duration, Double(tap.count) * block)
@@ -597,7 +726,11 @@ enum SystemAudioChoice {
             var end = index
             while end < tap.count && tap[end] < silent { end += 1 }
             let from = Double(index) * block, to = end == tap.count ? tapEnd : min(Double(end) * block, duration)
-            if to - from >= silentRun - 0.000_001, hasSignal(backup, from: from + inside - offset, to: to - inside - offset) { taken.append((from, to)) }
+            if to - from >= silentRun - 0.000_001,
+               hasSignal(backup, from: from + inside - offset, to: to - inside - offset)
+                || hasSignal(call, from: from + inside + callOffset, to: to - inside + callOffset) {
+                taken.append((from, to))
+            }
             index = end
         }
         taken.sort { $0.start < $1.start }
@@ -640,8 +773,22 @@ enum SystemAudioChoice {
         return segments
     }
 
+    /// The stretches of `segments` (on the mix's timeline) that are not the tap's and in which the call tap's track
+    /// has signal: where the mix takes the call audio from the call tap. `call` are that track's levels and `shift`
+    /// how many seconds later its audio is in its track than in the mix.
+    static func callStretches(_ segments: [Segment], call: [Float], shift: Double) -> [(start: Double, end: Double)] {
+        return segments.filter { $0.source == .backup && hasSignal(call, from: $0.start + shift, to: $0.end + shift) }.map { ($0.start, $0.end) }
+    }
+
+    /// Seconds the call tap has in the mix and in how many stretches, for the log
+    static func callSummary(_ stretches: [(start: Double, end: Double)]) -> String {
+        guard !stretches.isEmpty else { return "none needed: the process tap was alive wherever the call tap has sound" }
+        let seconds = stretches.reduce(0) { $0 + $1.end - $1.start }
+        return String(format: "%.1f s from the call tap in %d %@, added to the backup there", seconds, stretches.count, stretches.count == 1 ? "stretch" : "stretches")
+    }
+
     /// Whether any block of `levels` between `start` and `end` seconds is above `signal`
-    private static func hasSignal(_ levels: [Float], from start: Double, to end: Double) -> Bool {
+    static func hasSignal(_ levels: [Float], from start: Double, to end: Double) -> Bool {
         let first = max(0, Int((start / block).rounded(.up)))
         let last = min(levels.count, Int((end / block).rounded(.down)))
         guard first < last else { return false }
@@ -733,6 +880,19 @@ enum SystemAudioAlignment {
             let side = offset < 0 ? "earlier" : "later"
             return String(format: "the tap's audio is %.1f ms %@ than the backup's (%d of %d windows agree) and is moved onto the backup's timeline", abs(offset) * 1000, side, agreeing, windows)
         }
+    }
+
+    /// The same measurement taken between the call tap's track and the process tap's, for the log: `offset` is then
+    /// how much later the call tap's audio is in its track than the same audio in the process tap's. Without one
+    /// the call tap's audio is moved like the process tap's: both are stamped in an IOProc.
+    static func callText(_ measured: Measurement) -> String {
+        guard let offset = measured.offset else {
+            let why = measured.windows == 0 ? "no stretch with sound in both the call tap's and the process tap's audio"
+                : "of \(measured.windows) \(measured.windows == 1 ? "window" : "windows") with sound in both, \(measured.agreeing) \(measured.agreeing == 1 ? "gives" : "agree on") an offset"
+            return "not measured (\(why)): the call tap's audio is moved like the process tap's"
+        }
+        return String(format: "the call tap's audio is %.1f ms %@ than the process tap's (%d of %d windows agree) and is moved onto the mix's timeline with it",
+                      abs(offset) * 1000, offset < 0 ? "earlier" : "later", measured.agreeing, measured.windows)
     }
 
     /// Where the windows to compare start, in seconds: in each of up to `windows` equal parts of the recording the

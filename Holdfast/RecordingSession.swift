@@ -26,6 +26,16 @@ protocol RecordingCapture: AnyObject {
     func stop(_ done: @escaping (Error?) -> Void)
     /// Gives up a stream that was never started or has stopped by itself
     func releaseStream()
+    /// The process tap runs and hears nothing (`SilentTap`): it is to be built again
+    func rebuildDeafTap()
+    /// The process tap that was rebuilt for that delivers sound again
+    func tapHeardAgain()
+}
+
+extension RecordingCapture {
+    /// A capture without a process tap
+    func rebuildDeafTap() {}
+    func tapHeardAgain() {}
 }
 
 /// The writer of a recording as its session and its monitor use it (`MovieWriter`). Sample queue.
@@ -57,6 +67,10 @@ protocol RecordingWriter: AnyObject {
     var backupEndPTS: CMTime? { get }
     var hasBackupAudio: Bool { get }
     func fillBackupAudio(upTo time: CMTime)
+    /// The call tap's audio, recorded while the process tap is the source: its track's end, and its fill
+    var callEndPTS: CMTime? { get }
+    var hasCallAudio: Bool { get }
+    func fillCallAudio(upTo time: CMTime)
 }
 
 extension RecordingWriter {
@@ -64,6 +78,10 @@ extension RecordingWriter {
     var backupEndPTS: CMTime? { nil }
     var hasBackupAudio: Bool { false }
     func fillBackupAudio(upTo time: CMTime) {}
+    /// And without the call tap's track
+    var callEndPTS: CMTime? { nil }
+    var hasCallAudio: Bool { false }
+    func fillCallAudio(upTo time: CMTime) {}
 }
 
 extension MovieWriter: RecordingWriter {}
@@ -207,6 +225,8 @@ final class RecordingSession: @unchecked Sendable {
         writer.events.microphoneWritten = { [monitor] end, peak in monitor.microphoneWritten(upTo: end, peak: peak) }
         writer.events.systemAudioWritten = { [monitor] end in monitor.systemAudioWritten(upTo: end) }
         writer.events.backupAudioWritten = { [monitor] end in monitor.backupAudioWritten(upTo: end) }
+        writer.events.callAudioWritten = { [monitor] end in monitor.callAudioWritten(upTo: end) }
+        writer.events.tapSilent = { [weak self] action in self?.tapSilent(action) }
         queue.sync { queueWriter = writer }
     }
 
@@ -222,6 +242,28 @@ final class RecordingSession: @unchecked Sendable {
         standingNotice = notice
         health.notice = notice
         statusChanged(self)
+    }
+
+    /// On the sample queue, from the writer: the process tap delivers only zeros while the other sources have sound,
+    /// or it hears again. The tap is rebuilt by its capture, which is the main thread's; the user is told once
+    /// while the app runs that the tap hears nothing, with how to allow it (`SystemAudioSelection.deafNotice`).
+    private func tapSilent(_ action: SilentTap.Action) {
+        if action == .notice {
+            if SystemAudioSelection.deafNotice.take() { environment.notify(SystemAudioSelection.noticeTitle, SystemAudioSelection.deafNoticeText) }
+            return
+        }
+        DispatchQueue.main.async {
+            switch action {
+            case .rebuild: self.capture?.rebuildDeafTap()
+            case .hears: self.capture?.tapHeardAgain()
+            case .notice, .none: break
+            }
+        }
+    }
+
+    /// Whether a call may be playing, from the recording's call tap source. Any thread.
+    func callAudioChanged(_ state: CallAudioState) {
+        queue.async { [monitor] in monitor.callAudioChanged(state) }
     }
 
     /// From here on the writer takes buffers. Just before the capture is started; not on the sample queue.

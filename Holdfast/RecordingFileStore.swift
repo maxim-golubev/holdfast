@@ -14,8 +14,9 @@ import Foundation
 /// behind by a crash or a kill. The final names are `<name>.<ext>` for the mixed recording (or the audio file, the
 /// package, the MP3) and `<name> (unmixed, N audio tracks).<ext>` for a video recording as it was written. `<name>`
 /// is the prefix and the date of the start. A recording made with the process tap has `<name>.tap-alive.txt` next to
-/// it while it is recorded and finished (`TapSpans`), and a sound-only one without a package its backup file
-/// `<name> (system audio backup).recording.<ext>`.
+/// it while it is recorded and finished (`TapSpans`) and `<name>.call-alive.txt`, the same for its call tap, and a
+/// sound-only one without a package its backup file `<name> (system audio backup).recording.<ext>` and its call
+/// tap's `<name> (call audio).recording.<ext>`.
 struct RecordingFileStore {
     /// What the app's recordings are named with, in front of the date. Launch recovery only takes files with it for its own.
     static let namePrefix = "Recording at "
@@ -26,6 +27,12 @@ struct RecordingFileStore {
     static let unmixedSuffix = unmixedSuffix(tracks: 2)
     /// The tap's spans next to a recording made with the process tap: `<base>.tap-alive.txt`
     static let tapSpansEnding = "tap-alive.txt"
+    /// The same for the call tap: `<base>.call-alive.txt`
+    static let callSpansEnding = "call-alive.txt"
+    /// A sound-only recording's file of the call tap's audio: in a package `sys-call.<ext>`, else
+    /// `<base> (call audio).<ext>`
+    static let callFileName = "sys-call"
+    static let callSuffix = " (call audio)"
     /// A sound-only recording's backup of the system audio, and the tap's own file when it is kept: in a package
     /// `sys-backup.<ext>` and `sys-tap.<ext>`, else `<base> (system audio backup).<ext>` and `<base> (system audio tap).<ext>`
     static let backupFileName = "sys-backup"
@@ -33,7 +40,7 @@ struct RecordingFileStore {
     static let backupSuffix = " (system audio backup)"
     static let tapSuffix = " (system audio tap)"
 
-    /// " (unmixed, 3 audio tracks)"
+    /// " (unmixed, 4 audio tracks)"
     static func unmixedSuffix(tracks: Int) -> String { " (unmixed, \(tracks) audio tracks)" }
 
     let directory: String
@@ -94,6 +101,11 @@ struct RecordingFileStore {
         return URL(fileURLWithPath: "\(base).\(tapSpansEnding)")
     }
 
+    /// The same for the call tap's spans
+    static func callSpansURL(base: String) -> URL {
+        return URL(fileURLWithPath: "\(base).\(callSpansEnding)")
+    }
+
     /// Removes the tap's spans of a recording once its final files are written; nothing when there are none
     static func removeTapSpans(_ url: URL?) {
         guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
@@ -106,9 +118,10 @@ struct RecordingFileStore {
 
     /// After the system audio of a sound-only recording made with the tap was merged from its two sources into
     /// `merged`: the merged file takes the name of the tap's file (`tap`). With `keepSources` the tap's file is kept
-    /// as `keptTap` and the backup's (`backup`) where it is; without, both are deleted once the merged file has its
-    /// name. Throws, leaving the tap's file where it was, when the merged file cannot take its name.
-    static func adoptMergedSystemAudio(merged: URL, tap: URL, keptTap: URL, backup: URL, keepSources: Bool) throws {
+    /// as `keptTap` and the backup's (`backup`) and the call tap's (`call`) where they are; without, they are deleted
+    /// once the merged file has its name. Throws, leaving the tap's file where it was, when the merged file cannot
+    /// take its name.
+    static func adoptMergedSystemAudio(merged: URL, tap: URL, keptTap: URL, backup: URL, call: URL? = nil, keepSources: Bool) throws {
         let manager = FileManager.default
         guard !manager.fileExists(atPath: keptTap.path) else {
             throw RecordingError(String(format: "A file named \"%@\" is in the way.", keptTap.lastPathComponent))
@@ -121,7 +134,7 @@ struct RecordingFileStore {
             throw error
         }
         guard !keepSources else { return }
-        for url in [keptTap, backup] {
+        for url in [keptTap, backup] + (call.map { [$0] } ?? []) where manager.fileExists(atPath: url.path) {
             do {
                 try manager.removeItem(at: url)
             } catch {
@@ -280,6 +293,12 @@ struct RecordingFiles {
     /// the tap delivered are written while recording (`TapSpans`), next to the recording; deleted once the final
     /// files are written. Nil otherwise.
     let tapSpansURL: URL?
+    /// The same for the call tap, the second tap that records only call audio
+    let callSpansURL: URL?
+    /// Audio-only recordings with the process tap: the file the call tap's audio is written to, and the name it has
+    /// once the recording is closed (in the package, the same file in the closed package). Nil otherwise.
+    let callAudioURL: URL?
+    let callClosedURL: URL?
     /// Audio-only recordings with the process tap: the file ScreenCaptureKit's system audio, the backup, is written
     /// to, and the name it has once the recording is closed (in the package, the same file in the closed package).
     /// Nil otherwise.
@@ -288,7 +307,8 @@ struct RecordingFiles {
     /// Audio-only recordings with the process tap: what the tap's own file is called when it is kept next to the
     /// system audio merged from both sources ("Keep the Unmixed Recording")
     let tapKeptURL: URL?
-    /// Video recordings: how many audio tracks the file is written with (system audio, its backup, microphone)
+    /// Video recordings: how many audio tracks the file is written with (system audio, its backup, the call tap's
+    /// audio, microphone)
     let audioTracks: Int
     /// Video recordings whose mix keeps the microphone as a track of its own: the system audio of a recording with
     /// the tap is always brought to one track, also when the microphone is not mixed into it
@@ -302,6 +322,7 @@ struct RecordingFiles {
         let backup = systemAudio && systemAudioBackup
         self.base = base
         tapSpansURL = backup ? URL(fileURLWithPath: "\(base).\(RecordingFileStore.tapSpansEnding)") : nil
+        callSpansURL = backup ? RecordingFileStore.callSpansURL(base: base) : nil
         if audioOnly {
             // Written under a temporary name and renamed once closed: an audio file that was not closed does not
             // open, so a crash must leave a name launch recovery finds
@@ -321,6 +342,8 @@ struct RecordingFiles {
                 backupAudioURL = backup ? package.appendingPathComponent("\(RecordingFileStore.backupFileName).\(ending)") : nil
                 backupClosedURL = backup ? closed.appendingPathComponent("\(RecordingFileStore.backupFileName).\(ending)") : nil
                 tapKeptURL = backup ? closed.appendingPathComponent("\(RecordingFileStore.tapFileName).\(ending)") : nil
+                callAudioURL = backup ? package.appendingPathComponent("\(RecordingFileStore.callFileName).\(ending)") : nil
+                callClosedURL = backup ? closed.appendingPathComponent("\(RecordingFileStore.callFileName).\(ending)") : nil
                 finalURL = remuxAudio ? URL(fileURLWithPath: "\(base).\(exported)") : closed
             } else {
                 let ending = audioFormat.fileEnding
@@ -334,6 +357,9 @@ struct RecordingFiles {
                 backupAudioURL = backup ? RecordingFileStore.temporaryURL(base: backupBase, marker: RecordingFileStore.rawMarker, ending: ending) : nil
                 backupClosedURL = backup ? URL(fileURLWithPath: "\(backupBase).\(ending)") : nil
                 tapKeptURL = backup ? URL(fileURLWithPath: "\(base)\(RecordingFileStore.tapSuffix).\(ending)") : nil
+                let callBase = base + RecordingFileStore.callSuffix
+                callAudioURL = backup ? RecordingFileStore.temporaryURL(base: callBase, marker: RecordingFileStore.rawMarker, ending: ending) : nil
+                callClosedURL = backup ? URL(fileURLWithPath: "\(callBase).\(ending)") : nil
                 finalURL = URL(fileURLWithPath: "\(base).\(exported)")
             }
         } else {
@@ -344,7 +370,10 @@ struct RecordingFiles {
             backupAudioURL = nil
             backupClosedURL = nil
             tapKeptURL = nil
-            let tracks = (systemAudio ? 1 : 0) + (backup ? 1 : 0) + (recordMic ? 1 : 0)
+            callAudioURL = nil
+            callClosedURL = nil
+            // With the tap: its backup and the call tap's audio, each on a track of its own
+            let tracks = (systemAudio ? 1 : 0) + (backup ? 2 : 0) + (recordMic ? 1 : 0)
             audioTracks = tracks
             separatesMicrophone = backup && recordMic && !remuxAudio
             // The tap's recording is always brought to one system audio track afterwards, whatever is mixed
@@ -412,7 +441,7 @@ enum RecoveryNames {
     /// "unmixed, 2 audio tracks": the label of the recording as it was written, as after an ordinary mix
     static let unmixed = unmixed(tracks: 2)
 
-    /// "unmixed, 3 audio tracks" for a recording with the tap, its backup and the microphone
+    /// "unmixed, 4 audio tracks" for a recording with the tap, its backup, the call tap and the microphone
     static func unmixed(tracks: Int) -> String {
         return String(RecordingFileStore.unmixedSuffix(tracks: tracks).dropFirst(2).dropLast())
     }

@@ -38,6 +38,8 @@ func describe(_ stats: RunStats, _ recording: SimulatedRecording) {
     say(String(format: "  fed in %.1f s of wall time: %d events (%d frames, %d tap buffers, %d backup buffers, %d microphone buffers, %d monitor ticks)",
                stats.feedSeconds, stats.events, stats.frames, stats.systemBuffers, stats.backupBuffers, stats.micBuffers, stats.ticks))
     say(String(format: "  tap outage %.0f-%.0f s: %d tap buffers not delivered", Plan.tapOutage.start, Plan.tapOutage.end, stats.tapSkipped))
+    say(String(format: "  call %.0f-%.0f s: %d buffers from the call tap, %d not taken by its track's input; its source reported ", Plan.call.start, Plan.call.end, stats.callBuffers, stats.callNotTaken)
+        + stats.callStates.map { String(format: "%@ at %.1f s", "\($0.state)", $0.time) }.joined(separator: ", "))
     say("  the tap's device clock: " + Plan.tapClockJumps.map { String(format: "%+.0f s from %.0f to %.0f s", $0.by, $0.start, $0.end) }.joined(separator: ", ")
         + "; \(stats.tapMisstamped) tap buffers delivered with such a time stamp")
     say(String(format: "  the tap's device runs %.0f parts in a million slow: %.0f samples a second, %.3f s of audio less than time passes in %.0f s",
@@ -63,6 +65,29 @@ func describe(_ stats: RunStats, _ recording: SimulatedRecording) {
 func tapOutage(_ timeline: OutputTimeline, stop: Double) -> (start: Double, end: Double)? {
     guard Plan.tapSilence.start < stop else { return nil }
     return (timeline.outputAfterPause(Plan.tapSilence.start), timeline.outputAfterPause(min(stop, Plan.tapSilence.end)))
+}
+
+/// The call tap's spans the writer recorded against the call it had: one span, where the call was
+func checkCallSpans(_ spans: TapSpans?, timeline: OutputTimeline, stop: Double) {
+    say("")
+    say("4b. The call tap's spans")
+    guard let spans else {
+        Found.problems.append("no spans of the call tap were written")
+        return
+    }
+    say("    " + spans.spans.map { String(format: "%.3f-%.3f s", $0.start, $0.end) }.joined(separator: ", "))
+    guard Plan.callAudio.start < stop else {
+        if !spans.spans.isEmpty { Found.problems.append("the call tap has spans before any call") }
+        return
+    }
+    let call = (start: timeline.outputAfterPause(Plan.callAudio.start), end: timeline.outputAfterPause(min(stop, Plan.callAudio.end)))
+    guard spans.spans.count == 1, let span = spans.spans.first else {
+        Found.problems.append("expected one span of the call tap, the call, found \(spans.spans.count)")
+        return
+    }
+    say(String(format: "    the span against the call %.3f-%.3f s: %@ and %@", call.start, call.end, ms(span.start - call.start), ms(span.end - call.end)))
+    // Its first buffer goes where its IOProc was called (up to 2 ms after its end); from there it is back to back
+    if abs(span.start - call.start) > 0.004 || abs(span.end - call.end) > 0.004 { Found.problems.append("the call tap's span is not where the call was") }
 }
 
 /// The tap's spans the writer recorded against the outage it had: one gap, where the outage was
@@ -126,9 +151,9 @@ func measure(raw: URL?, mixed: URL?, timeline: OutputTimeline, stop: Double, exp
     var system = [(marker: Marker, offset: Double)](), mic = [(marker: Marker, offset: Double)]()
     if let raw = raw {
         let audio = rawTracks.filter { $0.type == .audio }
-        guard audio.count == 3 else { throw SoakError("the recording has \(audio.count) audio tracks") }
+        guard audio.count == 4 else { throw SoakError("the recording has \(audio.count) audio tracks") }
         let end = audio.map(\.end).min() ?? 0
-        say("  three-track recording (tap, backup, microphone):")
+        say("  four-track recording (tap, backup, call tap, microphone):")
         system = try Checks.markers(raw, track: audio[0].id, Plan.systemMarkers, timeline: timeline, until: end, absent: tapAbsent, label: "system audio (tap)", report: &Found.problems)
         Checks.printOffsets(system, label: "system audio (tap)", timeline: timeline)
         say("    tap markers that fall in its outage (checked absent): \(Plan.systemMarkers.filter { timeline.output($0.time) != nil && tapAbsent($0) }.map(\.index))")
@@ -149,7 +174,18 @@ func measure(raw: URL?, mixed: URL?, timeline: OutputTimeline, stop: Double, exp
         var apart = 0.0
         for entry in backup { if let tap = system.first(where: { $0.marker.index == entry.marker.index }) { apart = max(apart, abs(entry.offset - tap.offset)) } }
         say("    largest difference between a marker in the backup and in the tap: \(ms(apart))")
-        mic = try Checks.markers(raw, track: audio[2].id, Plan.micMarkers, timeline: timeline, until: end, absent: micAbsent, label: "microphone", report: &Found.problems)
+        // The call: the call tap's track has every burst of it, the tap's those outside its outage, the backup's none
+        let inCall = try Checks.markers(raw, track: audio[2].id, Plan.callMarkers, timeline: timeline, until: end, absent: { _ in false }, label: "call audio (call tap)", report: &Found.problems)
+        Checks.printOffsets(inCall, label: "call audio (call tap)", timeline: timeline)
+        let callInTap = try Checks.markers(raw, track: audio[0].id, Plan.callMarkers, timeline: timeline, until: end, absent: tapAbsent, label: "call audio in the tap's track", report: &Found.problems)
+        Checks.printOffsets(callInTap, label: "call audio in the tap's track", timeline: timeline)
+        say("    call markers that fall in the tap's outage (checked absent from its track): \(Plan.callMarkers.filter { timeline.output($0.time) != nil && tapAbsent($0) }.map(\.index))")
+        _ = try Checks.markers(raw, track: audio[1].id, Plan.callMarkers, timeline: timeline, until: end, absent: { _ in true }, label: "call audio in the backup's track", report: &Found.problems)
+        say("    call markers in the backup's track: checked absent, all \(Plan.callMarkers.filter { ($0.time + Plan.burst) < stop }.count)")
+        if let worst = (inCall + callInTap).max(by: { abs($0.offset) < abs($1.offset) }), abs(worst.offset) > 0.1 {
+            Found.problems.append(String(format: "call marker %d is %@ from where it belongs", worst.marker.index, ms(worst.offset)))
+        }
+        mic = try Checks.markers(raw, track: audio[3].id, Plan.micMarkers, timeline: timeline, until: end, absent: micAbsent, label: "microphone", report: &Found.problems)
         Checks.printOffsets(mic, label: "microphone", timeline: timeline)
         let absent = Plan.micMarkers.filter { timeline.output($0.time) != nil && micAbsent($0) }.map(\.index)
         say("    microphone markers that fall where the microphone delivered nothing or was muted (checked absent): \(absent)")
@@ -189,6 +225,12 @@ func measure(raw: URL?, mixed: URL?, timeline: OutputTimeline, stop: Double, exp
         Checks.printOffsets(mixedSystem, label: "system audio in the mix", timeline: timeline)
         let mixedMic = try Checks.markers(mixed, track: audio.id, Plan.micMarkers, timeline: timeline, until: audio.end, absent: micAbsent, label: "mix, microphone", report: &Found.problems)
         Checks.printOffsets(mixedMic, label: "microphone in the mix", timeline: timeline)
+        // The whole call: from the tap where it was alive, from the call tap in its outage
+        let mixedCall = try Checks.markers(mixed, track: audio.id, Plan.callMarkers, timeline: timeline, until: audio.end, absent: { _ in false }, label: "mix, call audio", report: &Found.problems)
+        Checks.printOffsets(mixedCall, label: "call audio in the mix", timeline: timeline)
+        if let worst = mixedCall.max(by: { abs($0.offset) < abs($1.offset) }), abs(worst.offset) > 0.1 {
+            Found.problems.append(String(format: "call marker %d is %@ from where it belongs in the mix", worst.marker.index, ms(worst.offset)))
+        }
         if raw != nil {
             // Against the recording it was made from: the mix must not move anything
             var moved = 0.0
@@ -209,7 +251,18 @@ func measure(raw: URL?, mixed: URL?, timeline: OutputTimeline, stop: Double, exp
         let audio = rawTracks.filter { $0.type == .audio }
         // The microphone's lag at a time: that of the last microphone marker before it
         let lag: (Double) -> Double = { t in mic.last { (timeline.output($0.marker.time) ?? .infinity) < t }?.offset ?? 0 }
-        try Checks.silence(raw, track: audio[2].id, expectedHoles: outputHoles, lag: lag, label: "microphone track", report: &Found.problems)
+        try Checks.silence(raw, track: audio[3].id, expectedHoles: outputHoles, lag: lag, label: "microphone track", report: &Found.problems)
+        // The call tap's track is silence but for the call
+        var quiet = [(start: Double, end: Double)]()
+        let trackEnd = audio[2].end
+        if Plan.callAudio.start < stop {
+            quiet.append((0, timeline.outputAfterPause(Plan.callAudio.start)))
+            let callEnd = timeline.outputAfterPause(Plan.callAudio.end)
+            if callEnd < trackEnd - Checks.shortestHole { quiet.append((callEnd, trackEnd)) }
+        } else {
+            quiet.append((0, trackEnd))
+        }
+        try Checks.silence(raw, track: audio[2].id, expectedHoles: quiet, label: "call audio track (call tap)", report: &Found.problems)
         let outage = tapOutage(timeline, stop: stop).map { [$0] } ?? []
         try Checks.silence(raw, track: audio[0].id, expectedHoles: outage, label: "system audio track (tap)", report: &Found.problems)
         try Checks.silence(raw, track: audio[1].id, expectedHoles: [], label: "system audio track (backup)", report: &Found.problems)
@@ -246,8 +299,9 @@ case "record", "kill":
     guard file.status == .completed else { throw SoakError("the file did not close: \(String(describing: file.error))") }
     say(String(format: "  closed in %.1f s", Date().timeIntervalSince(closing)))
     let recording = sim.recording
-    guard let mixURL = recording.mixURL, let unmixedURL = recording.unmixedURL, let spansURL = recording.tapSpansURL else { throw SoakError("no mix names") }
+    guard let mixURL = recording.mixURL, let unmixedURL = recording.unmixedURL, let spansURL = recording.tapSpansURL, let callSpansURL = recording.callSpansURL else { throw SoakError("no mix names") }
     let spans = TapSpans.read(spansURL)
+    let callSpans = TapSpans.read(callSpansURL)
     var verified = "not run"
     let mixing = Date()
     if !RecordingFileStore.hasRoomForCopy(of: recording.rawURL) {
@@ -267,6 +321,13 @@ case "record", "kill":
                 say(String(format: "    the backup from %.3f s to %.3f s", segment.start, segment.end))
             }
             say("  alignment: " + (plan.alignment?.text ?? "none"))
+            say("  call audio: " + SystemAudioChoice.callSummary(plan.callStretches) + "; " + (plan.callAlignment.map { SystemAudioAlignment.callText($0) } ?? "its track has no sound"))
+            for stretch in plan.callStretches { say(String(format: "    the call tap from %.3f s to %.3f s", stretch.start, stretch.end)) }
+            // The call tap's audio is added in the tap's outage, which the call spans, and nowhere else
+            let outages = plan.segments.filter { $0.source == .backup }
+            if plan.callStretches.count != 1 || outages.count != 1 || plan.callStretches.first?.start != outages.first?.start || plan.callStretches.first?.end != outages.first?.end {
+                Found.problems.append("the mix takes the call tap in \(plan.callStretches.count) stretches: it must be the tap's outage and nothing else")
+            }
             say("  level voices: " + (plan.leveling?.text ?? "off"))
             // The settings of the run have it on: each side has sound for the whole meeting, so each must have been
             // measured and given a gain within the range
@@ -310,7 +371,15 @@ case "record", "kill":
     say("  mixer verification: \(verified)")
     // As the app does once the final files are written
     RecordingFileStore.removeTapSpans(spansURL)
-    if FileManager.default.fileExists(atPath: spansURL.path) { Found.problems.append("the tap's spans were not removed") }
+    RecordingFileStore.removeTapSpans(callSpansURL)
+    if FileManager.default.fileExists(atPath: spansURL.path) || FileManager.default.fileExists(atPath: callSpansURL.path) { Found.problems.append("the taps' spans were not removed") }
+    // The call was recorded by the call tap while the tap was dead, and the tap never delivered zeros: nothing to
+    // tell the user, and nothing rebuilt for hearing nothing
+    for unwanted in ["Call audio is not being recorded", "only zeros"] where RecLog.lines.contains(where: { $0.contains(unwanted) }) {
+        Found.problems.append("the log has \"\(unwanted)\"")
+    }
+    if sim.stats.callStates.map(\.state) != [.idle, .active, .idle] { Found.problems.append("the call tap's source reported \(sim.stats.callStates.map(\.state))") }
+    if sim.stats.callNotTaken > 0 { Found.problems.append("\(sim.stats.callNotTaken) buffers of the call tap were not taken by its track") }
     say("  peak memory up to the end of the mix: \(peakMemory())")
     say(String(format: "  wall time up to the end of the mix: %.1f s", Date().timeIntervalSince(began)))
     let timeline = OutputTimeline(sessionStart: sim.stats.sessionStart ?? Plan.firstFrame, pauseOffset: sim.stats.pauseOffset)
@@ -318,6 +387,7 @@ case "record", "kill":
     let mixedFile = FileManager.default.fileExists(atPath: recording.finalURL.path) ? recording.finalURL : nil
     try await measure(raw: unmixedURL, mixed: mixedFile, timeline: timeline, stop: stop, expectedLength: expected)
     checkSpans(spans, timeline: timeline, stop: stop, expectedLength: expected)
+    checkCallSpans(callSpans, timeline: timeline, stop: stop)
 
 case "recover":
     say("Holdfast soak: launch recovery of what the killed run left")
@@ -327,6 +397,9 @@ case "recover":
     guard let leftover = found.first(where: { !$0.isMix }) else { throw SoakError("no leftover recording") }
     let spansURL = RecordingFileStore.tapSpansURL(base: leftover.base)
     let spans = TapSpans.read(spansURL)
+    let callSpansURL = RecordingFileStore.callSpansURL(base: leftover.base)
+    let callSpans = TapSpans.read(callSpansURL)
+    say("  the call tap's spans the killed run left: \(callSpans.map { $0.spans.map { String(format: "%.3f-%.3f s", $0.start, $0.end) }.joined(separator: ", ") } ?? "none")")
     say("  the tap's spans the killed run left: \(spans.map { $0.spans.map { String(format: "%.3f-%.3f s", $0.start, $0.end) }.joined(separator: ", ") } ?? "none")")
     let attributes = try FileManager.default.attributesOfItem(atPath: leftover.url.path)
     say(String(format: "  left on disk: %.1f MB", Double((attributes[.size] as? NSNumber)?.int64Value ?? 0) / 1_048_576))
@@ -340,8 +413,8 @@ case "recover":
     say("  folder afterwards: \(names)")
     let base = leftover.base
     let recoveredMix = URL(fileURLWithPath: base + " (recovered).mp4")
-    let recoveredRaw = URL(fileURLWithPath: base + " (recovered, unmixed, 3 audio tracks).mp4")
-    if FileManager.default.fileExists(atPath: spansURL.path) { Found.problems.append("recovery left the tap's spans behind") }
+    let recoveredRaw = URL(fileURLWithPath: base + " (recovered, unmixed, 4 audio tracks).mp4")
+    if FileManager.default.fileExists(atPath: spansURL.path) || FileManager.default.fileExists(atPath: callSpansURL.path) { Found.problems.append("recovery left the taps' spans behind") }
     let timeline = OutputTimeline(sessionStart: Plan.firstFrame, pauseOffset: 0)
     let delivered = Plan.killAt - timeline.sessionStart
     say(String(format: "  recorded before the kill: %.3f s", delivered))
@@ -354,6 +427,7 @@ case "recover":
     say(String(format: "  recovered %.3f s of %.3f s: %.1f%%, the last %.3f s are lost", length, delivered, 100 * length / delivered, delivered - length))
     try await measure(raw: raw, mixed: mixed, timeline: timeline, stop: timeline.sessionStart + length, expectedLength: delivered, cutOff: true)
     checkSpans(spans, timeline: timeline, stop: Plan.killAt, expectedLength: delivered)
+    checkCallSpans(callSpans, timeline: timeline, stop: Plan.killAt)
 
 default:
     say("unknown mode \(mode)")

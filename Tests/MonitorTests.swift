@@ -18,8 +18,10 @@ final class MonitorWriter: RecordingWriter {
     var clockAnchor: (raw: CMTime, uptime: UInt64)?
     var audioEndPTS: CMTime?
     var backupEndPTS: CMTime?
+    var callEndPTS: CMTime?
     let hasSystemAudio: Bool
     var hasBackupAudio = false
+    var hasCallAudio = false
     let hasMicrophoneTrack: Bool
     var isMicrophoneMuted = false
     /// "microphone", "system audio" and "video", in the order the monitor filled them
@@ -40,6 +42,7 @@ final class MonitorWriter: RecordingWriter {
     func fillMicrophone(upTo time: CMTime) { fills.append("microphone") }
     func fillSystemAudio(upTo time: CMTime) { fills.append("system audio"); audioEndPTS = time }
     func fillBackupAudio(upTo time: CMTime) { fills.append("backup"); backupEndPTS = time }
+    func fillCallAudio(upTo time: CMTime) { fills.append("call"); callEndPTS = time }
     func repeatVideoFrame(at now: CMTime) { fills.append("video") }
     func currentPicture() -> CMSampleBuffer? { nil }
     func finish() -> MovieWriter.Finished { MovieWriter.Finished(writer: nil, frame: nil, sessionStarted: true) }
@@ -64,9 +67,10 @@ final class MonitorRun {
     /// An uptime far from zero, as the system's is
     private let zero: UInt64 = 1_000_000_000_000
 
-    init(_ name: String, microphone: Bool = true, systemAudio: Bool = false, backup: Bool = false) throws {
+    init(_ name: String, microphone: Bool = true, systemAudio: Bool = false, backup: Bool = false, call: Bool = false) throws {
         writer = MonitorWriter(folder: try Suite.folder(name), microphone: microphone, systemAudio: systemAudio)
         writer.hasBackupAudio = backup
+        writer.hasCallAudio = call
         monitor = RecordingMonitor(queue: queue)
         writer.clockAnchor = (time(0), zero)
         monitor.notify = { [unowned self] title, text in notified.append(title); lastText = text }
@@ -106,6 +110,19 @@ final class MonitorRun {
             writer.backupEndPTS = time(seconds)
             monitor.backupAudioWritten(upTo: time(seconds))
         }
+    }
+
+    /// The call tap's audio was written up to `seconds`
+    func callAudio(upTo seconds: Double) {
+        queue.sync {
+            writer.callEndPTS = time(seconds)
+            monitor.callAudioWritten(upTo: time(seconds))
+        }
+    }
+
+    /// What the call tap's source says about a call
+    func call(_ state: CallAudioState) {
+        queue.sync { monitor.callAudioChanged(state) }
     }
 
     func fills(_ what: String) -> Int { queue.sync { writer.fills.filter { $0 == what }.count } }

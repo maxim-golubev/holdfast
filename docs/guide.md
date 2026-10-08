@@ -26,8 +26,8 @@ audio starts, macOS asks whether Holdfast may record the sound the Mac plays
 meeting are in the recording."); the recording starts once you answer. Allow
 it: Holdfast then records system audio through a Core Audio process tap, which
 hears FaceTime calls and phone calls taken on the Mac, and records screen
-capture's system audio beside it as a backup (see [System audio and
-calls](#system-audio-and-calls)). Screen capture's own system audio leaves
+capture's system audio beside it as a backup, and the call audio once more
+through a second tap (see [System audio and calls](#system-audio-and-calls)). Screen capture's own system audio leaves
 FaceTime and phone calls out. If you don't allow it, the recording still has
 system audio, from screen capture alone, and a notification, **Call Audio Not
 Included**, says once while Holdfast runs, when such a recording has started,
@@ -125,9 +125,9 @@ line in the log:
 - **Microphone Is Not Being Recorded:** no audio from the microphone for 5
   seconds, or nothing but digital silence for 20 seconds.
 - **System Audio Is Not Being Recorded:** no system audio for 5 seconds, from
-  neither the process tap nor its backup. A tap that stops while the backup
-  goes on is not a problem: Holdfast rebuilds it by itself and the recording
-  has the sound meanwhile (the log says so).
+  neither the process tap, its backup nor, during a call, the call tap. A tap
+  that stops while the backup goes on is not a problem: Holdfast rebuilds it
+  by itself and the recording has the sound meanwhile (the log says so).
 - **Nothing Is Being Recorded Yet:** no picture 5 seconds after the start (a
   minimized window, a sleeping display). The file starts with the first picture;
   audio before it is not in it.
@@ -199,17 +199,20 @@ Recordings are named by the date and time they started, in the save folder:
 | File | What it is |
 | --- | --- |
 | `Recording at 2026-10-04 14.03.22.mp4` | The recording, with system audio and microphone mixed into one audio track. This is the file to keep. |
-| `Recording at 2026-10-04 14.03.22 (unmixed, 3 audio tracks).mp4` | The same recording as it was written: system audio from the process tap, its backup from screen capture, and the microphone, as three audio tracks titled "System audio (tap)", "System audio (backup)" and "Microphone". Many players play only the first. Without the process tap it is "(unmixed, 2 audio tracks)": system audio and microphone. |
+| `Recording at 2026-10-04 14.03.22 (unmixed, 4 audio tracks).mp4` | The same recording as it was written: system audio from the process tap, its backup from screen capture, call audio from the call tap, and the microphone, as four audio tracks titled "System audio (tap)", "System audio (backup)", "Call audio (second tap)" and "Microphone". The call tap's track is silent except during a FaceTime or phone call. Many players play only the first. Without the process tap it is "(unmixed, 2 audio tracks)": system audio and microphone. |
 | `Recording at 2026-10-04 14.03.22.recording.mp4` | A recording that is still running, or one a crash left behind. |
-| `Recording at 2026-10-04 14.03.22.tap-alive.txt` | Next to a recording made with the process tap while it runs and is saved: where the tap delivered. Removed once the recording's files are final. |
+| `Recording at 2026-10-04 14.03.22.tap-alive.txt`, `….call-alive.txt` | Next to a recording made with the process tap while it runs and is saved: where the tap, and the call tap, delivered. Removed once the recording's files are final. |
 | `Recording at 2026-10-04 14.03.22.mixing.mp4` | A mix being written. It gets the final name only once it is complete and checked. |
 
 The system audio in the mix comes, stretch by stretch, from the process tap
 wherever it delivered, otherwise from its backup, never from both at once: a
 stretch in which the tap was dead has the backup's sound, a FaceTime call
-(which only the tap hears) the tap's. The tap's sound is put in step with the
-backup's first, which is the one in step with the picture, so a switch between
-them cannot be heard; the unmixed file keeps both tracks as they were recorded.
+(which the backup does not hear) the tap's. Where the tap was dead during
+such a call, the call tap's track has the call, and the mix adds it to the
+backup's sound there, so the two together are what the tap would have
+recorded. The taps' sound is put in step with the backup's first, which is the
+one in step with the picture, so a switch between them cannot be heard; the
+unmixed file keeps every track as it was recorded.
 
 With **Settings → Audio → Level Voices** on (the default), the mix also evens
 out how loud the two sides are. Before mixing, Holdfast measures the loudness
@@ -247,10 +250,10 @@ report. No recording is deleted.
 - A recording that was never closed (a crash, a kill, a power loss) plays,
   missing up to about its last 12 seconds. Its mix becomes
   `… (recovered).mp4`, and the recording as written
-  `… (recovered, unmixed, 3 audio tracks).mp4` (2 without the process tap).
-  The mix takes the system audio from the tap or its backup as after a normal
-  stop, from the `.tap-alive.txt` file the recording left, which is then
-  removed.
+  `… (recovered, unmixed, 4 audio tracks).mp4` (2 without the process tap).
+  The mix takes the system audio from the tap, or its backup and the call tap,
+  as after a normal stop, from the `.tap-alive.txt` file the recording left,
+  which is then removed with the `.call-alive.txt` file.
 - A recording that was closed but not yet mixed is mixed now and gets the
   ordinary names.
 - A file that does not open becomes `… (damaged)`. What an interrupted mix had
@@ -264,12 +267,14 @@ AAC format, as set under **Settings → Audio → Format**). With the microphone
 writes a `.qma` package, which holds system audio and microphone as two files
 and opens in Holdfast's player, and with **Mix Microphone into the Main Track**
 on, a mixed audio file next to it. With the process tap, the backup of the
-system audio is written too (`… (system audio backup).m4a` next to the file, or
-`sys-backup` in the package), and once the recording is closed its system audio
-is made one file from the tap and the backup in the same way as for a video.
-With **Keep the Unmixed Recording** on, the two are kept beside it
-(`… (system audio tap)` and `… (system audio backup)`, or `sys-tap` and
-`sys-backup` in the package); otherwise they are deleted. If that fails,
+system audio and the call tap's audio are written too (`… (system audio
+backup).m4a` and `… (call audio).m4a` next to the file, or `sys-backup` and
+`sys-call` in the package), and once the recording is closed its system audio
+is made one file from them in the same way as for a video.
+With **Keep the Unmixed Recording** on, they are kept beside it
+(`… (system audio tap)`, `… (system audio backup)` and `… (call audio)`, or
+`sys-tap`, `sys-backup` and `sys-call` in the package); otherwise they are
+deleted. If that fails,
 **System Audio Not Merged** says so and the files stay as they are.
 
 **Save Current Frame** (a shortcut) saves the picture the recording shows as
@@ -366,7 +371,16 @@ which screen capture leaves out; screen capture hears Zoom, Meet and calls in a
 browser like any other sound. After the recording, the system audio of the
 file you keep is the tap's wherever the tap delivered, and the backup's where
 it did not (or delivered only silence for two seconds or more while the backup
-had sound), never both at once.
+or the call tap had sound), never both at once.
+
+Screen capture cannot stand in for the tap during a FaceTime or phone call, so
+call audio has a safety net of its own: the **call tap**, a second process tap
+of only the part of macOS that plays those calls, built in another way than
+the first and recorded on a track of its own. It exists only while that part
+of macOS is using audio, so outside a call it costs nothing and its track is
+silence. Where the first tap was not the source during a call, the file you
+keep has the backup's sound plus the call tap's, which together are what the
+first tap would have recorded.
 
 The tap does not depend on your output device: switching to AirPods or
 headphones, or AirPods going into their call mode, changes nothing for it. If
@@ -374,12 +388,24 @@ the tap stops delivering anyway, Holdfast notices after a second of silence
 from it, builds it again at once, in another way after two failures, and keeps
 trying every two seconds at most for as long as the recording runs; the backup
 records meanwhile. You are not asked to do anything; the log has each step.
-**System Audio Is Not Being Recorded** appears only when neither the tap nor
-the backup delivers anything. Should the tap stay dead for 15 seconds, the
-status item shows the triangle with **Call audio is not being recorded** until
-it is back: everything else the Mac plays is still recorded from the backup,
-but a FaceTime or phone call is not, and that is the one thing the backup
-cannot make up for.
+**System Audio Is Not Being Recorded** appears only when neither the tap, the
+backup nor the call tap delivers anything. Should the tap stay dead for 15
+seconds during a call whose call tap delivers nothing either, the status item
+shows the triangle with **Call audio is not being recorded** until one of
+them is back or the call is over: everything else the Mac plays is still
+recorded from the backup, but the call is not. With no call on, or with the
+call tap recording it, a dead tap shows nothing.
+
+A tap can also run and hear nothing: that is what macOS gives an app that is
+not allowed to record system audio, without saying so. Holdfast compares the
+tap with the other two sources while it records. If the tap has delivered
+only digital silence for three seconds while the backup or the call tap had
+sound, it is rebuilt at once, and again if that did not help. After two
+rebuilds without effect a notification, **Call Audio Not Included**, says so
+once, with where to allow it (**System Settings → Privacy & Security → Screen
+& System Audio Recording → System Audio Recording Only**), and the tap is
+rebuilt once a minute from then on; the recording goes on from the backup and
+the call tap, and the file you keep takes those stretches from them.
 
 When the tap cannot be used (no permission), the system audio comes from
 screen capture alone for that recording, as before, without call audio, and
@@ -400,7 +426,9 @@ what it records, whether system audio and microphone are on, and whether system
 audio comes from the process tap, what clocks it and in which format, or
 from screen capture and why) and its video settings; every rebuild of the tap
 and why, and stretches in which the tap was quiet while its backup recorded;
-where the mix took the system audio from; with Level Voices, how loud each
+when a call's audio appeared and went, the call tap built for it, and how long
+it delivered; a tap found to deliver only silence while the Mac played sound;
+where the mix took the system audio from, and the call audio; with Level Voices, how loud each
 side measured, the gain each got and the most the limiter took off; its stop, with the reason when it
 stopped by itself; where it was saved; microphone device switches and format changes; microphone audio that
 came in late (a backlog dropped, or a microphone clock found to lag and recorded
@@ -419,13 +447,13 @@ After a meeting, that summary says whether anything went missing.
 ## Known limits
 
 - Call audio from FaceTime and from phone calls taken on the Mac is recorded
-  through the process tap, which was checked to hear a FaceTime call; a whole
-  recording during a FaceTime call has not been made with this version. A
-  stretch in which the tap was dead has the backup's sound, which has no
-  FaceTime audio. Without the System Audio Recording permission call audio is
-  missing (screen capture leaves it out); your own microphone is recorded
-  either way. Calls in other apps and in browsers are system audio like any
-  other sound.
+  through the process tap, which has recorded real FaceTime calls, and a
+  second time through the call tap, which fills in where the first tap was
+  dead or silent. The call tap is covered by tests and a simulation but has
+  not yet been run during a real call. Both taps need the System Audio
+  Recording permission: without it call audio is missing (screen capture
+  leaves it out); your own microphone is recorded either way. Calls in other
+  apps and in browsers are system audio like any other sound.
 - A file that was never closed misses up to about its last 12 seconds (one
   10-second fragment plus the lag of the slowest track). While paused, nothing
   reaches the disk, so the seconds before a pause are safe only once the

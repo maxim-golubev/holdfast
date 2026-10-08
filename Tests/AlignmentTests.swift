@@ -15,9 +15,10 @@ struct TestSound {
     static let lead = 48000
     let samples: [Float]
 
-    init(seconds: Double, clicks: [Int]) {
+    /// Another `seed` gives another noise
+    init(seconds: Double, clicks: [Int], seed: UInt64 = 0x9E37_79B9_7F4A_7C15) {
         let count = Int(seconds * 48000) + 2 * TestSound.lead
-        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        var state = seed
         var white = [Float](repeating: 0, count: count + 8)
         for index in white.indices {
             state = state &* 6364136223846793005 &+ 1442695040888963407
@@ -81,6 +82,7 @@ func recordApart(_ folder: String, seconds: Double, sound: TestSound, tapDead: (
         let target = run.at(t + 0.1 - 1)
         if CMTimeGetSeconds(CMTimeSubtract(target, writer.audioEndPTS ?? run.at(0))) >= 0.5 { writer.fillSystemAudio(upTo: target) }
         if CMTimeGetSeconds(CMTimeSubtract(target, writer.backupEndPTS ?? run.at(0))) >= 0.5 { writer.fillBackupAudio(upTo: target) }
+        if CMTimeGetSeconds(CMTimeSubtract(target, writer.callEndPTS ?? run.at(0))) >= 0.5 { writer.fillCallAudio(upTo: target) }
         usleep(15_000)
         step += 1
     }

@@ -1,16 +1,18 @@
 // Measures what a Core Audio process tap hears, to find out whether call audio (FaceTime, phone calls through the
 // iPhone) reaches it. FaceTime and Continuity calls play through the system process avconferenced.
-// Built like Holdfast's own tap (SystemAudioTap): a private tap, left audible, in a private aggregate device whose
-// main sub-device is the default output device (a tap alone in an aggregate device delivers only zeros), with drift
-// compensation, and an IOProc that uses only the tap's stream (the output device's own input and output streams are
-// turned off, so a headset's microphone is not opened). The aggregate device runs from the start, also while nothing
-// plays (no kAudioAggregateDeviceTapAutoStartKey, which makes the start wait for the first sound): run it in silence
-// and every second must still have callbacks, at -180 dB.
-// Usage: tapprobe [global|calls] [seconds]
-//   global: everything the Mac plays, as Holdfast records it
-//   calls:  only avconferenced (start the call first: it has no audio object before)
+// A private tap, left audible, in a private aggregate device with drift compensation, and an IOProc that uses only
+// the tap's stream (an output device's own input and output streams are turned off, so a headset's microphone is not
+// opened). The aggregate device runs from the start, also while nothing plays (no
+// kAudioAggregateDeviceTapAutoStartKey, which makes the start wait for the first sound): run it in silence and every
+// second must still have callbacks, at -180 dB.
+// Usage: tapprobe [global|calls|calltap] [seconds]
+//   global:  everything the Mac plays, in an aggregate device whose main sub-device is the default output
+//   calls:   only avconferenced (start the call first: it has no audio object before), built the same way
+//   calltap: only avconferenced, alone in its aggregate device, with no sub-device: Holdfast's call tap
+//            (SystemAudioTap with TapClock.callOrder), the second tap that records call audio on its own track
 // Prints the formats, the IO buffers of the first callback, then the level once a second. Needs the "System Audio
-// Recording Only" permission for the terminal it runs in (macOS asks the first time).
+// Recording Only" permission for the process it runs in (macOS asks the first time); a process without it gets a
+// tap that runs and delivers only zeros.
 // Build: swiftc -O Tools/tapprobe.swift -o build/tapprobe
 import AudioToolbox
 import CoreAudio
@@ -18,8 +20,8 @@ import Foundation
 
 let mode = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "global"
 let seconds = CommandLine.arguments.count > 2 ? Int(CommandLine.arguments[2]) ?? 30 : 30
-guard mode == "global" || mode == "calls" else {
-    print("usage: tapprobe [global|calls] [seconds]")
+guard mode == "global" || mode == "calls" || mode == "calltap" else {
+    print("usage: tapprobe [global|calls|calltap] [seconds]")
     exit(2)
 }
 let system = AudioObjectID(kAudioObjectSystemObject)
@@ -76,7 +78,7 @@ print("default output: \(string(output, kAudioObjectPropertyName) ?? outputUID) 
 
 let description: CATapDescription
 switch mode {
-case "calls":
+case "calls", "calltap":
     let calls = processObjects().filter { $0.2.contains("avconferenced") }
     print("avconferenced audio objects: \(calls.map { "pid \($0.1) object \($0.0)" })")
     guard !calls.isEmpty else { print("avconferenced has no audio object now (no call running?)"); exit(1) }
@@ -95,15 +97,19 @@ var tapFormat = AudioStreamBasicDescription()
 _ = property(tap, kAudioTapPropertyFormat, &tapFormat)
 print("tap format: \(describe(tapFormat))")
 
-let aggregate: [String: Any] = [
+var aggregate: [String: Any] = [
     kAudioAggregateDeviceNameKey: "tapprobe",
     kAudioAggregateDeviceUIDKey: UUID().uuidString,
     kAudioAggregateDeviceIsPrivateKey: true,
     kAudioAggregateDeviceIsStackedKey: false,
-    kAudioAggregateDeviceMainSubDeviceKey: outputUID,
-    kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: outputUID]],
     kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: tapUID, kAudioSubTapDriftCompensationKey: true]],
 ]
+if mode == "calltap" {
+    print("aggregate device: the tap alone, no sub-device")
+} else {
+    aggregate[kAudioAggregateDeviceMainSubDeviceKey] = outputUID
+    aggregate[kAudioAggregateDeviceSubDeviceListKey] = [[kAudioSubDeviceUIDKey: outputUID]]
+}
 var device = AudioObjectID(kAudioObjectUnknown)
 status = AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &device)
 guard status == noErr else { print("cannot create the aggregate device: \(status)"); AudioHardwareDestroyProcessTap(tap); exit(1) }

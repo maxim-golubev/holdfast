@@ -68,6 +68,8 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     private var stream: SCStream?
     /// The system audio when a process tap records it, nil when the stream does (or nothing does)
     private var systemAudio: SystemAudioSource?
+    /// The call tap beside it, nil without the tap
+    private var callAudio: CallAudioSource?
     /// Whether the stream's system audio is the backup of the tap's (`CaptureSample.Kind.backupAudio`)
     private let streamAudioIsBackup: Bool
     private let queue: DispatchQueue
@@ -79,10 +81,11 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     /// track for it (`RecordingContext.systemAudioBackup`). `onStop` is called, on a queue of the stream's, when the
     /// stream ends without having been asked to.
     init(filter: SCContentFilter, configuration: SCStreamConfiguration, recording: RecordingContext, microphone: MicrophoneChoice?,
-         systemAudio: SystemAudioSource?, queue: DispatchQueue, onSample: @escaping (CaptureSample) -> Void,
+         systemAudio: SystemAudioSource?, callAudio: CallAudioSource? = nil, queue: DispatchQueue, onSample: @escaping (CaptureSample) -> Void,
          onStop: @escaping (CaptureSource, Error) -> Void) {
         self.configuration = configuration
         self.systemAudio = systemAudio
+        self.callAudio = callAudio
         self.streamAudioIsBackup = recording.systemAudioBackup
         self.recordsMic = recording.recordMic
         self.micSelection = microphone?.selection ?? "default"
@@ -252,13 +255,16 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         try await stream.startCapture()
     }
 
-    /// `done` is called, on any thread, when the tap and the stream have stopped delivering buffers. The tap stops
-    /// first, then the stream; both are given up here. The writer's inputs are finished only after `done`.
+    /// `done` is called, on any thread, when the taps and the stream have stopped delivering buffers. The tap stops
+    /// first, then the call tap, then the stream; all are given up here. The writer's inputs are finished only
+    /// after `done`.
     func stop(_ done: @escaping (Error?) -> Void) {
         let stream = self.stream
         self.stream = nil
         let systemAudio = self.systemAudio
         self.systemAudio = nil
+        let callAudio = self.callAudio
+        self.callAudio = nil
         func stopStream() {
             guard let stream = stream else { return done(nil) }
             stream.stopCapture { error in
@@ -267,8 +273,20 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
                 withExtendedLifetime(stream) {}
             }
         }
-        guard let tap = systemAudio else { return stopStream() }
-        tap.stop { stopStream() }
+        func stopCallTap() {
+            guard let callAudio else { return stopStream() }
+            callAudio.stop { stopStream() }
+        }
+        guard let tap = systemAudio else { return stopCallTap() }
+        tap.stop { stopCallTap() }
+    }
+
+    func rebuildDeafTap() {
+        systemAudio?.rebuildDeaf()
+    }
+
+    func tapHeardAgain() {
+        systemAudio?.heardAgain()
     }
 
     /// Gives up a stream that was never started or has stopped by itself, so the stream and this object, which is
@@ -277,6 +295,8 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
         stream = nil
         systemAudio?.stop()
         systemAudio = nil
+        callAudio?.stop()
+        callAudio = nil
     }
 
     /// Tells the stream about a change made to `configuration`, which is how the microphone device is switched

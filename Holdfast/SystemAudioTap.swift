@@ -58,10 +58,19 @@ protocol TapHardware {
     /// Calls `changed` on `queue` when one of `selectors` of `object` changes; nil when it cannot be watched
     func watch(_ object: AudioObjectID, _ selectors: [AudioObjectPropertySelector], queue: DispatchQueue, _ changed: @escaping () -> Void) -> TapListener?
     func unwatch(_ listener: TapListener)
+    /// The audio process objects of `avconferenced`, the system process that plays FaceTime calls and phone calls
+    /// taken on the Mac; empty while it has none (a process gets one when it uses audio)
+    func callProcessObjects() -> [AudioObjectID]
+    /// A private stereo tap of `processes` only, which leaves what it taps audible
+    func createCallTap(of processes: [AudioObjectID]) throws -> (id: AudioObjectID, uid: String)
 }
 
 extension TapHardware {
     func inputDelay(_ device: AudioObjectID) -> TapInputDelay? { nil }
+    func callProcessObjects() -> [AudioObjectID] { [] }
+    func createCallTap(of processes: [AudioObjectID]) throws -> (id: AudioObjectID, uid: String) {
+        throw SystemAudioTapError("A tap of single processes is not available")
+    }
 }
 
 /// The figures a device gives for the way of its input to an IOProc, in frames: the device's latency and safety
@@ -144,6 +153,13 @@ enum TapClock: String, Equatable, CaseIterable {
         }
     }
 
+    /// The constructions of the call tap, the second tap that records only `avconferenced`: on purpose not the
+    /// process tap's. No sub-device first, the tap alone in its aggregate device, and the built-in output as its
+    /// clock only when that cannot be built or does not deliver. What stops one tap is then less likely to stop both.
+    static func callOrder(builtIn: TapOutputDevice?) -> [TapClock] {
+        return builtIn == nil ? [.none] : [.none, .builtInOutput]
+    }
+
     /// The constructions to try, best first: the built-in output when there is one, no sub-device, and the default
     /// output when it is another device than the built-in one
     static func order(builtIn: TapOutputDevice?, defaultOutput: TapOutputDevice?) -> [TapClock] {
@@ -200,11 +216,13 @@ final class SystemAudioTap: SystemAudioTapping {
         func close() { closed.store(true, ordering: .releasing) }
     }
 
-    /// Builds the tap clocked as `clock` says and starts it. `deliver` gets every buffer, on the IO thread;
-    /// `outputChanged` is called when the rate changes or the clock's device goes away (AirPods switching to their
-    /// call mode change their rate), which the tap must be rebuilt for. Throws, with everything it created destroyed
-    /// again, when any step fails.
-    init(hardware: TapHardware, clock: TapClock, queue: DispatchQueue, deliver: @escaping (CMSampleBuffer) -> Void, outputChanged: @escaping () -> Void) throws {
+    /// Builds the tap clocked as `clock` says and starts it: a tap of everything the Mac plays but Holdfast itself,
+    /// or, with `processes`, of those audio process objects only (the call tap). `deliver` gets every buffer, on the
+    /// IO thread; `outputChanged` is called when the rate changes or the clock's device goes away (AirPods switching
+    /// to their call mode change their rate), which the tap must be rebuilt for. Throws, with everything it created
+    /// destroyed again, when any step fails.
+    init(hardware: TapHardware, clock: TapClock, processes: [AudioObjectID]? = nil, queue: DispatchQueue,
+         deliver: @escaping (CMSampleBuffer) -> Void, outputChanged: @escaping () -> Void) throws {
         self.hardware = hardware
         let gate = Gate()
         let own = hardware.ownProcessObject()
@@ -218,7 +236,7 @@ final class SystemAudioTap: SystemAudioTapping {
         case .defaultOutput:
             clockDevice = try hardware.defaultOutputDevice()
         }
-        let tap = try hardware.createTap(excluding: own.map { [$0] } ?? [])
+        let tap = try processes.map { try hardware.createCallTap(of: $0) } ?? hardware.createTap(excluding: own.map { [$0] } ?? [])
         // Undone in reverse order when a later step fails
         var undo: [() -> Void] = [{ _ = hardware.destroyTap(tap.id) }]
         func fail(_ error: Error) -> Error {
@@ -553,7 +571,9 @@ final class SystemAudioConverter {
 
 /// The Core Audio calls behind `SystemAudioTap`
 struct CoreAudioTapHardware: TapHardware {
-    private static let system = AudioObjectID(kAudioObjectSystemObject)
+    static let system = AudioObjectID(kAudioObjectSystemObject)
+    /// The system process that plays the audio of FaceTime calls and of phone calls taken on the Mac
+    static let callProcess = "avconferenced"
     private static func address(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
         return AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
     }
@@ -633,6 +653,41 @@ struct CoreAudioTapHardware: TapHardware {
         guard let uid = CoreAudioTapHardware.string(tap, kAudioTapPropertyUID) else {
             _ = AudioHardwareDestroyProcessTap(tap)
             throw SystemAudioTapError("Reading the tap's UID")
+        }
+        return (tap, uid)
+    }
+
+    func callProcessObjects() -> [AudioObjectID] {
+        var address = CoreAudioTapHardware.address(kAudioHardwarePropertyProcessObjectList)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(CoreAudioTapHardware.system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var objects = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(CoreAudioTapHardware.system, &address, 0, nil, &size, &objects) == noErr else { return [] }
+        objects = Array(objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size))
+        return objects.filter { object in
+            // By its bundle identifier when it has one, else by the name of its executable
+            if let bundle = CoreAudioTapHardware.string(object, kAudioProcessPropertyBundleID), !bundle.isEmpty {
+                return bundle.localizedCaseInsensitiveContains(CoreAudioTapHardware.callProcess)
+            }
+            var pid: pid_t = 0
+            guard CoreAudioTapHardware.read(object, kAudioProcessPropertyPID, &pid) == noErr, pid > 0 else { return false }
+            var path = [CChar](repeating: 0, count: 4096)
+            guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { return false }
+            return (String(cString: path) as NSString).lastPathComponent == CoreAudioTapHardware.callProcess
+        }.sorted()
+    }
+
+    func createCallTap(of processes: [AudioObjectID]) throws -> (id: AudioObjectID, uid: String) {
+        let description = CATapDescription(stereoMixdownOfProcesses: processes)
+        description.name = SystemAudioTap.deviceName
+        description.isPrivate = true
+        description.muteBehavior = .unmuted
+        var tap = AudioObjectID(kAudioObjectUnknown)
+        let status = AudioHardwareCreateProcessTap(description, &tap)
+        guard status == noErr, tap != AudioObjectID(kAudioObjectUnknown) else { throw SystemAudioTapError("Creating the call tap", status) }
+        guard let uid = CoreAudioTapHardware.string(tap, kAudioTapPropertyUID) else {
+            _ = AudioHardwareDestroyProcessTap(tap)
+            throw SystemAudioTapError("Reading the call tap's UID")
         }
         return (tap, uid)
     }

@@ -185,7 +185,7 @@ struct AudioSettings: View {
                     RowLabel("Mix Microphone into the Main Track", "After a recording, system audio and microphone are mixed into one audio track, which every player plays; an audio-only recording gets the mix as a file next to its .qma package. Off: a video keeps system audio and microphone as two audio tracks, and an audio-only recording is only its .qma package, which plays in Holdfast.")
                 }
                 Toggle(isOn: $keepUnmixed) {
-                    RowLabel("Keep the Unmixed Recording", "After a video recording, the recording as it was written stays next to the final file as \"<name> (unmixed, N audio tracks)\": system audio and microphone, and with the process tap also screen capture's system audio, recorded as its backup. After a sound-only recording with the process tap, its two system audio files stay next to the one made from them. The .qma package of an audio-only recording is always kept.")
+                    RowLabel("Keep the Unmixed Recording", "After a video recording, the recording as it was written stays next to the final file as \"<name> (unmixed, N audio tracks)\": system audio and microphone, and with the process tap also screen capture's system audio, recorded as its backup, and the call tap's track. After a sound-only recording with the process tap, its system audio files stay next to the one made from them. The .qma package of an audio-only recording is always kept.")
                 }
             }
             Section("Loudness") {

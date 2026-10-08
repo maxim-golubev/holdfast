@@ -84,8 +84,9 @@ final class RecordingRecovery {
             } else {
                 lines.append(await recover(leftover, audioSettings: audioSettings[leftover.ending] ?? [:], separateMicrophone: separateMicrophone, levelVoices: levelVoices, progress: progress))
             }
-            // Its final names are given: the tap's spans next to it have served
+            // Its final names are given: the taps' spans next to it have served
             RecordingFileStore.removeTapSpans(RecordingFileStore.tapSpansURL(base: leftover.base))
+            RecordingFileStore.removeTapSpans(RecordingFileStore.callSpansURL(base: leftover.base))
         }
         return lines
     }
@@ -151,7 +152,7 @@ final class RecordingRecovery {
     /// - Never closed: it plays up to its last seconds. Mix `X (recovered)`, recording `X (recovered, unmixed, N audio tracks)`.
     /// - The mix fails: recording `X (unmixed, N audio tracks)` when complete, `X (recovered)` when not.
     /// A recording made with the process tap is mixed by the tap's spans it left next to it (`TapSpans`), like
-    /// after a stop.
+    /// after a stop, with the call tap's audio where the tap was not the source.
     nonisolated static func recover(_ leftover: RecordingFileStore.Leftover, audioSettings: [String: Any], separateMicrophone: Bool = false,
                                     levelVoices: Bool = false, progress: @escaping (Double) -> Void) async -> String {
         let raw = leftover.url
@@ -167,13 +168,13 @@ final class RecordingRecovery {
             : unfinished(seconds)
         let tracks = max(2, info.audioTracks)
         let separate = tracks > 2
-            ? "It plays, with its \(tracks) audio tracks as they were recorded (system audio from the process tap, its backup from screen capture, the microphone); many players only play the first."
+            ? "It plays, with its \(tracks) audio tracks as they were recorded (system audio from the process tap, its backup from screen capture, \(tracks > 3 ? "call audio from the call tap, " : "")the microphone); many players only play the first."
             : "It plays, with system audio and microphone as two separate audio tracks (many players only play the first, which is system audio)."
         let mixURL = RecordingFileStore.temporaryURL(base: base, marker: RecordingFileStore.mixMarker, ending: ending)
         let final = RecordingFileStore.freeURL(base: base, label: RecoveryNames.mix(complete: complete), ending: ending)
         var failure: String?
         if !info.mixable {
-            failure = "It does not have one video and two or three audio tracks."
+            failure = "It does not have one video and two to four audio tracks."
         } else if FileManager.default.fileExists(atPath: mixURL.path) {
             // What the interrupted mix wrote could not be moved away; it is not overwritten
             failure = "The file of the interrupted mix is in the way."

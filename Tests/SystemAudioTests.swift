@@ -34,6 +34,10 @@ final class FakeTapHardware: TapHardware {
     private(set) var aggregateTap: String?
     private(set) var watchers = [() -> Void]()
     private(set) var watchedObjects = [AudioObjectID]()
+    private var watcherQueues = [DispatchQueue]()
+    /// The audio process objects of the process that plays calls, and what the call taps were made of
+    var callObjects = [AudioObjectID]()
+    private(set) var tappedProcesses = [[AudioObjectID]]()
     /// The listeners that are installed, by the token each was given, and removals of one that was not
     private(set) var watching = Set<UInt>()
     private(set) var strayUnwatches = 0
@@ -51,6 +55,18 @@ final class FakeTapHardware: TapHardware {
 
     /// What the listeners hear when a watched property changes
     func notifyWatchers() { watchers.forEach { $0() } }
+
+    /// The list of audio process objects changed: its listeners hear of it on their queues, as Core Audio's do
+    func notifyProcessList() {
+        for (index, object) in watchedObjects.enumerated() where object == CoreAudioTapHardware.system { watcherQueues[index].async(execute: watchers[index]) }
+    }
+
+    func callProcessObjects() -> [AudioObjectID] { callObjects }
+    func createCallTap(of processes: [AudioObjectID]) throws -> (id: AudioObjectID, uid: String) {
+        try step("createCallTap")
+        tappedProcesses.append(processes)
+        return (101, "call-tap-uid")
+    }
 
     func ownProcessObject() -> AudioObjectID? { own }
     func defaultOutputDevice() throws -> TapOutputDevice {
@@ -99,6 +115,7 @@ final class FakeTapHardware: TapHardware {
         journal.note("watch")
         watchers.append(changed)
         watchedObjects.append(object)
+        watcherQueues.append(queue)
         tokens += 1
         watching.insert(tokens)
         return TapListener(object: object, token: tokens)

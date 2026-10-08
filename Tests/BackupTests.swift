@@ -91,9 +91,10 @@ func runs(_ marks: [Character]) -> [(start: Double, source: Character)] {
 
 /// A recording made with the process tap through the real writer: video, the tap (440 Hz), its backup (1000 Hz),
 /// a quiet microphone (3000 Hz), a tenth of a second at a time, with the monitor's fills. The tap delivers nothing
-/// where `tapDead` says.
+/// where `tapDead` says. The call tap delivers 2000 Hz where `call` says, and nothing elsewhere: its track is
+/// continued with silence, like the others.
 func recordWithBackup(_ folder: String, seconds: Double, microphone: Bool = true, remux: Bool = true, tapDead: (Double) -> Bool,
-                      backupSilent: (Double) -> Bool = { _ in false }) throws -> TestRecording {
+                      backupSilent: (Double) -> Bool = { _ in false }, call: (Double) -> Bool = { _ in false }) throws -> TestRecording {
     let run = try TestRecording(folder: folder, microphone: microphone, settings: ["remuxAudio": remux, "recordWinSound": true], tap: true)
     let writer = run.writer
     try writer.prepareVideo(width: 320, height: 240)
@@ -106,6 +107,9 @@ func recordWithBackup(_ folder: String, seconds: Double, microphone: Bool = true
             writer.write(CaptureSample(kind: .audio, buffer: try toneBuffer(frequency: 440, at: t, pts: run.at(t)), pts: run.at(t)))
         }
         writer.write(CaptureSample(kind: .backupAudio, buffer: try toneBuffer(frequency: 1000, at: t, pts: run.at(t), amplitude: backupSilent(t) ? 0 : 0.2), pts: run.at(t)))
+        if call(t) {
+            writer.write(CaptureSample(kind: .callAudio, buffer: try toneBuffer(frequency: 2000, at: t, pts: run.at(t)), pts: run.at(t)))
+        }
         if microphone {
             writer.write(CaptureSample(kind: .microphone, buffer: try toneBuffer(frequency: 3000, at: t, pts: run.at(t), amplitude: 0.01, channels: 1), pts: run.at(t)))
         }
@@ -113,6 +117,7 @@ func recordWithBackup(_ folder: String, seconds: Double, microphone: Bool = true
         let target = run.at(t + 0.1 - 1)
         if CMTimeGetSeconds(CMTimeSubtract(target, writer.audioEndPTS ?? run.at(0))) >= 0.5 { writer.fillSystemAudio(upTo: target) }
         if CMTimeGetSeconds(CMTimeSubtract(target, writer.backupEndPTS ?? run.at(0))) >= 0.5 { writer.fillBackupAudio(upTo: target) }
+        if CMTimeGetSeconds(CMTimeSubtract(target, writer.callEndPTS ?? run.at(0))) >= 0.5 { writer.fillCallAudio(upTo: target) }
         usleep(15_000)
         step += 1
     }
@@ -174,32 +179,45 @@ func backupTests() async {
         expect(zip(gains, gains.dropFirst()).allSatisfy { $0 >= $1 }, "going down smoothly")
     }
 
-    await test("backup: the writer records the tap, its backup and the microphone as three titled tracks, and the tap's spans") {
-        let run = try recordWithBackup("backup-writer", seconds: 4, tapDead: { $0 >= 1.5 && $0 < 2.5 })
+    await test("backup: the writer records the tap, its backup, the call tap and the microphone as four titled tracks, and the taps' spans") {
+        let run = try recordWithBackup("backup-writer", seconds: 4, tapDead: { $0 >= 1.5 && $0 < 2.5 }, call: { $0 >= 2 && $0 < 3 })
         let spansURL = try require(run.recording.tapSpansURL, "spans file")
+        let callSpansURL = try require(run.recording.callSpansURL, "the call tap's spans file")
         expect(FileManager.default.fileExists(atPath: spansURL.path), "written next to the recording while it runs")
+        expect(FileManager.default.fileExists(atPath: callSpansURL.path), "and the call tap's")
         _ = try await run.close()
         expect(run.failures.isEmpty, "no failure: \(run.failures)")
         let asset = AVURLAsset(url: run.recording.rawURL)
         let audio = try await asset.loadTracks(withMediaType: .audio).sorted { $0.trackID < $1.trackID }
         var titles = [String?]()
         for track in audio { titles.append(try await RecordingMixer.title(of: track)) }
-        expectEqual(titles, ["System audio (tap)", "System audio (backup)", "Microphone"], "titled")
+        expectEqual(titles, ["System audio (tap)", "System audio (backup)", "Call audio (second tap)", "Microphone"], "titled")
         let tracks = try await TestRecording.tracks(of: run.recording.rawURL)
-        for (name, track) in zip(["tap", "backup", "microphone"], tracks.audio) {
-            expectClose(track.end, 4, within: 0.25, "the \(name) track is as long as the recording")
+        expectEqual(tracks.audio.count, 4, "four audio tracks")
+        for (name, track) in zip(["tap", "backup", "call tap", "microphone"], tracks.audio) {
+            // The call tap's track is continued up to a second behind, like every track without a source
+            expectClose(track.end, 4, within: name == "call tap" ? 1.05 : 0.25, "the \(name) track is as long as the recording")
         }
+        // The call tap's track: its tone where it delivered, silence elsewhere, and its spans say where
+        let callTone = try toneStrengths(run.recording.rawURL, track: 2, frequencies: [2000])[0]
+        expect(callTone[210..<290].allSatisfy { $0 > 0.05 }, "the call tap's audio is in its track from 2 s to 3 s")
+        expect(callTone[20..<190].allSatisfy { $0 < 0.001 }, "and silence before it")
+        let callSpans = try require(TapSpans.read(callSpansURL), "the call tap's spans")
+        expectEqual(callSpans.spans.count, 1, "one stretch: \(callSpans.spans)")
+        expectClose(callSpans.spans.first?.start ?? 0, 2, within: 0.001, "from 2 s")
+        expectClose(callSpans.spans.first?.end ?? 0, 3, within: 0.001, "to 3 s")
         let spans = try require(TapSpans.read(spansURL), "spans")
         expectEqual(spans.spans.count, 2, "two stretches: \(spans.spans)")
         expectClose(spans.spans.first?.end ?? 0, 1.5, within: 0.001, "the tap stopped at 1.5 s")
         expectClose(spans.spans.last?.start ?? 0, 2.5, within: 0.001, "and was back at 2.5 s")
         expectClose(spans.spans.last?.end ?? 0, 4, within: 0.001, "until the end")
-        expectEqual(run.recording.unmixedURL?.lastPathComponent.hasSuffix(" (unmixed, 3 audio tracks).mp4"), true, "named for its three tracks")
+        expectEqual(run.recording.unmixedURL?.lastPathComponent.hasSuffix(" (unmixed, 4 audio tracks).mp4"), true, "named for its four tracks")
         // A start that fails leaves no spans behind
         let failed = try TestRecording(folder: "backup-cancel", settings: ["remuxAudio": true, "recordWinSound": true], tap: true)
         try failed.writer.prepareVideo(width: 320, height: 240)
         failed.writer.cancel()
         expect(!FileManager.default.fileExists(atPath: failed.recording.tapSpansURL?.path ?? ""), "removed with the empty file")
+        expect(!FileManager.default.fileExists(atPath: failed.recording.callSpansURL?.path ?? ""), "and the call tap's")
     }
 
     await test("backup: today's meeting, the tap dying at 27 s and repaired at 28 s: the mix is the backup there and the tap elsewhere, to 0.02 s") {
@@ -357,13 +375,15 @@ func backupTests() async {
         }
         let spansCopy = RecordingFileStore.tapSpansURL(base: folder.appendingPathComponent("Recording at K").path)
         try FileManager.default.copyItem(at: try require(run.recording.tapSpansURL, "spans"), to: spansCopy)
+        let callSpansCopy = RecordingFileStore.callSpansURL(base: folder.appendingPathComponent("Recording at K").path)
+        try FileManager.default.copyItem(at: try require(run.recording.callSpansURL, "the call tap's spans"), to: callSpansCopy)
         _ = try await run.close()
         expect(copied, "a fragment reached the disk")
         let inspection = await RecordingMixer.inspect(snapshot)
-        expect(inspection.mixable && inspection.audioTracks == 3, "three audio tracks, mixable")
+        expect(inspection.mixable && inspection.audioTracks == 4, "four audio tracks, mixable")
         let lines = await RecordingRecovery.recover(RecordingFileStore(directory: folder.path).leftovers(), audioSettings: ["mp4": TestMovie.aac]) { _ in }
         expectEqual(Set(try FileManager.default.contentsOfDirectory(atPath: folder.path)),
-                    ["Recording at K (recovered).mp4", "Recording at K (recovered, unmixed, 3 audio tracks).mp4"], "the folder afterwards, without the spans")
+                    ["Recording at K (recovered).mp4", "Recording at K (recovered, unmixed, 4 audio tracks).mp4"], "the folder afterwards, without either tap's spans")
         expect(lines.count == 1 && lines[0].contains("mixed now"), "the report: \(lines)")
         let found = runs(sources(try toneStrengths(folder.appendingPathComponent("Recording at K (recovered).mp4"), frequencies: [440, 1000])))
         // A file cut off by the kill ends each track where its last fragment did: past the tap's end the backup has it
@@ -378,25 +398,31 @@ func backupTests() async {
         let base = "/save/Recording at X"
         let video = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .aac, systemAudioBackup: true)
         expectEqual(video.rawURL.lastPathComponent, "Recording at X.recording.mp4", "written under the temporary name")
-        expectEqual(video.unmixedURL?.lastPathComponent, "Recording at X (unmixed, 3 audio tracks).mp4", "three tracks as written")
+        expectEqual(video.unmixedURL?.lastPathComponent, "Recording at X (unmixed, 4 audio tracks).mp4", "four tracks as written")
         expectEqual(video.tapSpansURL?.lastPathComponent, "Recording at X.tap-alive.txt", "the tap's spans next to it")
-        expectEqual(video.audioTracks, 3, "tap, backup, microphone")
+        expectEqual(video.callSpansURL?.lastPathComponent, "Recording at X.call-alive.txt", "and the call tap's")
+        expectEqual(video.audioTracks, 4, "tap, backup, call tap, microphone")
         expect(!video.separatesMicrophone, "the microphone mixed in")
         let noMic = RecordingFiles(base: base, audioOnly: false, recordMic: false, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .aac, systemAudioBackup: true)
         expect(noMic.mixURL != nil, "without a microphone the system audio is still brought to one track")
-        expectEqual(noMic.unmixedURL?.lastPathComponent, "Recording at X (unmixed, 2 audio tracks).mp4", "two tracks: the tap and its backup")
+        expectEqual(noMic.unmixedURL?.lastPathComponent, "Recording at X (unmixed, 3 audio tracks).mp4", "three tracks: the tap, its backup and the call tap")
         let apart = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: false, videoEnding: "mov", audioFormat: .aac, systemAudioBackup: true)
         expect(apart.mixURL != nil && apart.separatesMicrophone, "with the microphone apart too")
         let plain = RecordingFiles(base: base, audioOnly: false, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .aac)
-        expect(plain.tapSpansURL == nil && plain.audioTracks == 2, "without the tap: no spans, two tracks")
+        expect(plain.tapSpansURL == nil && plain.callSpansURL == nil && plain.audioTracks == 2, "without the tap: no spans, two tracks")
         let package = RecordingFiles(base: base, audioOnly: true, recordMic: true, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .flac, systemAudioBackup: true)
         expectEqual(package.backupAudioURL?.path, base + ".recording.qma/sys-backup.caf", "the backup in the package")
         expectEqual(package.backupClosedURL?.path, base + ".qma/sys-backup.caf", "where it is once closed")
         expectEqual(package.tapKeptURL?.path, base + ".qma/sys-tap.caf", "and the tap's own file when it is kept")
+        expectEqual(package.callAudioURL?.path, base + ".recording.qma/sys-call.caf", "the call tap's file in the package")
+        expectEqual(package.callClosedURL?.path, base + ".qma/sys-call.caf", "where it is once closed")
         let single = RecordingFiles(base: base, audioOnly: true, recordMic: false, systemAudio: true, remuxAudio: true, videoEnding: "mp4", audioFormat: .aac, systemAudioBackup: true)
         expectEqual(single.backupAudioURL?.lastPathComponent, "Recording at X (system audio backup).recording.m4a", "a file of its own, under a temporary name")
         expectEqual(single.backupClosedURL?.lastPathComponent, "Recording at X (system audio backup).m4a", "renamed once closed")
         expectEqual(single.tapKeptURL?.lastPathComponent, "Recording at X (system audio tap).m4a", "the tap's own file when kept")
+        expectEqual(single.callAudioURL?.lastPathComponent, "Recording at X (call audio).recording.m4a", "the call tap's file, under a temporary name")
+        expectEqual(single.callClosedURL?.lastPathComponent, "Recording at X (call audio).m4a", "renamed once closed")
+        expectEqual(RecoveryNames.recording(complete: false, mixed: true, tracks: 4), "recovered, unmixed, 4 audio tracks", "with the call tap's track")
         expectEqual(RecoveryNames.recording(complete: false, mixed: true, tracks: 3), "recovered, unmixed, 3 audio tracks", "recovery counts the tracks")
         expectEqual(RecoveryNames.unmixed, "unmixed, 2 audio tracks", "as before for two")
     }
