@@ -190,7 +190,7 @@ struct AudioSettings: View {
             }
             Section("Loudness") {
                 Toggle(isOn: $levelVoices) {
-                    RowLabel("Level Voices", "In the mixed file of a video recording, the other side of the call and your microphone are each brought to the same loudness, the one spoken content is usually played at, and a limiter keeps the sum from clipping. The unmixed recording keeps every track as it was recorded.")
+                    RowLabel("Level Voices", "In the mixed file of a recording, video or audio-only, the other side of the call and your microphone are each brought to the same loudness, the one spoken content is usually played at, and a limiter keeps the sum from clipping. A .qma package plays in Holdfast at the same balance. The unmixed recording and the package's files keep everything as it was recorded.")
                 }
             }
             Section("Encoding") {

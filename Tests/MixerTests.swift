@@ -303,7 +303,7 @@ func mixerTests() async {
             let system = try TestMovie.writeAudio(to: folder.appendingPathComponent("sys.\(ending)"), seconds: 6, settings: settings, loudness: packageSystem)
             let microphone = try TestMovie.writeAudio(to: folder.appendingPathComponent("mic.\(ending)"), seconds: 6.5, settings: settings, loudness: packageMicrophone)
             let output = folder.appendingPathComponent("mix.\(format.fileEnding)")
-            try RecordingMixer.mixPackage(system: system, microphone: microphone, volumes: (1, 0.5), to: output, settings: settings)
+            try await RecordingMixer.mixPackage(system: system, microphone: microphone, volumes: (1, 0.5), to: output, settings: settings)
             expectEqual(try container(of: output), output.pathExtension, "\(format): the container of the mix")
             let file = try AVAudioFile(forReading: output)
             expectClose(Double(file.length) / file.processingFormat.sampleRate, 6.5, within: 0.05, "as long as the longer file")

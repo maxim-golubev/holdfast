@@ -137,6 +137,9 @@ extension RecorderController {
         // No name of a recording that is still being saved, whatever files it has at this moment
         let recording = RecordingContext(audioOnly: audioOnly, recordMic: microphone != nil, fastStart: fastStart, saveDirectory: store.directory, tap: tap,
                                          reserved: basesInUse)
+        // Where launch recovery looks for this recording if it is interrupted, also once the save folder is another
+        let folders = RecordingFolders.remembering(recording.saveDirectory, in: AppSettings.recordingFolders)
+        if folders != AppSettings.recordingFolders { AppSettings.recordingFolders = folders }
         let writer = MovieWriter(recording: recording, micConverter: microphone?.converter)
         session.install(writer)
         if recording.audioOnly {

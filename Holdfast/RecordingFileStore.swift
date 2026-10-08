@@ -215,9 +215,15 @@ struct RecordingFileStore {
     /// ending is someone else's and is left alone. Only call this when no recording is running or being finished, in
     /// this or in another instance of the app: until then such a file is not a leftover.
     func leftovers() -> [Leftover] {
+        return leftoversIfReadable() ?? []
+    }
+
+    /// `leftovers()`, or nil when the folder cannot be listed: it is gone, it is no folder, or reading it is not
+    /// allowed. Then nothing is known about what it holds.
+    func leftoversIfReadable() -> [Leftover]? {
         let folder = URL(fileURLWithPath: directory, isDirectory: true)
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isDirectoryKey]
-        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys)) else { return [] }
+        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys)) else { return nil }
         return files.sorted { $0.path < $1.path }.compactMap { url in
             let ending = url.pathExtension
             let isPackage = ending.lowercased() == RecordingFileStore.packageEnding
@@ -266,6 +272,44 @@ struct RecordingFileStore {
     /// determined.
     static func hasRoomForCopy(of url: URL, in folder: URL? = nil) -> Bool {
         return DiskSpace.hasRoomForCopy(of: url, in: folder)
+    }
+}
+
+/// The folders recordings were written to, as the settings remember them (`AppSettings.recordingFolders`) so that
+/// launch recovery also finds what was interrupted in a folder that is no longer the save folder. Most recent
+/// first, a few at most; a folder leaves the list when a launch finds it gone or without leftovers.
+enum RecordingFolders {
+    /// How many folders are remembered: the save folder is seldom changed, and each one is listed at every launch
+    static let limit = 8
+
+    /// A folder's path as it is compared and stored
+    static func standard(_ folder: String) -> String {
+        return (folder as NSString).standardizingPath
+    }
+
+    /// `list` with `folder` first, once, and no longer than `limit`: the folders written to longest ago go
+    static func remembering(_ folder: String, in list: [String]) -> [String] {
+        let path = standard(folder)
+        guard !path.isEmpty else { return list }
+        var seen: Set<String> = [path]
+        let others = list.map(standard).filter { !$0.isEmpty && seen.insert($0).inserted }
+        return Array(([path] + others).prefix(limit))
+    }
+
+    /// `list` without `folders`, except those among `keeping`: the folders of recordings that are not final yet,
+    /// which a crash from here on would leave leftovers in
+    static func forgetting(_ folders: [String], in list: [String], keeping: Set<String> = []) -> [String] {
+        let kept = Set(keeping.map(standard))
+        let gone = Set(folders.map(standard)).subtracting(kept)
+        return list.filter { !gone.contains(standard($0)) }
+    }
+
+    /// Whether `folder` is on a volume that is not there now (an external disk that is not connected, a network
+    /// share that is not mounted): it is not gone for good, and what it holds cannot be known
+    static func volumeIsAway(_ folder: String, exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> Bool {
+        let parts = (standard(folder) as NSString).pathComponents
+        guard parts.count >= 3, parts[0] == "/", parts[1] == "Volumes" else { return false }
+        return !exists("/Volumes/" + parts[2])
     }
 }
 

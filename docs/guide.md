@@ -226,8 +226,8 @@ then keeps the sum at or below -1 dBFS without moving the sound against the
 picture. Only the mixed file is changed: the unmixed file keeps every track as
 it was recorded, and with the setting off the mix is the plain sum of the
 tracks. A video whose microphone stays a track of its own (**Mix Microphone
-into the Main Track** off) and the mix of an audio-only recording are not
-leveled.
+into the Main Track** off) is not leveled. The mix of a sound-only recording
+is leveled the same way (see **Sound only** below).
 
 The mix is checked before anything is
 renamed: one video and one audio track, the same length as the recording to
@@ -242,10 +242,16 @@ microphone as two audio tracks; one with the tap is finished the same way,
 with its system audio made one track from the tap and the backup, and the
 microphone as the second.
 
-**Recovered files.** At launch, Holdfast looks in the current save folder for
-files an earlier run left under a `.recording.` or `.mixing.` name, gives each
-a name that says what it is, and lists them in one **Recording Recovered**
-report. No recording is deleted.
+**Recovered files.** At launch, Holdfast looks for files an earlier run left
+under a `.recording.` or `.mixing.` name, gives each a name that says what it
+is, and lists them in one **Recording Recovered** report, folder by folder. No
+recording is deleted. It looks in the save folder and in every folder it has
+recorded to before that may still hold such a file, so a recording
+interrupted before you chose another save folder is found too. It remembers
+up to eight such folders and forgets one once a launch finds it gone or
+without unfinished files. A folder it cannot read, or one on a disk that is
+not connected, is passed over without a message and looked into again at the
+next launch.
 
 - A recording that was never closed (a crash, a kill, a power loss) plays,
   missing up to about its last 12 seconds. Its mix becomes
@@ -266,7 +272,16 @@ meanwhile.
 AAC format, as set under **Settings → Audio → Format**). With the microphone it
 writes a `.qma` package, which holds system audio and microphone as two files
 and opens in Holdfast's player, and with **Mix Microphone into the Main Track**
-on, a mixed audio file next to it. With the process tap, the backup of the
+on, a mixed audio file next to it. With **Level Voices** on, that mixed file
+is leveled like the mix of a video: each of the two files gets one gain
+towards -16 LUFS and a limiter holds the sum at -1 dBFS; the package's own
+files stay as they were recorded. The player plays a package at the same
+gains (it measures the two files when the package opens, which takes a few
+seconds for a long recording, and uses the gains from the next pause, stop or
+change of position if it is playing by then; it has no limiter). Its two
+volume sliders, 0 to 400 %, come on top of the gains, and **Export** writes
+what the sliders are set to: leveled and limited with Level Voices on, the
+plain sum at those volumes with it off. With the process tap, the backup of the
 system audio and the call tap's audio are written too (`… (system audio
 backup).m4a` and `… (call audio).m4a` next to the file, or `sys-backup` and
 `sys-call` in the package), and once the recording is closed its system audio
@@ -286,7 +301,8 @@ deleted. If that fails,
   Microphone into the Main Track** (on) and **Keep the Unmixed Recording** (on),
   which keeps the recording as it was written, every audio track separate.
   **Level Voices** (on) brings the other side of the call and your microphone
-  to the same loudness in the mixed file.
+  to the same loudness in the mixed file, of a video and of a sound-only
+  recording alike.
 - **Recording:** **Keep the Mac Awake While Recording** (on). The video
   defaults are chosen for long meetings: MP4, H.265 on Apple Silicon, medium
   quality, 30 frames a second, the display's full resolution. H.264 plays on
@@ -460,7 +476,6 @@ After a meeting, that summary says whether anything went missing.
   recording resumes.
 - In a sound-only recording, the system audio file, and a FLAC or Opus
   microphone file, are not written in fragments and do not survive a crash.
-- Only the current save folder is searched for interrupted recordings.
 - If macOS never answers the start of a capture, the item stays at
   **Starting**: a stop is remembered, quitting waits, and only Force Quit ends
   it.

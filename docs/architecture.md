@@ -57,13 +57,15 @@ Holdfast/
   Loudness.swift            Pure: LoudnessMeter (ITU-R BS.1770 integrated loudness, streaming), VoiceLeveling (the
                             gain of each side for "Level Voices") and PeakLimiter (look-ahead, true-peak, -1 dBFS).
   RecordingFileStore.swift  The save folder: names, temporary markers, leftovers of an earlier run, the disk guard;
-                            RecordingFiles; QmaInfo (a .qma package's info.json); RecoveryNames.
+                            RecordingFiles; RecordingFolders (the folders recorded to, for recovery); QmaInfo (a .qma
+                            package's info.json); RecoveryNames.
   RecordingSaver.swift      After the stop (@MainActor): close the file, mix or convert, tell the user where it is.
   RecordingMixer.swift      The audio mix in one pass (its own: TrackPCM, MixedAudio), its checks (verify,
                             verifyConversion, checkTiming), the merge of a sound-only recording's system audio
                             files, the .qma package mix, and inspect() for leftovers.
-  RecordingRecovery.swift   At launch: every file an earlier run left under a temporary name gets a name that says
-                            what it is, and a recording that opens gets its mix.
+  RecordingRecovery.swift   At launch: every file an earlier run left under a temporary name, in the save folder or
+                            a folder recorded to before, gets a name that says what it is, and a recording that opens
+                            gets its mix.
   MicDevices.swift          MicSelection (the chosen device) and MicDevices (follows device changes mid-recording).
   StatusDisplay.swift       Pure table from the recorder's state to the status item's symbol, title and sentence.
   AppSettings.swift         Every setting, one line each, the only code that touches UserDefaults.
@@ -821,10 +823,9 @@ and the result is checked), then:
   Its output is 245 frames behind its input; `MixedAudio` leaves the first
   245 frames it returns out and feeds it 245 frames of silence at the end, so
   the audio is where it was against the picture. Not leveled: a mix with the
-  microphone kept as a track of its own (it is copied, not decoded), the
-  `.qma` package mix (`AVAudioEngine` player volumes end at 1, so a gain
-  above it would need another mix) and the unmixed file. With the setting off
-  none of this runs and the mix is the plain sum. The log has "Level Voices:
+  microphone kept as a track of its own (it is copied, not decoded) and the
+  unmixed file. With the setting off none of this runs and the mix is the
+  plain sum. The mix of a `.qma` package is leveled by the same code (below). The log has "Level Voices:
   system audio -26.4 LUFS, +10.4 dB; microphone -14.5 LUFS, -1.5 dB; the
   limiter took off 2.3 dB at most".
 - **The check.** `verify` runs before any rename: one video and one audio
@@ -864,7 +865,34 @@ file's name; the sources are kept beside it with "Keep the Unmixed
 Recording" (`sys-tap.<ext>`, `<name> (system audio tap).<ext>`) and deleted
 otherwise. A call tap's file that is missing or does not open is left out of
 the merge and never fails it. A merge that fails leaves the files as they are and is reported
-("System Audio Not Merged"). Every file made from a recording (a mix, an MP3, a `.qma`
+("System Audio Not Merged").
+
+The mix of a `.qma` package (`RecordingMixer.mixPackage`, after a recording
+and for the player's Export) is the sum the mix of a video makes: each of the
+two files is read as 48 kHz stereo by an `AVAssetReader` of its own into a
+`TrackPCM`, and `MixedAudio` adds them up, each at its volume
+(`MixedAudio.Part.scale`), to the end of the longer file, in pieces of 4096
+frames written with `AVAudioFile`. With Level Voices (the recording's setting
+after a recording, the setting as it was when the package was opened for an
+export) each file is first measured over its whole length as it was recorded
+(`leveling(of:)`, the same meters and `VoiceLeveling.gain`), its scale is its
+gain times its volume, and the sum goes through the same `PeakLimiter`.
+Without it the result is what the earlier mix gave, an `AVAudioEngine`
+rendering offline with a player node for each file: the tests keep that
+engine mix and compare. From 32 bit float files the two are equal sample for
+sample at the volumes 1, 0.5, 2, 4 and 0.25, and at 0.3 and 0.7 differ by
+rounding in about one sample in twenty (1.5e-8 at most); from ALAC, FLAC and
+Opus files they are equal sample for sample, and from AAC files they differ
+by 1.2e-7 at most, because the two readers do not decode AAC to the same last
+bit. The engine's player volume does not end at 1, as an earlier version of
+this document said: at 2 and 4 its output is the file times 2 and 4. The
+player (`AudioPlayerManager`) still plays through its own engine, with each
+player node at the slider's volume times the file's Level Voices gain
+(`RecordingMixer.packageLeveling`, measured off the main thread when the
+package opens; gains that arrive during playback are used from the next
+pause, stop or seek) and without a limiter.
+
+Every file made from a recording (a mix, an MP3, a `.qma`
 export) is written under a `.mixing.` name, checked (it opens, and its length
 matches to within 1 s; a package mix also has its first 30 s compared with its
 sources in 10 ms steps, which catches a mix that starts late), and only then
@@ -882,9 +910,22 @@ still running or left by a crash; `<name>.mixing.<ext>` is a mix in progress or
 interrupted. Neither is ever a final name, and the real extension stays last,
 so a leftover is both findable and openable.
 
-At launch, `RecordingRecovery` takes the files in the current save folder that
-start with "Recording at " and carry a marker, unless another copy of the app
-is running (they could be its recording):
+At launch, `RecordingRecovery` takes the files that start with "Recording at "
+and carry a marker, unless another copy of the app is running (they could be
+its recording). It looks in the save folder and in the folders recordings were
+written to before: every start puts its folder first in
+`AppSettings.recordingFolders` (`RecordingFolders.remembering`: each folder
+once, by its standardized path, eight at most). `RecordingRecovery.search`
+lists each folder once, the save folder first. A remembered folder that is
+gone, is a file, or holds no leftovers is taken off the list
+(`RecordingFolders.forgetting`), and so is one whose leftovers the recovery
+has renamed; one that cannot be listed, or that is missing because its volume
+under `/Volumes` is not mounted, is passed over silently and stays on the
+list, and so does one in which a leftover could not be renamed. A folder in
+which a recording that is not final yet is being written is not taken off
+either. The folders are listed on the main thread at launch, before a
+recording can start: a file under a temporary name is a leftover only while
+nothing is recording.
 
 | Found | Becomes |
 | --- | --- |
@@ -906,7 +947,7 @@ and runs in the tests against real files. It deletes nothing but its own failed
 mix, uses the current audio settings (those of the lost run are not known),
 holds its own sleep assertion, and is not a recording state: a new recording
 may start while it runs. Quitting waits for it. One "Recording Recovered"
-report lists every file.
+report lists every file, under the folder it was found in.
 
 ## Quitting
 
@@ -1030,6 +1071,7 @@ written, and the log is kept in memory.
 | Room for a copy | `DiskSpace.copyReserve` | 500 MB to spare; 2 GB while a recording is starting or running |
 | Tap or backup | `SystemAudioChoice` | the tap wherever its spans say it delivered; the backup elsewhere, and where the tap's track is digital silence (below -100 dBFS) for 2 s or more while the backup or the call tap has signal (above -70 dBFS) more than 0.3 s inside it; less than 0.25 s at an end of the recording stays the tap's; 5 ms crossfade; the call tap's audio added to the backup's in every stretch not the tap's in which it has signal |
 | Tap against backup | `SystemAudioAlignment` | up to 16 windows of 1 s, searched 0.3 s either way; likeness 0.5, no rival peak at 0.9 of the best; accepted up to 250 ms; at least 3 windows and two in three within 5 ms of the median |
+| Recovery folders | `RecordingFolders.limit` | 8 remembered, most recent first |
 | Quit wait | `applicationWillTerminate` | 30 s |
 | Track format | `MicConverter.sampleRate`, `CaptureSource`, `SystemAudioConverter` | 48 kHz stereo |
 

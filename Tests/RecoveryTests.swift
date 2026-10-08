@@ -97,6 +97,91 @@ func recoveryTests() async {
         expect(lines.count == 1 && lines[0].contains("not finished") && lines[0].contains("mixed now"), "the report: \(lines)")
     }
 
+    await test("Recovery: the folders recorded to are remembered most recent first, a few at most") {
+        var list = [String]()
+        for name in ["/Users/me/Desktop", "/Users/me/Movies/", "/Users/me/Desktop", "/Volumes/Disk/Meetings/../Meetings"] {
+            list = RecordingFolders.remembering(name, in: list)
+        }
+        expectEqual(list, ["/Volumes/Disk/Meetings", "/Users/me/Desktop", "/Users/me/Movies"], "each once, the last one written to first")
+        expectEqual(RecordingFolders.remembering("", in: list), list, "no folder, nothing remembered")
+        var many = list
+        for number in 1...20 { many = RecordingFolders.remembering("/Users/me/Folder \(number)", in: many) }
+        expectEqual(many.count, RecordingFolders.limit, "never more than the limit")
+        expectEqual(many.first, "/Users/me/Folder 20", "the newest first")
+        expect(!many.contains("/Users/me/Desktop"), "the ones written to longest ago go")
+        expectEqual(RecordingFolders.forgetting(["/Users/me/Desktop/", "/Users/me/Elsewhere"], in: list), ["/Volumes/Disk/Meetings", "/Users/me/Movies"], "forgotten by its path")
+        expectEqual(RecordingFolders.forgetting(list, in: list, keeping: ["/Users/me/Movies/"]), ["/Users/me/Movies"], "but not while a recording is being written there")
+        expect(RecordingFolders.volumeIsAway("/Volumes/Disk/Meetings") { _ in false }, "a folder on a disk that is not connected")
+        expect(!RecordingFolders.volumeIsAway("/Volumes/Disk/Meetings") { $0 == "/Volumes/Disk" }, "a folder that is gone from a disk that is there")
+        expect(!RecordingFolders.volumeIsAway("/Users/me/Desktop") { _ in false }, "a folder on the startup disk")
+    }
+
+    await test("Recovery: every folder recorded to is searched; one that is gone or clean is forgotten, one that cannot be read is passed over") {
+        let root = try Suite.folder("recovery-folders")
+        func folder(_ name: String) throws -> URL {
+            let url = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+        let current = try folder("current"), earlier = try folder("earlier"), clean = try folder("clean"), locked = try folder("locked")
+        let gone = root.appendingPathComponent("gone"), file = root.appendingPathComponent("a file")
+        try Data("not a folder".utf8).write(to: file)
+        let garbage = Data(repeating: 7, count: 5000)
+        try await TestMovie.write(to: current.appendingPathComponent("Recording at A.recording.mp4"), seconds: 2, audio: [system, microphone])
+        try await TestMovie.write(to: earlier.appendingPathComponent("Recording at B.recording.mp4"), seconds: 2, audio: [system, microphone])
+        try garbage.write(to: earlier.appendingPathComponent("Recording at C.mixing.mp4"))
+        // Not the app's: another prefix, and a final name
+        try garbage.write(to: earlier.appendingPathComponent("Meeting.recording.mp4"))
+        try garbage.write(to: clean.appendingPathComponent("Recording at D.mp4"))
+        try garbage.write(to: locked.appendingPathComponent("Recording at E.recording.mp4"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+        expect(RecordingFileStore(directory: locked.path).leftoversIfReadable() == nil, "a folder that may not be listed says nothing about its files")
+        expectEqual(RecordingFileStore(directory: locked.path).leftovers().count, 0, "and has no leftovers to take")
+
+        let away = "/Volumes/Holdfast Test Disk That Is Not Connected/Meetings"
+        let remembered = [earlier, clean, locked, gone, file, current].map { RecordingFolders.standard($0.path) } + [away]
+        let search = RecordingRecovery.search(current: current.path, remembered: remembered)
+        expectEqual(search.found.map(\.path), [current.path, RecordingFolders.standard(earlier.path)], "the folders with leftovers, the save folder first and once")
+        expectEqual(search.found.map { $0.leftovers.map { $0.url.lastPathComponent } }, [["Recording at A.recording.mp4"], ["Recording at B.recording.mp4", "Recording at C.mixing.mp4"]], "only the app's own unfinished files")
+        expectEqual(Set(search.forget), Set([clean, gone, file].map { RecordingFolders.standard($0.path) }), "forgotten: without leftovers, gone, no folder; kept: unreadable, and on a disk that is away")
+        // A save folder that was never recorded to is not in the list, and nothing is to be forgotten of it
+        expectEqual(RecordingRecovery.search(current: clean.path, remembered: []).forget, [], "nothing to forget of a folder that is not remembered")
+        expect(RecordingRecovery.search(current: gone.path, remembered: []).found.isEmpty, "a save folder that is gone has nothing")
+
+        let recovered = await RecordingRecovery.recover(folders: search.found, audioSettings: settings) { _ in }
+        expectEqual(try names(in: current), ["Recording at A.mp4", "Recording at A (unmixed, 2 audio tracks).mp4"], "the save folder afterwards")
+        expectEqual(try names(in: earlier), ["Recording at B.mp4", "Recording at B (unmixed, 2 audio tracks).mp4", "Recording at C (incomplete mix).mp4", "Meeting.recording.mp4"],
+                    "the earlier folder afterwards: its recording mixed, nothing deleted, the file of another app untouched")
+        expectEqual(recovered.cleared, [current, earlier].map { RecordingFolders.standard($0.path) }, "both hold no leftovers any more")
+        // One report: each folder named, with a paragraph about each of its files
+        let sections = recovered.message.components(separatedBy: "Found in ")
+        expectEqual(sections.count, 3, "a part for each folder: \(recovered.message)")
+        expect(sections[1].hasPrefix(current.path + " from an earlier run") && sections[1].contains("\"Recording at A.mp4\"") && !sections[1].contains("Recording at B"), "the save folder's: \(sections[1])")
+        expect(sections[2].hasPrefix(RecordingFolders.standard(earlier.path) + " from an earlier run") && sections[2].contains("\"Recording at B.mp4\"")
+               && sections[2].contains("\"Recording at C (incomplete mix).mp4\""), "the earlier folder's: \(sections[2])")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+        expectEqual(try names(in: locked), ["Recording at E.recording.mp4"], "the folder that could not be read is as it was")
+        let next = RecordingRecovery.search(current: current.path, remembered: RecordingFolders.forgetting(search.forget + recovered.cleared, in: remembered))
+        expectEqual(next.found.map(\.path), [RecordingFolders.standard(locked.path)], "and is searched again at the next launch, now that it can be read")
+        expect(next.forget.isEmpty, "the disk that is away stays remembered: \(next.forget)")
+    }
+
+    await test("Recovery: a folder whose leftover cannot be renamed stays remembered") {
+        let root = try Suite.folder("recovery-stuck")
+        let raw = root.appendingPathComponent("Recording at S.recording.m4a")
+        try Data(repeating: 7, count: 5000).write(to: raw)
+        // Listed, but nothing in it can be renamed
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path) }
+        let search = RecordingRecovery.search(current: root.path, remembered: [RecordingFolders.standard(root.path)])
+        expectEqual(search.found.count, 1, "found")
+        let recovered = await RecordingRecovery.recover(folders: search.found, audioSettings: settings) { _ in }
+        expect(recovered.message.contains("could not be renamed"), "the report says so: \(recovered.message)")
+        expect(recovered.cleared.isEmpty && search.forget.isEmpty, "the folder is looked into again at the next launch")
+        expect(FileManager.default.fileExists(atPath: raw.path), "and the file is where it was")
+    }
+
     await test("Recovery: a mix that cannot be moved away is not overwritten, and the recording is only renamed") {
         let folder = try Suite.folder("recovery-in-the-way")
         let raw = folder.appendingPathComponent("Recording at W.recording.mp4")

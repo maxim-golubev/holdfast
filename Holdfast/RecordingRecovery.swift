@@ -28,14 +28,63 @@ final class RecordingRecovery {
         if isRunning { handlers.append(handler) } else { handler() }
     }
 
+    /// A folder that holds leftovers of an earlier run, and what they are
+    struct Folder {
+        let path: String
+        let leftovers: [RecordingFileStore.Leftover]
+    }
+
+    /// What a launch finds in the folders recordings were written to
+    struct Search {
+        /// The folders that hold leftovers, the save folder first
+        var found = [Folder]()
+        /// Remembered folders that need not be looked into again: gone, or without leftovers
+        var forget = [String]()
+    }
+
+    /// Looks for leftovers in the save folder (`current`) and in the folders recordings were written to before
+    /// (`remembered`, `AppSettings.recordingFolders`), each once. A folder that is gone or holds no leftovers is to be
+    /// forgotten. One that cannot be read (not allowed, or on a volume that is not there now) is passed over without
+    /// a word and stays remembered: nothing is known about what it holds.
+    nonisolated static func search(current: String, remembered: [String]) -> Search {
+        var search = Search()
+        var seen = Set<String>()
+        let known = Set(remembered.map(RecordingFolders.standard))
+        // Each folder under the path it was given with, told apart by its standard one
+        for folder in [current] + remembered {
+            let path = RecordingFolders.standard(folder)
+            guard !path.isEmpty, seen.insert(path).inserted else { continue }
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory)
+            guard exists, isDirectory.boolValue else {
+                // Gone, or a file now; a volume that is merely not connected may come back with its leftovers
+                if known.contains(path) && (exists || !RecordingFolders.volumeIsAway(path)) { search.forget.append(path) }
+                continue
+            }
+            guard let leftovers = RecordingFileStore(directory: folder).leftoversIfReadable() else { continue }
+            if !leftovers.isEmpty {
+                search.found.append(Folder(path: folder, leftovers: leftovers))
+            } else if known.contains(path) {
+                search.forget.append(path)
+            }
+        }
+        return search
+    }
+
     /// Once at launch. A recording that was being written or mixed when the app crashed or was killed
-    /// is still in the save folder under its temporary name. Each such file gets a name that says what it is, and a
+    /// is still under its temporary name in the folder it was written to: the save folder (`directory`), or one of
+    /// those recorded to before (`remembered`). Each such file gets a name that says what it is, and a
     /// recording that opens gets the audio mix it did not get (`recover`). The user is told in one report.
-    /// Nothing is deleted. With another instance of the app running, the files may be its recording, so nothing is touched.
-    func start(in directory: String) {
+    /// Nothing is deleted. With another instance of the app running, the files may be its recording, so nothing is
+    /// touched. `forget` gets the remembered folders that hold no leftovers (any more), on the main thread: at once
+    /// those found so, and after the recovery those it cleared.
+    func start(in directory: String, remembered: [String] = [], forget: @escaping @MainActor ([String]) -> Void = { _ in }) {
         let instances = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }
         guard !isRunning, instances.count <= 1 else { return }
-        let found = RecordingFileStore(directory: directory).leftovers()
+        let search = RecordingRecovery.search(current: directory, remembered: remembered)
+        if !search.forget.isEmpty { forget(search.forget) }
+        let folders = search.found
+        let found = folders.flatMap(\.leftovers)
         guard !found.isEmpty else { return }
         // The settings such a recording was started with are not known any more, so the mix uses the current ones
         let settings = Dictionary(found.filter { !$0.isAudio }.map { ($0.ending, MovieWriter.audioSettings(videoFormat: $0.ending.lowercased())) }, uniquingKeysWith: { first, _ in first })
@@ -44,15 +93,16 @@ final class RecordingRecovery {
         // A token of its own, like every recording's (`SleepAssertion`): a recording may run meanwhile
         let activity = ProcessInfo.processInfo.beginActivity(options: .idleSystemSleepDisabled, reason: "Finishing a recording from an earlier run")
         Task.detached {
-            let lines = await RecordingRecovery.recover(found, audioSettings: settings, separateMicrophone: !AppSettings.remuxAudio, levelVoices: AppSettings.levelVoices) { fraction in
+            let recovered = await RecordingRecovery.recover(folders: folders, audioSettings: settings, separateMicrophone: !AppSettings.remuxAudio, levelVoices: AppSettings.levelVoices) { fraction in
                 DispatchQueue.main.async {
                     guard self.isRunning else { return }
                     self.progress = fraction
                     self.progressChanged()
                 }
             }
-            let message = String(format: "Found in %@ from an earlier run of Holdfast that did not end normally:", directory) + "\n\n" + lines.joined(separator: "\n\n")
+            let message = recovered.message
             await MainActor.run {
+                if !recovered.cleared.isEmpty { forget(recovered.cleared) }
                 ProcessInfo.processInfo.endActivity(activity)
                 self.isRunning = false
                 self.progress = nil
@@ -64,6 +114,22 @@ final class RecordingRecovery {
                 handlers.forEach { $0() }
             }
         }
+    }
+
+    /// Deals with the leftovers of every folder, one folder after the other (`recover`), and returns the one report
+    /// about all of them: for each folder where it is and a paragraph about each of its leftovers. `cleared` are
+    /// the folders that hold no leftovers afterwards: one whose leftover could not be renamed is looked into again
+    /// at the next launch.
+    nonisolated static func recover(folders: [Folder], audioSettings: [String: [String: Any]], separateMicrophone: Bool = false,
+                                    levelVoices: Bool = false, progress: @escaping (Double) -> Void) async -> (message: String, cleared: [String]) {
+        var sections = [String]()
+        var cleared = [String]()
+        for folder in folders {
+            let lines = await recover(folder.leftovers, audioSettings: audioSettings, separateMicrophone: separateMicrophone, levelVoices: levelVoices, progress: progress)
+            sections.append(String(format: "Found in %@ from an earlier run of Holdfast that did not end normally:", folder.path) + "\n\n" + lines.joined(separator: "\n\n"))
+            if RecordingFileStore(directory: folder.path).leftoversIfReadable()?.isEmpty == true { cleared.append(RecordingFolders.standard(folder.path)) }
+        }
+        return (sections.joined(separator: "\n\n"), cleared)
     }
 
     /// Deals with every leftover and returns one paragraph about each for the report. What an interrupted mix or

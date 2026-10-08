@@ -116,6 +116,10 @@ enum AppSettings {
     /// The folder recordings are written to
     @Setting("saveDirectory", default: NSSearchPathForDirectoriesInDomains(.desktopDirectory, .userDomainMask, true).first ?? (NSHomeDirectory() + "/Desktop"))
     static var saveDirectory: String
+    /// The folders recordings were written to and that launch recovery has not yet found free of leftovers, most
+    /// recent first (`RecordingFolders`): a recording interrupted in a folder that is no longer the save folder is
+    /// still found
+    @Setting("recordingFolders", default: []) static var recordingFolders: [String]
 
     // What is captured
     @Setting("hideSelf", default: true) static var hideSelf: Bool

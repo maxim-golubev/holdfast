@@ -322,7 +322,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
         ScreenSharingPrivacy.start()
-        withRecorder { $0.recovery.start(in: AppSettings.saveDirectory) }
+        // In the save folder and in every folder recorded to before that may still hold an interrupted recording.
+        // A folder found without one is forgotten, unless a recording that is not final yet is being written there.
+        withRecorder { recorder in
+            recorder.recovery.start(in: AppSettings.saveDirectory, remembered: AppSettings.recordingFolders) { folders in
+                let inUse = Set(RecorderController.shared.basesInUse.map { ($0 as NSString).deletingLastPathComponent })
+                let kept = RecordingFolders.forgetting(folders, in: AppSettings.recordingFolders, keeping: inUse)
+                if kept != AppSettings.recordingFolders { AppSettings.recordingFolders = kept }
+            }
+        }
         // Holdfast starts in the menu bar. Opened by the user, it shows its panel only when "Open the Panel When
         // Holdfast Opens" says so, or when it has neither a menu bar item nor a Dock icon: nothing else would show
         // that it launched (`AppSettings.opensPanelAtLaunch`). Started at login, it waits until it is wanted.

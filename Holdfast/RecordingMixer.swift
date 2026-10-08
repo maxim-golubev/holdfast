@@ -303,16 +303,22 @@ enum RecordingMixer {
             microphoneSum = sum
         }
         guard reader.startReading() else { throw reader.error ?? RecordingError("The audio cannot be read to measure its loudness.") }
+        let measured = readings(system: systemSum, microphone: microphoneSum)
+        guard reader.status == .completed else { throw reader.error ?? RecordingError("The audio cannot be read to measure its loudness.") }
+        return measured
+    }
+
+    /// The loudness of two sums read to their ends: the system audio's and, when there is one, the microphone's
+    private static func readings(system: MixedAudio, microphone: MixedAudio?) -> (system: LoudnessMeter.Reading, microphone: LoudnessMeter.Reading?) {
         var systemMeter = LoudnessMeter(rate: sampleRate, channels: 2)
         var microphoneMeter = LoudnessMeter(rate: sampleRate, channels: 2)
         // Piece by piece from both, so that neither track is read far ahead of the other
         var more = true
         while more {
-            more = systemSum.sum { systemMeter.add($0, frames: $1) }
-            if let microphoneSum, microphoneSum.sum({ microphoneMeter.add($0, frames: $1) }) { more = true }
+            more = system.sum { systemMeter.add($0, frames: $1) }
+            if let microphone, microphone.sum({ microphoneMeter.add($0, frames: $1) }) { more = true }
         }
-        guard reader.status == .completed else { throw reader.error ?? RecordingError("The audio cannot be read to measure its loudness.") }
-        return (systemMeter.reading, microphoneSum == nil ? nil : microphoneMeter.reading)
+        return (systemMeter.reading, microphone == nil ? nil : microphoneMeter.reading)
     }
 
     /// What `choose` decides about the system audio of a recording made with the tap
@@ -520,55 +526,158 @@ enum RecordingMixer {
 
     // MARK: - The two files of a .qma package
 
+    /// One of the two audio files of a .qma package, to be read as a track of a mix: 48 kHz stereo by the frame,
+    /// whatever rate and channels the file has
+    private struct PackageFile {
+        let url: URL
+        let asset: AVURLAsset
+        let track: AVAssetTrack
+        /// How long the file says it is, in seconds
+        let seconds: Double
+
+        init(_ url: URL) async throws {
+            let file = try AVAudioFile(forReading: url)
+            let asset = AVURLAsset(url: url)
+            guard let track = try await asset.loadTracks(withMediaType: .audio).first, file.processingFormat.sampleRate > 0 else {
+                throw RecordingError(String(format: "The file %@ has no audio to mix.", url.lastPathComponent))
+            }
+            self.url = url
+            self.asset = asset
+            self.track = track
+            seconds = Double(file.length) / file.processingFormat.sampleRate
+        }
+
+        /// A reader of the file, not started yet, and the file as a track of a mix
+        func open() throws -> (reader: AVAssetReader, pcm: TrackPCM) {
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: trackSettings)
+            output.alwaysCopiesSampleData = false
+            guard reader.canAdd(output) else { throw RecordingError(String(format: "The file %@ cannot be read for mixing.", url.lastPathComponent)) }
+            reader.add(output)
+            return (reader, TrackPCM(output))
+        }
+    }
+
     /// Mixes the system audio and microphone files of a .qma package, each at its volume, into the audio file
     /// `output` (written with `settings`), up to the end of the longer file: the microphone file runs on past the
-    /// system audio by what the stop padded it with. Returns once `output` is closed, as long as that file and in
-    /// step with both (`checkTiming`); throws otherwise, and `output` is then incomplete or wrong. Blocks while it
-    /// renders, so not on the main thread.
-    static func mixPackage(system: URL, microphone: URL, volumes: (system: Float, microphone: Float), to output: URL, settings: [String: Any]) throws {
-        let sources = [(url: system, volume: volumes.system), (url: microphone, volume: volumes.microphone)]
-        let files = try sources.map { try AVAudioFile(forReading: $0.url) }
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2) else {
-            throw RecordingError("The audio could not be mixed.")
-        }
-        // An engine of its own, offline from the start. One that has run in real time has read ahead into the files
-        // scheduled on it and drops that read-ahead when it is switched to offline rendering: the mix then began
-        // about 1.15 s into both files and ended in as much silence, at the right length.
-        let engine = AVAudioEngine()
-        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
-        var players = [AVAudioPlayerNode]()
-        for (file, source) in zip(files, sources) {
-            let player = AVAudioPlayerNode()
-            engine.attach(player)
-            // The mixer converts each file's own rate and channels
-            engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
-            player.volume = source.volume
-            player.scheduleFile(file, at: nil)
-            players.append(player)
-        }
-        try engine.start()
-        defer { engine.stop() }
-        players.forEach { $0.play() }
-
-        func seconds(_ file: AVAudioFile) -> Double { Double(file.length) / file.processingFormat.sampleRate }
-        guard let longer = files.max(by: { seconds($0) < seconds($1) }),
-              let buffer = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: engine.manualRenderingMaximumFrameCount) else {
-            throw RecordingError("The audio could not be mixed.")
-        }
-        let outputFile = try AVAudioFile(forWriting: output, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
-        let duration = AVAudioFramePosition((seconds(longer) * engine.manualRenderingFormat.sampleRate).rounded())
-        while engine.manualRenderingSampleTime < duration {
-            let frames = min(buffer.frameCapacity, AVAudioFrameCount(duration - engine.manualRenderingSampleTime))
-            // Players render silence once their file has ended, so anything but success would never move on
-            guard try engine.renderOffline(frames, to: buffer) == .success else {
-                throw RecordingError("The audio could not be mixed.")
+    /// system audio by what the stop padded it with. The mix is the sum the mix of a video recording makes
+    /// (`MixedAudio`): the two files are the two sides of the recording. With `levelVoices` each file is first
+    /// measured over its whole length and gets one gain towards `VoiceLeveling.target`, its volume on top of that,
+    /// and the sum goes through `PeakLimiter`; what was done is returned and logged. Without it the mix is the plain
+    /// sum of the two files at their volumes, and nil is returned. Returns once `output` is closed, as long as the
+    /// longer file and in step with both (`checkTiming`); throws otherwise, and `output` is then incomplete or
+    /// wrong. The rendering runs on a queue of its own.
+    @discardableResult
+    static func mixPackage(system: URL, microphone: URL, volumes: (system: Float, microphone: Float), levelVoices: Bool = false, to output: URL,
+                           settings: [String: Any]) async throws -> VoiceLeveling.Applied? {
+        let files = [try await PackageFile(system), try await PackageFile(microphone)]
+        let levels = [volumes.system, volumes.microphone]
+        // Reading and writing block for as long as they take, so on a thread of their own rather than one of the pool's
+        return try await withCheckedThrowingContinuation { (done: CheckedContinuation<VoiceLeveling.Applied?, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                done.resume(with: Result { try render(files, volumes: levels, levelVoices: levelVoices, to: output, settings: settings) })
             }
-            try outputFile.write(from: buffer)
         }
+    }
+
+    /// What "Level Voices" gives each side of a .qma package: the loudness of its system audio and microphone files,
+    /// each over its whole length as it was recorded, and the gain that follows from it. The mix of the package
+    /// (`mixPackage`) uses the same, and the player plays the two files at these gains.
+    static func packageLeveling(system: URL, microphone: URL) async throws -> VoiceLeveling.Applied {
+        let files = [try await PackageFile(system), try await PackageFile(microphone)]
+        return try await withCheckedThrowingContinuation { (done: CheckedContinuation<VoiceLeveling.Applied, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                done.resume(with: Result { try leveling(of: files, frames: mixFrames(of: files)) })
+            }
+        }
+    }
+
+    /// The length of a package's mix in frames: that of its longer file
+    private static func mixFrames(of files: [PackageFile]) -> Int64 {
+        return Int64(((files.map(\.seconds).max() ?? 0) * sampleRate).rounded())
+    }
+
+    /// Each side of a package measured by itself, one pass over both files
+    private static func leveling(of files: [PackageFile], frames: Int64) throws -> VoiceLeveling.Applied {
+        let failure = RecordingError("The audio cannot be read to measure its loudness.")
+        guard files.count == 2 else { throw failure }
+        let opened = try files.map { try $0.open() }
+        let sums = opened.map { MixedAudio(parts: [MixedAudio.Part(track: $0.pcm, gain: nil, complement: false)], frames: frames) }
+        guard let systemSum = sums[0], let microphoneSum = sums[1] else { throw failure }
+        for file in opened {
+            guard file.reader.startReading() else {
+                opened.forEach { $0.reader.cancelReading() }
+                throw file.reader.error ?? failure
+            }
+        }
+        let measured = readings(system: systemSum, microphone: microphoneSum)
+        for file in opened where file.reader.status != .completed {
+            opened.forEach { $0.reader.cancelReading() }
+            throw file.reader.error ?? failure
+        }
+        return VoiceLeveling.Applied(system: VoiceLeveling.Side(measured.system), microphone: measured.microphone.map { VoiceLeveling.Side($0) })
+    }
+
+    /// The package mix itself (`mixPackage`), which blocks while it reads and writes
+    private static func render(_ files: [PackageFile], volumes: [Float], levelVoices: Bool, to output: URL, settings: [String: Any]) throws -> VoiceLeveling.Applied? {
+        let failure = RecordingError("The audio could not be mixed.")
+        guard files.count == 2, volumes.count == 2, let longer = files.max(by: { $0.seconds < $1.seconds }),
+              let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(MixedAudio.chunk)) else { throw failure }
+        let frames = mixFrames(of: files)
+        var applied: VoiceLeveling.Applied?
+        if levelVoices { applied = try leveling(of: files, frames: frames) }
+        // Each file's level in the mix: its volume, and with "Level Voices" its side's gain as well
+        let scales = [volumes[0] * (applied?.system.factor ?? 1), volumes[1] * (applied?.microphone?.factor ?? 1)]
+        let opened = try files.map { try $0.open() }
+        let parts = zip(opened, scales).map { MixedAudio.Part(track: $0.pcm, gain: nil, complement: false, scale: $1) }
+        guard let mixed = MixedAudio(parts: parts, frames: frames, limiter: applied == nil ? nil : PeakLimiter(rate: sampleRate)) else { throw failure }
+        let outputFile = try AVAudioFile(forWriting: output, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        for file in opened {
+            guard file.reader.startReading() else {
+                opened.forEach { $0.reader.cancelReading() }
+                throw file.reader.error ?? failure
+            }
+        }
+        var writing: Error?
+        let capacity = Int(buffer.frameCapacity)
+        // Piece by piece as the mix makes them, each written with its two channels apart
+        while writing == nil, mixed.piece({ samples, count, _ in
+            guard let data = buffer.floatChannelData else {
+                writing = failure
+                return
+            }
+            var written = 0
+            while written < count && writing == nil {
+                let part = min(capacity, count - written)
+                for frame in 0..<part {
+                    data[0][frame] = samples[(written + frame) * 2]
+                    data[1][frame] = samples[(written + frame) * 2 + 1]
+                }
+                buffer.frameLength = AVAudioFrameCount(part)
+                do {
+                    try outputFile.write(from: buffer)
+                } catch {
+                    writing = error
+                }
+                written += part
+            }
+        }) {}
         // Closed here, not when it is released, so that a file that could not be finished fails the checks below
         outputFile.close()
+        if let writing {
+            opened.forEach { $0.reader.cancelReading() }
+            throw writing
+        }
+        for file in opened where file.reader.status != .completed {
+            opened.forEach { $0.reader.cancelReading() }
+            throw file.reader.error ?? failure
+        }
         try verifyConversion(source: longer.url, output: output)
-        try checkTiming(of: output, sources: sources)
+        try checkTiming(of: output, sources: zip(files, scales).map { (url: $0.url, volume: $1) })
+        applied?.limiterReduction = mixed.limiterReduction
+        if let applied { RecLog.write("Level Voices: " + applied.text) }
+        return applied
     }
 
     /// The system audio of a sound-only recording made with the process tap, from its two files: the tap's (`tap`)
@@ -1175,14 +1284,23 @@ final class MixedAudio {
             drain()
             return nil
         }
+        var made: CMSampleBuffer?
+        guard piece({ samples, count, at in made = buffer(of: samples, frames: count, at: at) }) else { return nil }
+        return made
+    }
+
+    /// Hands the next piece of the mix to `body`: interleaved stereo, how many frames, and the frame of the mix it
+    /// begins at. Through the limiter when there is one. False at the end, when there was none.
+    func piece(_ body: (UnsafeBufferPointer<Float>, Int, Int64) -> Void) -> Bool {
         guard limiter != nil else {
             let at = position
             let count = add()
             guard count > 0 else {
                 drain()
-                return nil
+                return false
             }
-            return buffer(of: mix, frames: count, at: at)
+            mix.withUnsafeBufferPointer { body($0, count, at) }
+            return true
         }
         // Through the limiter until it has returned something past its delay, or everything
         while limited.isEmpty {
@@ -1190,7 +1308,7 @@ final class MixedAudio {
             if count == 0 {
                 guard !flushed else {
                     drain()
-                    return nil
+                    return false
                 }
                 // The frames still inside the limiter
                 flushed = true
@@ -1205,23 +1323,21 @@ final class MixedAudio {
             if skipped < count { limited.append(contentsOf: mix[(skipped * 2)..<(count * 2)]) }
         }
         let count = limited.count / 2
-        let made = buffer(of: limited, frames: count, at: handedOn)
+        limited.withUnsafeBufferPointer { body($0, count, handedOn) }
         handedOn += Int64(count)
         limited.removeAll(keepingCapacity: true)
-        return made
+        return true
     }
 
     /// `frames` frames of interleaved stereo as a sample buffer at frame `at`; nil, and `failed`, when it cannot be made
-    private func buffer(of samples: [Float], frames count: Int, at: Int64) -> CMSampleBuffer? {
-        guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)), let data = pcm.floatChannelData else {
+    private func buffer(of samples: UnsafeBufferPointer<Float>, frames count: Int, at: Int64) -> CMSampleBuffer? {
+        guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)), let data = pcm.floatChannelData,
+              let base = samples.baseAddress else {
             failed = true
             return nil
         }
         pcm.frameLength = AVAudioFrameCount(count)
-        samples.withUnsafeBufferPointer { source in
-            guard let base = source.baseAddress else { return }
-            data[0].update(from: base, count: count * 2)
-        }
+        data[0].update(from: base, count: count * 2)
         guard let buffer = AudioSilence.sampleBuffer(from: pcm, description: format.formatDescription, at: CMTime(value: at, timescale: CMTimeScale(RecordingMixer.sampleRate))) else {
             failed = true
             return nil

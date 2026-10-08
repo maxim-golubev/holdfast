@@ -249,7 +249,8 @@ enum RecordingSaver {
             do {
                 let info = try QmaInfo.read(package: file)
                 // With the settings the recording was started with, not the current ones
-                try await mixPackage(file, info: info, to: recording.finalURL, saveAsMP3: info.exportMP3, audioQuality: recording.audioQuality)
+                try await mixPackage(file, info: info, to: recording.finalURL, saveAsMP3: info.exportMP3, audioQuality: recording.audioQuality,
+                                     levelVoices: recording.levelVoices)
                 present(recording.finalURL, image: audioIcon, recording: recording, earlyReason: earlyReason)
             } catch {
                 let body = early + String(format: "Mixing the audio failed: %@", error.localizedDescription) + " " + keptNote(file, "Nothing is lost: the recording is kept with separate audio files in: %@")
@@ -328,8 +329,11 @@ enum RecordingSaver {
     /// package's encoder (`QmaInfo.mixEnding`), or an MP3 when `saveAsMP3`; `output` has that extension. Everything is written under staging
     /// names first (`RecordingFileStore.stagingURL`), and `output` appears only with the complete, checked file;
     /// otherwise this throws and leaves nothing. A file at `output` is replaced only when `replacing` (a name confirmed
-    /// in the save panel). `audioQuality` is the bitrate of lossy formats in kbit/s. The package is only read.
-    nonisolated static func mixPackage(_ package: URL, info: QmaInfo, to output: URL, saveAsMP3: Bool, replacing: Bool = false, audioQuality: Int) async throws {
+    /// in the save panel). `audioQuality` is the bitrate of lossy formats in kbit/s. With `levelVoices` each of the two
+    /// files gets its "Level Voices" gain besides its volume, and the mix goes through the limiter
+    /// (`RecordingMixer.mixPackage`). The package is only read.
+    nonisolated static func mixPackage(_ package: URL, info: QmaInfo, to output: URL, saveAsMP3: Bool, replacing: Bool = false, audioQuality: Int,
+                                       levelVoices: Bool) async throws {
         let ending = saveAsMP3 ? "mp3" : info.mixEnding
         guard output.pathExtension.lowercased() == ending else {
             throw RecordingError(String(format: "The name of the mixed file must end in .%@.", ending))
@@ -342,15 +346,8 @@ enum RecordingSaver {
         try RecordingFileStore.checkFree(staging: mixed)
         let settings = MovieWriter.audioSettings(format: info.encoder, quality: audioQuality, videoFormat: nil)
         do {
-            // Rendering blocks for as long as it takes, so on a thread of its own rather than one of the pool's
-            try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    done.resume(with: Result {
-                        try RecordingMixer.mixPackage(system: info.systemAudio(in: package), microphone: info.microphone(in: package),
-                                                      volumes: (info.sysVol, info.micVol), to: mixed, settings: settings)
-                    })
-                }
-            }
+            try await RecordingMixer.mixPackage(system: info.systemAudio(in: package), microphone: info.microphone(in: package),
+                                                volumes: (info.sysVol, info.micVol), levelVoices: levelVoices, to: mixed, settings: settings)
             if saveAsMP3 {
                 try await convertToMP3(mixed, to: output, bitrate: audioQuality, replacing: replacing)
                 try? fd.removeItem(at: mixed)

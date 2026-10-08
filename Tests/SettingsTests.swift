@@ -58,6 +58,7 @@ func settingsTests() async {
         check(AppSettings.$areaHeight, "areaHeight", 450)
         expectEqual(AppSettings.$savedAreas.name, "savedArea", "key")
         expectEqual(AppSettings.$saveDirectory.name, "saveDirectory", "key")
+        check(AppSettings.$recordingFolders, "recordingFolders", [])
         expect(AppSettings.$saveDirectory.fallback.hasSuffix("/Desktop"), "recordings go to the Desktop until a folder is chosen: \(AppSettings.$saveDirectory.fallback)")
         // What the stored values are: the raw values of the cases
         expectEqual([AudioQuality.normal, .good, .high, .extreme].map(\.rawValue), [128, 192, 256, 320], "audio quality in kbit/s")
@@ -87,6 +88,7 @@ func settingsTests() async {
             expect(AppSettings.hiddenApps.isEmpty, "no hidden apps")
             expect(AppSettings.savedAreas.isEmpty, "no saved areas")
             expect(AppSettings.dismissedTips.isEmpty, "no dismissed tips")
+            expect(AppSettings.recordingFolders.isEmpty, "no folders remembered")
         }
     }
 

@@ -381,6 +381,14 @@ class AudioPlayerManager: ObservableObject {
     private var exportPanel: NSSavePanel?
     private var exportEnding = "m4a"
     private var outputObserver: NSObjectProtocol?
+    /// "Level Voices" as the setting was when the package was opened: its two files are then played, and exported,
+    /// at the gains the setting gives them, with the volumes set here on top
+    private var levelsVoices = false
+    /// Those gains as factors: 1 with the setting off, and until the files have been measured
+    private var levels: (system: Float, microphone: Float) = (1, 1)
+    /// Gains that were measured while the package was playing: they are used from the next pause, stop or change of
+    /// position on, so that the loudness does not jump in the middle of a sound
+    private var measuredLevels: (system: Float, microphone: Float)?
     
     init() {
         setupAudioEngine()
@@ -395,7 +403,7 @@ class AudioPlayerManager: ObservableObject {
         if let observer = outputObserver { NotificationCenter.default.removeObserver(observer) }
     }
     
-    /// The engine plays the two files. An export does not use it: it mixes with an engine of its own.
+    /// The engine plays the two files. An export does not use it: it is the mixer's own sum (`RecordingMixer.mixPackage`).
     private func setupAudioEngine() {
         for node in [playerNode1, playerNode2, mixerNode] { engine.attach(node) }
         
@@ -448,8 +456,35 @@ class AudioPlayerManager: ObservableObject {
         audioFile1 = system
         audioFile2 = microphone
         audioLength = Double(system.length) / system.processingFormat.sampleRate
+        levels = (1, 1)
+        measuredLevels = nil
         sysVol = info.sysVol
         micVol = info.micVol
+        levelsVoices = AppSettings.levelVoices
+        if levelsVoices { measureLevels(of: package, info: info) }
+    }
+
+    /// Measures how loud each of the two files is (`RecordingMixer.packageLeveling`, off the main thread) and plays
+    /// them at the gains that follow, as the export mixes them. A package that cannot be measured plays as recorded.
+    private func measureLevels(of package: URL, info: QmaInfo) {
+        Task { @MainActor [weak self] in
+            do {
+                let applied = try await RecordingMixer.packageLeveling(system: info.systemAudio(in: package), microphone: info.microphone(in: package))
+                guard let self, self.packageURL == package, self.audioFile1 != nil else { return }
+                self.measuredLevels = (applied.system.factor, applied.microphone?.factor ?? 1)
+                if !self.isPlaying { self.useMeasuredLevels() }
+            } catch {
+                print("Level Voices: the package could not be measured: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func useMeasuredLevels() {
+        guard let measured = measuredLevels else { return }
+        measuredLevels = nil
+        levels = measured
+        updateSysVol()
+        updateMicVol()
     }
     
     func play() {
@@ -471,6 +506,7 @@ class AudioPlayerManager: ObservableObject {
         playerNode2.pause()
         stopProgressTimer()
         isPlaying = false
+        useMeasuredLevels()
     }
     
     func stop() {
@@ -481,6 +517,7 @@ class AudioPlayerManager: ObservableObject {
         lastStartFramePosition = AVAudioFramePosition(0.0)
         progress = 0.0
         isPlaying = false
+        useMeasuredLevels()
     }
     
     func seek(to time: Double) {
@@ -489,6 +526,7 @@ class AudioPlayerManager: ObservableObject {
         playerNode2.stop()
         scheduled = false
         stopProgressTimer()
+        useMeasuredLevels()
         
         let startFrame = AVAudioFramePosition(time * audioFile1.processingFormat.sampleRate)
         let remaining = audioFile1.length - startFrame
@@ -537,15 +575,19 @@ class AudioPlayerManager: ObservableObject {
         playerNode2.reset()
         audioFile1 = nil
         audioFile2 = nil
+        measuredLevels = nil
     }
 
     /// Mixes the package at the volumes set here into a file the save panel asks for: in the package's format, or an
-    /// MP3 when its checkbox is on. Quitting waits for it; the status item shows "Exporting" meanwhile.
+    /// MP3 when its checkbox is on. With "Level Voices" (as the setting was when the package was opened) each file
+    /// gets its gain as well and the mix goes through the limiter, so the export has the balance the player plays.
+    /// Quitting waits for it; the status item shows "Exporting" meanwhile.
     func export() {
         guard let packageURL = packageURL, var info = info else { return }
         stop()
         info.sysVol = sysVol
         info.micVol = micVol
+        let levelVoices = levelsVoices
         exportEnding = info.mixEnding
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
@@ -569,7 +611,8 @@ class AudioPlayerManager: ObservableObject {
             self.exporting = true
             Task { @MainActor in
                 do {
-                    try await RecordingSaver.mixPackage(packageURL, info: info, to: output, saveAsMP3: saveAsMP3, replacing: true, audioQuality: AppSettings.audioQuality.rawValue)
+                    try await RecordingSaver.mixPackage(packageURL, info: info, to: output, saveAsMP3: saveAsMP3, replacing: true, audioQuality: AppSettings.audioQuality.rawValue,
+                                                         levelVoices: levelVoices)
                     UserNotice.showNotification(.finished, title: "Recording Exported", body: String(format: "File saved to: %@", output.path), id: "holdfast.completed.\(UUID().uuidString)")
                 } catch {
                     UserNotice.reportFailure(title: "Export Failed", message: error.localizedDescription)
@@ -592,11 +635,11 @@ class AudioPlayerManager: ObservableObject {
     }
     
     private func updateSysVol() {
-        playerNode1.volume = sysVol
+        playerNode1.volume = sysVol * levels.system
     }
     
     private func updateMicVol() {
-        playerNode2.volume = micVol
+        playerNode2.volume = micVol * levels.microphone
     }
 }
 

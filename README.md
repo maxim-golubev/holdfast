@@ -106,7 +106,7 @@ One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
 final file. A recording starts the moment it is asked for: one that was stopped
 goes on being closed and mixed by itself, under its own name, while the next
-one runs. 221 tests run in about three and a half minutes without the app, a screen, or
+one runs. 230 tests run in about four minutes without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 
@@ -122,7 +122,6 @@ recovery with synthetic buffers and check the files they write.
   says so, and call audio is missing.
 - A file that was never closed (a crash, a kill, a power loss) misses up to
   about its last 12 seconds.
-- Only the current save folder is searched for interrupted recordings.
 
 More in the [user guide](docs/guide.md#known-limits).
 
@@ -152,7 +151,7 @@ identifier in Xcode.
 
 ```sh
 Tools/build.sh      # Release build into build/, prints BUILD SUCCEEDED
-Tools/test.sh       # the tests, about three and a half minutes, no app, screen or microphone
+Tools/test.sh       # the tests, about four minutes, no app, screen or microphone
 Tools/release.sh    # build/release/Holdfast-<version>.zip, signed and verified
 ```
 
