@@ -18,7 +18,8 @@ import Foundation
 /// coming back for a moment is one problem, counted from its first gap, not many short ones that are never
 /// notified. System audio recorded with the process tap has a backup (ScreenCaptureKit's system audio, on a track of
 /// its own) and a call tap (a second tap of the process that plays FaceTime and phone calls, on a third track): all
-/// three tracks are continued, and system audio is a problem only while none of them delivers. A tap that stops
+/// three tracks are continued, and system audio is a problem only while neither the tap nor its backup delivers (the
+/// call tap hears one process only, so what it delivers does not stand for system audio). A tap that stops
 /// while the backup goes on is only logged at first: the recording has the sound, and the tap's source is rebuilding
 /// it. One that has put nothing into its track for `tapLostSeconds` is shown, as a notice and not as a warning, when
 /// the call tap delivers nothing either while a call may be playing (`CallAudioState`), or when nothing looks for a
@@ -309,8 +310,10 @@ final class RecordingMonitor {
                     tapQuiet = false
                     RecLog.write("System audio: the process tap delivers again")
                 }
-                // The call tap: its audio counts as system audio that arrived, and it decides whether a dead tap
-                // costs a call. From when a call may be playing it has `tapLostSeconds` to deliver.
+                // The call tap decides whether a dead tap costs a call: from when a call may be playing it has
+                // `tapLostSeconds` to deliver. Its buffers do not count as system audio that arrived: it hears one
+                // process only and delivers, zeros too, for as long as that process has an audio object, so with
+                // the tap and the backup both gone everything else the Mac plays is not being recorded.
                 if callStateChanged {
                     callStateChanged = false
                     callActiveSince = callState == .active ? now : nil
@@ -323,7 +326,6 @@ final class RecordingMonitor {
                     callLost = seconds(from: last, to: now) > RecordingMonitor.tapLostSeconds
                     callRecorded = callHeard.map { seconds(from: $0, to: now) <= RecordingMonitor.steadyGap } ?? false
                 }
-                if let callHeard, callHeard > heard { heard = callHeard }
                 // Still nothing after every construction of the tap has failed more than once: what the backup does
                 // not hear, a FaceTime or phone call, is being lost unless the call tap records it, and that is shown
                 // until the tap is back, the call tap delivers, or no call is on

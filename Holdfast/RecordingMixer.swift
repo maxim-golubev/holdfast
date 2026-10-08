@@ -356,8 +356,9 @@ enum RecordingMixer {
                 var measured = SystemAudioAlignment.Measurement.none
                 if align {
                     // The call tap's track in the tap's place, the tap's in the backup's: how much later the call
-                    // tap has the sound than the tap
-                    measured = try SystemAudioAlignment.measure(tap: levels, backup: tapLevels, duration: end, rate: sampleRate) { source, first, count in
+                    // tap has the sound than the tap. The windows are spread over the call, not over the recording.
+                    measured = try SystemAudioAlignment.measure(tap: levels, backup: tapLevels, duration: end, rate: sampleRate,
+                                                                within: SystemAudioAlignment.extent(of: levels)) { source, first, count in
                         try samples(of: source == .tap ? call : tap, in: asset, from: first, count: count)
                     }
                 }
@@ -726,7 +727,7 @@ enum RecordingMixer {
         if files.count > 2, levels[2].contains(where: { $0 > SystemAudioChoice.signal }) {
             callLevels = levels[2]
             callAlignment = try SystemAudioAlignment.measure(tap: levels[2], backup: levels[0], duration: Double(max(files[0].length, files[2].length)) / format.sampleRate,
-                                                             rate: format.sampleRate) { source, first, count in
+                                                             rate: format.sampleRate, within: SystemAudioAlignment.extent(of: levels[2])) { source, first, count in
                 try samples(of: files[source == .tap ? 2 : 0], into: readBuffers[source == .tap ? 2 : 0], from: first, count: count)
             }
         }
@@ -1082,6 +1083,10 @@ enum RecordingMixer {
         let mixable: Bool
         /// How many audio tracks it has
         var audioTracks = 0
+        /// Whether one of them is the call tap's, and whether one is the microphone's (`Layout`: by the tracks'
+        /// titles, by their number in a file without titles)
+        var hasCallAudio = false
+        var hasMicrophone = false
     }
 
     static func inspect(_ url: URL) async -> Inspection {
@@ -1094,8 +1099,11 @@ enum RecordingMixer {
         // When in doubt the file counts as not closed
         let fragmented = (try? await asset.load(.canContainFragments)) ?? true
         let video = (try? await asset.loadTracks(withMediaType: .video).count) ?? 0
-        let audio = (try? await asset.loadTracks(withMediaType: .audio).count) ?? 0
-        return Inspection(seconds: length, fragmented: fragmented, mixable: video == 1 && (2...4).contains(audio), audioTracks: audio)
+        let tracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+        let audio = tracks.count
+        let layout = (try? await Layout.read(tracks)) ?? Layout()
+        return Inspection(seconds: length, fragmented: fragmented, mixable: video == 1 && (2...4).contains(audio), audioTracks: audio,
+                          hasCallAudio: layout.call != nil, hasMicrophone: layout.microphone != nil)
     }
 }
 

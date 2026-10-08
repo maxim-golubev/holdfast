@@ -10,7 +10,15 @@
 // NSAudioCaptureUsageDescription in its Info.plist, signed with the project's Apple Development identity, launched
 // with `open`, so macOS gives it Holdfast's "System Audio Recording Only" permission. Started from a terminal it has
 // no such grant: its tap runs and its IOProc is called, but every buffer is zeros (-180 dB), whatever plays.
-// How to build and launch it that way: the build recipe below.
+// To build and launch it that way, from the repository's root:
+//   b=build/TapExp.app; rm -rf $b; mkdir -p $b/Contents/MacOS
+//   swiftc -O Tools/tapexp.swift -o $b/Contents/MacOS/tapexp
+//   /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.maximgolubev.Holdfast" \
+//     -c "Add :CFBundleExecutable string tapexp" -c "Add :CFBundlePackageType string APPL" -c "Add :LSUIElement bool true" \
+//     -c "Add :NSAudioCaptureUsageDescription string 'Holdfast records the sound your Mac plays.'" $b/Contents/Info.plist
+//   codesign --force --sign "Apple Development" --options runtime $b
+//   open -n -W $b --args builtin 10 "$PWD/build/tapexp-builtin.txt"; cat build/tapexp-builtin.txt
+// Remove build/TapExp.app afterwards.
 import AudioToolbox
 import CoreAudio
 import Foundation

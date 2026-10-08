@@ -340,8 +340,11 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   beside it: a process tap of `avconferenced`'s audio process objects only
   (`CATapDescription(stereoMixdownOfProcesses:)`, private, left audible),
   found by bundle identifier or executable name among
-  `kAudioHardwarePropertyProcessObjectList`. A process has such an object only
-  while it uses audio, so the list is read at the start and whenever Core Audio
+  `kAudioHardwarePropertyProcessObjectList`. A process is expected to have
+  such an object only while it uses audio (for `avconferenced`: during a
+  call; not yet observed on the device, see below; if it keeps one while
+  idle, the call tap runs for the whole recording and delivers zeros outside
+  calls), so the list is read at the start and whenever Core Audio
   says it changed (one listener on the system object; read every 5 s when it
   cannot be listened to). With no object there is no tap, no aggregate device
   and no IOProc; when one appears a tap is built for it, when the set of
@@ -423,7 +426,10 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   the backup's, with the gain of the backup (one minus the tap's, so the same
   5 ms fades). It is moved onto the mix's timeline by the tap's offset plus
   what `SystemAudioAlignment` measures between the call tap's track and the
-  tap's, which hold the call alike wherever both ran; when that cannot be
+  tap's, which hold the call alike wherever both ran (its windows are spread
+  over the stretch in which the call tap's track has signal, not over the
+  whole recording, so a call of a few minutes in an hour still gets its 16
+  and one of a few seconds its three); when that cannot be
   measured (the tap was dead for the whole call) it is moved like the tap's
   audio, both being stamped in an IOProc. A recording whose tap was the source
   wherever the call tap has sound, and one whose call tap's track is silent,
@@ -461,8 +467,10 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   1024 frames come to 1858 of the 2515 frames measured. They are logged at
   every build ("System audio tap: its device reports …") to be held against
   what the mix measures.
-- **Warnings.** System audio is reported missing only when neither the tap,
-  the backup nor the call tap has delivered for the monitor's 5 s; a tap that
+- **Warnings.** System audio is reported missing only when neither the tap
+  nor the backup has delivered for the monitor's 5 s (what the call tap
+  delivers does not count: it hears one process, and its IOProc hands over
+  buffers, zeros too, for as long as that process has an audio object); a tap that
   stops while the backup goes on is logged ("the process tap has delivered
   nothing for 5 s; the backup (screen capture) records the system audio
   meanwhile", and when it is back), and shown, as a notice, only when it has
@@ -720,8 +728,8 @@ up may be queued behind it, yet a timer that is always late must still fill and
 warn. After a resume it waits one tick for the first buffer.
 
 It is also the watchdog. No microphone audio written for 5 s, only exact zeros
-for 20 s, or no system audio for 5 s from any of its sources (the tap, its
-backup, the call tap; no first frame 5 s after the start) sets
+for 20 s, or no system audio for 5 s from the tap or its backup (the call
+tap's buffers do not count; no first frame 5 s after the start) sets
 the session's warning, which the status item shows, and writes a log line.
 A tap that is silent while its backup records is no such problem: it is logged
 after 5 s, and after 15 s (`tapLostSeconds`) the recording shows "Call audio is
@@ -1014,7 +1022,7 @@ not in the recording.
 ## Tests
 
 `Tools/test.sh` compiles the pipeline sources with `Tests/*.swift` into one
-executable and runs it in about three and a half minutes, without the app, a screen or a
+executable and runs it in about four minutes, without the app, a screen or a
 microphone. What it compiles uses no ScreenCaptureKit stream and no UI, which
 is why the seams exist: the session sees its capture and writer through the
 `RecordingCapture` and `RecordingWriter` protocols, the writer reports through

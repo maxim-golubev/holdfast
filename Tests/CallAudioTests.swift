@@ -399,23 +399,35 @@ func callAudioTests() async {
         expectEqual(dead.notice, nil, "and goes when the process tap is back")
     }
 
-    await test("monitor: the system audio warning needs the process tap, the backup and the call tap all to deliver nothing") {
+    await test("monitor: a call tap that delivers does not stand for system audio: with the process tap and the backup both silent the warning comes") {
         let run = try MonitorRun("monitor-call-warning", microphone: false, systemAudio: true, backup: true, call: true)
         run.call(.active)
         run.ticks(after: 0, through: 3) { run.systemAudio(upTo: $0); run.backup(upTo: $0); run.callAudio(upTo: $0) }
-        // Only the call tap delivers: a FaceTime call on a Mac whose other two sources stopped
-        run.ticks(after: 3, through: 30) { run.callAudio(upTo: $0) }
-        expectEqual(run.warning, nil, "the call tap alone keeps the warning away")
-        expectEqual(run.notice, nil, "and the call is being recorded")
+        // The process tap dies and the stream's system audio stops; the call tap's IOProc goes on handing over
+        // buffers (zeros, or one process's sound), as it does for as long as that process has an audio object
+        run.ticks(after: 3, through: 8) { run.callAudio(upTo: $0) }
+        expectEqual(run.warning, nil, "5 s without the tap and the backup is not yet a problem")
+        run.ticks(after: 8, through: 9) { run.callAudio(upTo: $0) }
+        expectEqual(run.warning, "System audio is not being recorded", "more than 5 s is, whatever the call tap delivers")
+        expectEqual(run.notice, nil, "the call itself is being recorded: no call-audio notice")
         expect(run.fills("system audio") > 0 && run.fills("backup") > 0, "the other two tracks are continued with silence")
         expectEqual(run.fills("call"), 0, "its own needs nothing")
-        // Then nothing at all
-        run.ticks(after: 30, through: 36)
-        expectEqual(run.warning, "System audio is not being recorded", "all three silent for more than 5 s")
-        run.ticks(after: 36, through: 50)
+        run.ticks(after: 9, through: 18) { run.callAudio(upTo: $0) }
         expectEqual(run.notified, ["System Audio Is Not Being Recorded"], "notified after 15 s")
-        run.ticks(after: 50, through: 56) { run.callAudio(upTo: $0) }
-        expectEqual(run.warning, nil, "any of the three ends it")
+        expectEqual(run.onScreen, "System audio is not being recorded", "and shown on screen")
+        run.ticks(after: 18, through: 30) { run.callAudio(upTo: $0) }
+        expectEqual(run.warning, "System audio is not being recorded", "the call tap does not end it")
+        expectEqual(run.notified, ["System Audio Is Not Being Recorded"], "one notification")
+        // The backup comes back
+        run.ticks(after: 30, through: 36) { run.callAudio(upTo: $0); run.backup(upTo: $0) }
+        expectEqual(run.warning, nil, "the backup, or the tap, ends it")
+        expectEqual(run.notified, ["System Audio Is Not Being Recorded", "System Audio Is Back"], "and its return is notified")
+        // The same with no call on and no call tap built: nothing changes
+        let idle = try MonitorRun("monitor-call-warning-idle", microphone: false, systemAudio: true, backup: true, call: true)
+        idle.call(.idle)
+        idle.ticks(after: 0, through: 3) { idle.systemAudio(upTo: $0); idle.backup(upTo: $0) }
+        idle.ticks(after: 3, through: 9)
+        expectEqual(idle.warning, "System audio is not being recorded", "without a call the two silent sources are the same problem")
     }
 
     // MARK: The mix

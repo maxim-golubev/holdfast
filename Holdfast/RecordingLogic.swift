@@ -895,11 +895,26 @@ enum SystemAudioAlignment {
                       abs(offset) * 1000, offset < 0 ? "earlier" : "later", measured.agreeing, measured.windows)
     }
 
+    /// The stretch of a recording in which a track has sound, from the start of its first block above
+    /// `SystemAudioChoice.signal` to the end of its last, in seconds; nil for a track without any. `levels` are the
+    /// track's levels per `SystemAudioChoice.block`.
+    static func extent(of levels: [Float]) -> ClosedRange<Double>? {
+        guard let first = levels.firstIndex(where: { $0 > SystemAudioChoice.signal }),
+              let last = levels.lastIndex(where: { $0 > SystemAudioChoice.signal }) else { return nil }
+        return Double(first) * SystemAudioChoice.block...Double(last + 1) * SystemAudioChoice.block
+    }
+
     /// Where the windows to compare start, in seconds: in each of up to `windows` equal parts of the recording the
     /// one in which the quieter of the two tracks is loudest, when both are above `level` there. `tap` and `backup`
-    /// are the tracks' levels per `SystemAudioChoice.block`.
-    static func starts(tap: [Float], backup: [Float], duration: Double) -> [Double] {
-        let first = reach, last = min(duration, Double(min(tap.count, backup.count)) * SystemAudioChoice.block) - window - reach
+    /// are the tracks' levels per `SystemAudioChoice.block`. With `within`, the parts are those of that stretch of the
+    /// recording instead of the whole of it: a track that has sound only for a few minutes of an hour, as the call
+    /// tap's has, would otherwise have a window in one or two of the parts and never the `fewest` an offset takes.
+    static func starts(tap: [Float], backup: [Float], duration: Double, within: ClosedRange<Double>? = nil) -> [Double] {
+        var first = reach, last = min(duration, Double(min(tap.count, backup.count)) * SystemAudioChoice.block) - window - reach
+        if let within {
+            first = max(first, within.lowerBound)
+            last = min(last, within.upperBound - window)
+        }
         guard last > first else { return [] }
         let parts = max(1, min(windows, Int((last - first) / window)))
         let length = (last - first) / Double(parts)
@@ -963,10 +978,11 @@ enum SystemAudioAlignment {
 
     /// Measures the offset of a recording. `tap` and `backup` are the tracks' levels, `read` gives `count` frames of
     /// one of the tracks from frame `first` on as one channel (silence where the track has none; `first` may be
-    /// negative), at `rate` frames a second.
-    static func measure(tap: [Float], backup: [Float], duration: Double, rate: Double,
+    /// negative), at `rate` frames a second. `within` is the stretch the windows are spread over (`starts`), the
+    /// whole recording without it.
+    static func measure(tap: [Float], backup: [Float], duration: Double, rate: Double, within: ClosedRange<Double>? = nil,
                         read: (SystemAudioChoice.Source, Int64, Int) throws -> [Float]) rethrows -> Measurement {
-        let starts = starts(tap: tap, backup: backup, duration: duration)
+        let starts = starts(tap: tap, backup: backup, duration: duration, within: within)
         let count = Int((window * rate).rounded()), margin = Int((reach * rate).rounded())
         var offsets = [Int]()
         for start in starts {

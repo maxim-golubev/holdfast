@@ -40,6 +40,8 @@ final class FakeCapture: RecordingCapture {
         waiting = nil
     }
     func releaseStream() { journal.note("capture.release") }
+    func rebuildDeafTap() { journal.note("capture.rebuild") }
+    func tapHeardAgain() { journal.note("capture.heard") }
 }
 
 /// Traps when the session uses it anywhere but on the sample queue

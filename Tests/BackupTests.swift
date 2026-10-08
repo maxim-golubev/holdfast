@@ -425,5 +425,31 @@ func backupTests() async {
         expectEqual(RecoveryNames.recording(complete: false, mixed: true, tracks: 4), "recovered, unmixed, 4 audio tracks", "with the call tap's track")
         expectEqual(RecoveryNames.recording(complete: false, mixed: true, tracks: 3), "recovered, unmixed, 3 audio tracks", "recovery counts the tracks")
         expectEqual(RecoveryNames.unmixed, "unmixed, 2 audio tracks", "as before for two")
+        expectEqual(RecoveryNames.tapTracks(call: true, microphone: true), "system audio from the process tap, its backup from screen capture, call audio from the call tap, the microphone", "the four tracks, for a report")
+        expectEqual(RecoveryNames.tapTracks(call: true, microphone: false), "system audio from the process tap, its backup from screen capture, call audio from the call tap", "without a microphone")
+        expectEqual(RecoveryNames.tapTracks(call: false, microphone: true), "system audio from the process tap, its backup from screen capture, the microphone", "a file from before the call tap")
+    }
+
+    await test("backup: the report about a three-track recording that could not be mixed names the call tap's track and no microphone") {
+        let run = try recordWithBackup("backup-three-tracks", seconds: 2, microphone: false, tapDead: { _ in false })
+        _ = try await run.close()
+        let folder = try Suite.folder("backup-three-tracks-recovery")
+        let raw = folder.appendingPathComponent("Recording at T.recording.mp4")
+        try FileManager.default.copyItem(at: run.recording.rawURL, to: raw)
+        let inspection = await RecordingMixer.inspect(raw)
+        expectEqual(inspection.audioTracks, 3, "tap, backup, call tap")
+        expect(inspection.hasCallAudio && !inspection.hasMicrophone, "told by their titles: the call tap's track, no microphone")
+        // Its mix cannot be written: the report says what the kept file holds
+        try Data("earlier mix".utf8).write(to: folder.appendingPathComponent("Recording at T.mixing.mp4"))
+        let leftover = try require(RecordingFileStore(directory: folder.path).leftovers().first { !$0.isMix }, "the recording")
+        let line = await RecordingRecovery.recover(leftover, audioSettings: TestMovie.aac) { _ in }
+        expect(line.contains("its 3 audio tracks as they were recorded (system audio from the process tap, its backup from screen capture, call audio from the call tap);"), "the three tracks by name: \(line)")
+        expect(!line.contains("microphone"), "no microphone track is named: \(line)")
+        expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Recording at T (unmixed, 3 audio tracks).mp4").path), "kept under the name for three tracks")
+        // With the microphone: four, each named
+        let full = try recordWithBackup("backup-four-tracks", seconds: 2, tapDead: { _ in false })
+        _ = try await full.close()
+        let four = await RecordingMixer.inspect(full.recording.rawURL)
+        expect(four.audioTracks == 4 && four.hasCallAudio && four.hasMicrophone, "four tracks, the call tap's and the microphone's among them")
     }
 }

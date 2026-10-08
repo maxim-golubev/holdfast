@@ -207,6 +207,48 @@ func alignmentTests() async {
         expect(SystemAudioAlignment.Measurement.none.text.contains("not measured"), "and when it is not known")
     }
 
+    await test("alignment: a call of three minutes in an hour's recording is measured from windows spread over the call, not over the hour") {
+        // Sound that is the same for a frame every time it is read, and like itself nowhere else
+        func noise(_ frame: Int64) -> Float {
+            var x = UInt64(bitPattern: frame) &* 0x9E37_79B9_7F4A_7C15
+            x ^= x >> 29
+            x = x &* 0xBF58_476D_1CE4_E5B9
+            x ^= x >> 32
+            return Float(Int64(x % 2001) - 1000) / 5000
+        }
+        // An hour of the process tap's audio; the call tap's track has sound from 30:00 to 33:00 only, 700 frames later
+        let blocks = 360_000
+        let tap = [Float](repeating: 0.05, count: blocks)
+        let call = (0..<blocks).map { (180_000..<198_000).contains($0) ? Float(0.05) : 0 }
+        let extent = try require(SystemAudioAlignment.extent(of: call), "the call's extent")
+        expectClose(extent.lowerBound, 1800, within: 0.001, "the call begins at 30:00")
+        expectClose(extent.upperBound, 1980, within: 0.001, "and ends at 33:00")
+        expect(SystemAudioAlignment.extent(of: [Float](repeating: 0, count: 100)) == nil, "a silent track has none")
+        expect(SystemAudioAlignment.extent(of: [0, 0.000_2, 0]) == nil, "nor one below -70 dBFS")
+        let whole = SystemAudioAlignment.starts(tap: call, backup: tap, duration: 3600)
+        expect(whole.count < SystemAudioAlignment.fewest, "of 16 parts of the hour the call is in one or two: \(whole)")
+        let spread = SystemAudioAlignment.starts(tap: call, backup: tap, duration: 3600, within: extent)
+        expectEqual(spread.count, SystemAudioAlignment.windows, "16 windows over the call: \(spread)")
+        expect(spread.allSatisfy { $0 >= 1800 && $0 + SystemAudioAlignment.window <= 1980 }, "each inside it: \(spread)")
+        func measured(within: ClosedRange<Double>?) -> SystemAudioAlignment.Measurement {
+            SystemAudioAlignment.measure(tap: call, backup: tap, duration: 3600, rate: 48000, within: within) { source, first, count in
+                (0..<count).map { noise(first + Int64($0) - (source == .tap ? 700 : 0)) }
+            }
+        }
+        let over = measured(within: extent)
+        expectEqual(over.offset, 700.0 / 48000, "the call tap's audio 14.6 ms later: \(over)")
+        expectEqual(over.agreeing, SystemAudioAlignment.windows, "every window agrees")
+        expectEqual(measured(within: nil).offset, nil, "over the hour it could not be measured")
+        // A call of a few seconds still gets its three windows
+        let short = (0..<blocks).map { (180_000..<180_500).contains($0) ? Float(0.05) : 0 }
+        let few = SystemAudioAlignment.starts(tap: short, backup: tap, duration: 3600, within: SystemAudioAlignment.extent(of: short))
+        expect(few.count >= SystemAudioAlignment.fewest, "five seconds of call: \(few)")
+        // Without a stretch nothing changes
+        let both = [Float](repeating: 0.05, count: 6000)
+        expectEqual(SystemAudioAlignment.starts(tap: both, backup: both, duration: 60, within: 0...60), SystemAudioAlignment.starts(tap: both, backup: both, duration: 60),
+                    "the whole recording as the stretch is the whole recording")
+    }
+
     await test("system audio choice: a tap that is alive is the source whatever it holds, but for two seconds of nothing against the backup's sound") {
         let blocks = 3000
         let sound = [Float](repeating: 0.1, count: blocks)

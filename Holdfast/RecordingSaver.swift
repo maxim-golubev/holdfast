@@ -157,7 +157,7 @@ enum RecordingSaver {
                 report("Audio Mix Failed", of: recording, early + String(format: "Mixing the audio failed: %@", failure) + " " + movedNote(for: raw))
                 return
             }
-            let tracks = recording.systemAudioBackup ? "with each audio track as it was recorded (system audio from the process tap, its backup from screen capture, call audio from the call tap, the microphone)" : "with system audio and microphone as two separate audio tracks"
+            let tracks = recording.systemAudioBackup ? "with each audio track as it was recorded (\(RecoveryNames.tapTracks(call: true, microphone: recording.recordMic)))" : "with system audio and microphone as two separate audio tracks"
             let body = early + String(format: "Mixing the audio failed: %@ Nothing is lost: the recording is kept %@ in: %@", failure, tracks, kept.path)
             report("Audio Mix Failed", of: recording, body)
             if recording.showPreview { showPreview(url: kept, image: frame) }

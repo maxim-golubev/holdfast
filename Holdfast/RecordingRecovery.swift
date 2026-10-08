@@ -234,7 +234,7 @@ final class RecordingRecovery {
             : unfinished(seconds)
         let tracks = max(2, info.audioTracks)
         let separate = tracks > 2
-            ? "It plays, with its \(tracks) audio tracks as they were recorded (system audio from the process tap, its backup from screen capture, \(tracks > 3 ? "call audio from the call tap, " : "")the microphone); many players only play the first."
+            ? "It plays, with its \(tracks) audio tracks as they were recorded (\(RecoveryNames.tapTracks(call: info.hasCallAudio, microphone: info.hasMicrophone))); many players only play the first."
             : "It plays, with system audio and microphone as two separate audio tracks (many players only play the first, which is system audio)."
         let mixURL = RecordingFileStore.temporaryURL(base: base, marker: RecordingFileStore.mixMarker, ending: ending)
         let final = RecordingFileStore.freeURL(base: base, label: RecoveryNames.mix(complete: complete), ending: ending)

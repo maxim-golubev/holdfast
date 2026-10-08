@@ -490,6 +490,15 @@ enum RecoveryNames {
         return String(RecordingFileStore.unmixedSuffix(tracks: tracks).dropFirst(2).dropLast())
     }
 
+    /// What the audio tracks of a recording made with the process tap are, for a report about the file kept as it
+    /// was written: the tap's and the backup's always, the call tap's and the microphone's when the file has them
+    static func tapTracks(call: Bool, microphone: Bool) -> String {
+        var tracks = ["system audio from the process tap", "its backup from screen capture"]
+        if call { tracks.append("call audio from the call tap") }
+        if microphone { tracks.append("the microphone") }
+        return tracks.joined(separator: ", ")
+    }
+
     /// The mix of a recording that had been closed is complete and gets the final name, without a label
     static func mix(complete: Bool) -> String? {
         return complete ? nil : recovered

@@ -32,12 +32,6 @@ protocol RecordingCapture: AnyObject {
     func tapHeardAgain()
 }
 
-extension RecordingCapture {
-    /// A capture without a process tap
-    func rebuildDeafTap() {}
-    func tapHeardAgain() {}
-}
-
 /// The writer of a recording as its session and its monitor use it (`MovieWriter`). Sample queue.
 protocol RecordingWriter: AnyObject {
     var recording: RecordingContext { get }

@@ -125,9 +125,9 @@ line in the log:
 - **Microphone Is Not Being Recorded:** no audio from the microphone for 5
   seconds, or nothing but digital silence for 20 seconds.
 - **System Audio Is Not Being Recorded:** no system audio for 5 seconds, from
-  neither the process tap, its backup nor, during a call, the call tap. A tap
-  that stops while the backup goes on is not a problem: Holdfast rebuilds it
-  by itself and the recording has the sound meanwhile (the log says so).
+  neither the process tap nor its backup. A tap that stops while the backup
+  goes on is not a problem: Holdfast rebuilds it by itself and the recording
+  has the sound meanwhile (the log says so).
 - **Nothing Is Being Recorded Yet:** no picture 5 seconds after the start (a
   minimized window, a sleeping display). The file starts with the first picture;
   audio before it is not in it.
@@ -392,9 +392,10 @@ or the call tap had sound), never both at once.
 Screen capture cannot stand in for the tap during a FaceTime or phone call, so
 call audio has a safety net of its own: the **call tap**, a second process tap
 of only the part of macOS that plays those calls, built in another way than
-the first and recorded on a track of its own. It exists only while that part
-of macOS is using audio, so outside a call it costs nothing and its track is
-silence. Where the first tap was not the source during a call, the file you
+the first and recorded on a track of its own. It is built only while that
+part of macOS has audio open, which is expected to be only during a call
+(not yet confirmed on a real call); without it nothing extra runs, and
+outside a call its track is silence either way. Where the first tap was not the source during a call, the file you
 keep has the backup's sound plus the call tap's, which together are what the
 first tap would have recorded.
 
@@ -404,8 +405,9 @@ the tap stops delivering anyway, Holdfast notices after a second of silence
 from it, builds it again at once, in another way after two failures, and keeps
 trying every two seconds at most for as long as the recording runs; the backup
 records meanwhile. You are not asked to do anything; the log has each step.
-**System Audio Is Not Being Recorded** appears only when neither the tap, the
-backup nor the call tap delivers anything. Should the tap stay dead for 15
+**System Audio Is Not Being Recorded** appears only when neither the tap nor
+the backup delivers anything (the call tap hears calls only, so it does not
+count here). Should the tap stay dead for 15
 seconds during a call whose call tap delivers nothing either, the status item
 shows the triangle with **Call audio is not being recorded** until one of
 them is back or the call is over: everything else the Mac plays is still

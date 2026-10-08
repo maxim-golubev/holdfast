@@ -500,8 +500,9 @@ final class SystemAudioSource {
 /// (`TapClock.callOrder`: the tap alone in its aggregate device), has an IOProc of its own, and its buffers are
 /// stamped and handed on like the process tap's (it is a `SystemAudioSource` with the role `callAudio`).
 ///
-/// It costs nothing while no call runs: `avconferenced` has an audio process object only while it uses audio, and
-/// the tap exists only while it has one. The list of process objects is looked at when the recording starts and
+/// The tap exists only while `avconferenced` has an audio process object, which is expected to be only while it
+/// uses audio, during a call; that has not been observed on a device yet. If the process keeps its object while
+/// idle, the tap runs for the whole recording and delivers zeros outside calls. The list of process objects is looked at when the recording starts and
 /// whenever Core Audio says it changed (`kAudioHardwarePropertyProcessObjectList`), or every `pollSeconds` when that
 /// cannot be listened to. `onState` hears whether a call may be playing, on `control`.
 ///

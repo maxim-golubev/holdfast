@@ -76,12 +76,13 @@ final class CaptureSource: NSObject, SCStreamDelegate, SCStreamOutput, Recording
     private let onSample: (CaptureSample) -> Void
     private let onStop: (CaptureSource, Error) -> Void
 
-    /// `onSample` gets every buffer of every output, on `queue`; `systemAudio` is the running tap, which hands its
-    /// buffers to the same `onSample`. The stream's system audio is handed on as the backup when the recording has a
+    /// `onSample` gets every buffer of every output, on `queue`; `systemAudio` is the running tap and `callAudio` the
+    /// call tap's source beside it (both nil without the tap; neither has a default, so a caller cannot leave one
+    /// out unnoticed), which hand their buffers to the same `onSample`. The stream's system audio is handed on as the backup when the recording has a
     /// track for it (`RecordingContext.systemAudioBackup`). `onStop` is called, on a queue of the stream's, when the
     /// stream ends without having been asked to.
     init(filter: SCContentFilter, configuration: SCStreamConfiguration, recording: RecordingContext, microphone: MicrophoneChoice?,
-         systemAudio: SystemAudioSource?, callAudio: CallAudioSource? = nil, queue: DispatchQueue, onSample: @escaping (CaptureSample) -> Void,
+         systemAudio: SystemAudioSource?, callAudio: CallAudioSource?, queue: DispatchQueue, onSample: @escaping (CaptureSample) -> Void,
          onStop: @escaping (CaptureSource, Error) -> Void) {
         self.configuration = configuration
         self.systemAudio = systemAudio
