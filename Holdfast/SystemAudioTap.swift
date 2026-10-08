@@ -42,6 +42,8 @@ protocol TapHardware {
     func createAggregateDevice(name: String, uid: String, mainUID: String?, tapUID: String) throws -> AudioObjectID
     /// The device's nominal sample rate, nil when it cannot be read
     func nominalSampleRate(_ device: AudioObjectID) -> Double?
+    /// What the device says about how long audio is on its way to an IOProc, nil when it cannot be read
+    func inputDelay(_ device: AudioObjectID) -> TapInputDelay?
     func createIOProc(_ device: AudioObjectID, _ block: @escaping AudioDeviceIOBlock) throws -> AudioDeviceIOProcID
     /// How many streams the device has in its input (`input`) or output scope
     func streamCount(_ device: AudioObjectID, input: Bool) throws -> Int
@@ -56,6 +58,29 @@ protocol TapHardware {
     /// Calls `changed` on `queue` when one of `selectors` of `object` changes; nil when it cannot be watched
     func watch(_ object: AudioObjectID, _ selectors: [AudioObjectPropertySelector], queue: DispatchQueue, _ changed: @escaping () -> Void) -> TapListener?
     func unwatch(_ listener: TapListener)
+}
+
+extension TapHardware {
+    func inputDelay(_ device: AudioObjectID) -> TapInputDelay? { nil }
+}
+
+/// The figures a device gives for the way of its input to an IOProc, in frames: the device's latency and safety
+/// offset in the input scope (`kAudioDevicePropertyLatency`, `kAudioDevicePropertySafetyOffset`), the latency of its
+/// last input stream, which in the tap's aggregate device is the tap's (`kAudioStreamPropertyLatency`), and the size
+/// of its IO buffers (`kAudioDevicePropertyBufferFrameSize`). Read for the log only: see
+/// `SystemAudioBuffers.startTime`.
+struct TapInputDelay: Equatable {
+    var latency: UInt32
+    var safetyOffset: UInt32
+    var streamLatency: UInt32
+    var bufferFrames: UInt32
+
+    /// For the log, with the device's rate when it is known
+    func text(rate: Double?) -> String {
+        let frames = latency + safetyOffset + streamLatency + bufferFrames
+        let time = rate.flatMap { $0 > 0 ? String(format: " (%.1f ms at %d Hz)", Double(frames) / $0 * 1000, Int($0)) : nil } ?? ""
+        return "input latency \(latency), safety offset \(safetyOffset), stream latency \(streamLatency), IO buffer \(bufferFrames) frames: \(frames) in all\(time)"
+    }
 }
 
 struct TapOutputDevice: Equatable {
@@ -228,6 +253,11 @@ final class SystemAudioTap: SystemAudioTapping {
             undo.append { _ = hardware.destroyIOProc(aggregate, proc) }
             SystemAudioTap.useTapStreamOnly(hardware, aggregate, proc)
             try hardware.startDevice(aggregate, proc)
+            // What the device itself says its input is late by, to be held against what the mix measures between
+            // the tap's audio and the backup's (`SystemAudioAlignment`)
+            if let delay = hardware.inputDelay(aggregate) {
+                RecLog.write("System audio tap: its device reports " + delay.text(rate: hardware.nominalSampleRate(aggregate)))
+            }
         } catch {
             throw fail(error)
         }
@@ -373,7 +403,15 @@ enum SystemAudioBuffers {
     }
 
     /// When a buffer of `frames` frames at `rate` that arrived at the host time `hostTime` (in the units of
-    /// `mach_absolute_time`) starts, on the host-time clock: it ends when it arrived
+    /// `mach_absolute_time`) starts, on the host-time clock: it ends when it arrived.
+    ///
+    /// That is later than the sound was played by whatever the device held it for. Measured on 2026-10-07 the tap's
+    /// audio was a constant 52.4 ms (2515 frames at 48 kHz) later in its track than ScreenCaptureKit's. The device's
+    /// own figures (`TapInputDelay`) are not subtracted here: those of the aggregate device can only be read from a
+    /// tap that exists, and what could be read without one does not add up to it (the built-in output that clocks
+    /// it: output latency 70, safety offset 74, stream latency 690 frames, with the tap's IO buffer of 1024 frames
+    /// 1858 of the 2515). They are logged at every build instead, and the mix measures the real offset from the
+    /// sound of the two tracks and moves the tap's audio by it (`SystemAudioAlignment`), which is the final word.
     static func startTime(arrivedAt hostTime: UInt64, frames: Int, rate: Double) -> CMTime {
         let end = CMClockMakeHostTimeFromSystemUnits(hostTime)
         guard rate > 0, frames > 0 else { return end }
@@ -630,6 +668,29 @@ struct CoreAudioTapHardware: TapHardware {
         var rate: Float64 = 0
         guard CoreAudioTapHardware.read(device, kAudioDevicePropertyNominalSampleRate, &rate) == noErr, rate > 0 else { return nil }
         return rate
+    }
+
+    func inputDelay(_ device: AudioObjectID) -> TapInputDelay? {
+        func frames(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope) -> UInt32? {
+            var address = CoreAudioTapHardware.address(selector, scope)
+            var value: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            return AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr ? value : nil
+        }
+        let input = kAudioObjectPropertyScopeInput
+        guard let latency = frames(device, kAudioDevicePropertyLatency, input), let safety = frames(device, kAudioDevicePropertySafetyOffset, input),
+              let buffer = frames(device, kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal) else { return nil }
+        // The last input stream is the tap's
+        var address = CoreAudioTapHardware.address(kAudioDevicePropertyStreams, input)
+        var size: UInt32 = 0
+        var stream: UInt32 = 0
+        if AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size > 0 {
+            var streams = [AudioStreamID](repeating: 0, count: Int(size) / MemoryLayout<AudioStreamID>.size)
+            if AudioObjectGetPropertyData(device, &address, 0, nil, &size, &streams) == noErr, let last = streams.last {
+                stream = frames(last, kAudioStreamPropertyLatency, kAudioObjectPropertyScopeGlobal) ?? 0
+            }
+        }
+        return TapInputDelay(latency: latency, safetyOffset: safety, streamLatency: stream, bufferFrames: buffer)
     }
 
     func createIOProc(_ device: AudioObjectID, _ block: @escaping AudioDeviceIOBlock) throws -> AudioDeviceIOProcID {

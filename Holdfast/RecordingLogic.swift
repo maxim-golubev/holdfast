@@ -3,6 +3,7 @@
 //  Holdfast
 //
 
+import Accelerate
 import CoreMedia
 import Foundation
 
@@ -506,24 +507,26 @@ struct TapSpans: Equatable {
 /// stretch: the tap's, or the backup's (ScreenCaptureKit's system audio, recorded alongside for the whole recording).
 /// Never both at once, so nothing is heard twice.
 ///
-/// The timeline is cut into windows of `window` seconds, and further at every edge of the tap's recorded spans
-/// (`TapSpans`), so a switch falls where the tap stopped or came back to the sample, not at the next window. Each
-/// piece:
-/// - where the tap delivered real buffers (its span covers the piece) and they have signal: the tap;
-/// - otherwise, where the backup has signal: the backup;
-/// - otherwise neither has anything above `signal` (-70 dBFS): the source before it goes on, which holds nothing but
-///   silence there. Not switching in silence keeps the switches to where they matter. Where the tap was dead its
-///   track is silence, so that is always the backup, which holds what ScreenCaptureKit heard or silence.
+/// The tap is the source wherever its recorded spans (`TapSpans`) say it delivered, whatever it delivered: a tap
+/// that is alive is not judged by its sound. (Up to 2026-10-07 each half second went to whichever source had sound
+/// in it; a 45 s recording whose tap was alive and right throughout came out with 11.8 s from the backup in four
+/// stretches, each switch doubling or cutting a sound because the two tracks were 52 ms apart.) The backup is the
+/// source
+/// - where the tap was not alive: its track holds silence written in its place there, and past the end of the tap's
+///   track in a recording that was never closed (less than `tail` at the very start or end of the recording does
+///   not count: the two tracks never begin and end on the same sample);
+/// - in one case where it was: `silentRun` seconds or more of digital silence in the tap's track while the backup has
+///   signal there. That is a tap that runs and delivers nothing (a process without the permission gets exactly that).
+///   Digital silence is exact zeros as recorded, below `silent` once through the codec; the backup's signal must lie
+///   more than `inside` from the ends of the silence, so that the end of a sound the two tracks hold a little apart
+///   is not taken for it. Silence in both is no reason to switch, and the tap is silent whenever nothing plays.
 /// So a FaceTime call, which only the tap hears, is the tap's; a stretch in which the tap was dead is the backup's;
-/// and with both alive and hearing the same sound, the tap's alone.
+/// and with both alive and hearing the same sound, the tap's alone, with no switch at all.
 ///
-/// Content is judged per window because what counts is whether there is any sound worth taking, not where a word
-/// starts: 0.5 s gives a steady level and costs at most half a second of the other source when one is silent. The
-/// switch itself is a linear crossfade of `crossfade` seconds (the two sources carry the same sound within a buffer of
-/// each other, so a short fade hides the seam without a dip or a click). It lies on the side of the switch where both
-/// sources are good: before the edge where the tap died, after the edge where it came back, centred otherwise. It
-/// does not wait for a quiet moment: in a call there may be none for many seconds, and at the edge of an outage only
-/// one source has the sound.
+/// A switch is a linear crossfade of `crossfade` seconds on the side of the edge where the tap still has its sound:
+/// before the edge where it stopped, after the edge where it came back. It does not wait for a quiet moment: in a call
+/// there may be none for many seconds, and at the edge of an outage only one source has the sound. It is seamless when
+/// the two tracks are in step, which `SystemAudioAlignment` sees to before the mix.
 enum SystemAudioChoice {
     enum Source: String, Equatable {
         case tap, backup
@@ -535,15 +538,25 @@ enum SystemAudioChoice {
         var source: Source
     }
 
-    static let window = 0.5
     /// Levels are given as the RMS of every `block` seconds
     static let block = 0.01
     /// RMS above which a source has signal: -70 dBFS
     static let signal: Float = 0.000_316
+    /// RMS below which a block of the tap's track is digital silence: -100 dBFS. What was recorded is exact zeros; a
+    /// codec gives them back as zeros or next to it.
+    static let silent: Float = 0.000_01
+    /// How long the tap's track must be digital silence, while the backup has signal, to count as a tap that delivers
+    /// nothing
+    static let silentRun = 2.0
+    /// How far from the ends of such a silence the backup's signal must be: more than the two tracks can be apart
+    /// (`SystemAudioAlignment.limit`)
+    static let inside = 0.3
     static let crossfade = 0.005
     /// Pieces shorter than this do not count as the tap's, even where it delivered: a few milliseconds of tap
     /// between two switches would only be two fades
     static let shortest = 0.01
+    /// Less than this without the tap at the very start or end of the recording is left to the tap all the same
+    static let tail = 0.25
 
     /// RMS of `levels` (one per `block`) over `start` to `end` seconds
     static func level(_ levels: [Float], from start: Double, to end: Double) -> Float {
@@ -555,72 +568,102 @@ enum SystemAudioChoice {
         return (sum / Float(last - first)).squareRoot()
     }
 
-    /// The stretches of `duration` seconds and which source each takes. `tap` and `backup` are the levels of the two
-    /// tracks per `block`; `spans` where the tap delivered, nil when that was not recorded (then the tap counts as
-    /// delivering wherever its track has audio, and content alone decides).
-    static func plan(tap: [Float], backup: [Float], spans: TapSpans?, duration: Double) -> [Segment] {
+    /// The stretches of `duration` seconds and which source each takes, on the timeline of the mix. `tap` and `backup`
+    /// are the levels of the two tracks per `block`, each on its own track's timeline; `spans` where the tap
+    /// delivered, nil when that was not recorded (then it counts as alive for the whole of its track, and only its
+    /// digital silence against the backup's signal gives a stretch to the backup). `offset` is how many seconds the
+    /// tap's audio is later in its track than the same audio in the backup's (`SystemAudioAlignment`): the mix moves
+    /// the tap's audio that much earlier, and the stretches with it.
+    static func plan(tap: [Float], backup: [Float], spans: TapSpans?, duration: Double, offset: Double = 0) -> [Segment] {
         guard duration > 0 else { return [] }
-        var cuts = Set<Double>()
-        var t = window
-        while t < duration {
-            cuts.insert(t)
-            t += window
+        // On the timeline of the tap's track first. Where the tap's track has ended there is no tap.
+        let tapEnd = min(duration, Double(tap.count) * block)
+        var alive = [(start: Double, end: Double)]()
+        for span in spans?.spans ?? [TapSpans.Span(start: 0, end: .infinity)] {
+            let start = max(0, span.start), end = min(span.end, tapEnd)
+            if end - start >= shortest { alive.append((start, end)) }
         }
-        if let spans { cuts.formUnion(spans.edges(in: 0...duration)) }
-        let points = [0] + cuts.filter { $0 > 0 && $0 < duration }.sorted() + [duration]
+        // The backup's stretches: all that is not alive, and the tap's long silences the backup has signal in
+        var taken = [(start: Double, end: Double)]()
+        var cursor = 0.0
+        for piece in alive {
+            if piece.start > cursor { taken.append((cursor, piece.start)) }
+            cursor = max(cursor, piece.end)
+        }
+        if cursor < duration { taken.append((cursor, duration)) }
+        var index = 0
+        while index < tap.count {
+            guard tap[index] < silent else { index += 1; continue }
+            var end = index
+            while end < tap.count && tap[end] < silent { end += 1 }
+            let from = Double(index) * block, to = end == tap.count ? tapEnd : min(Double(end) * block, duration)
+            if to - from >= silentRun - 0.000_001, hasSignal(backup, from: from + inside - offset, to: to - inside - offset) { taken.append((from, to)) }
+            index = end
+        }
+        taken.sort { $0.start < $1.start }
+        var merged = [(start: Double, end: Double)]()
+        for piece in taken where piece.end > piece.start {
+            // The tap between two of the backup's stretches for less than `shortest` is not worth its two fades
+            if let last = merged.last, piece.start - last.end < shortest {
+                merged[merged.count - 1].end = max(last.end, piece.end)
+            } else {
+                merged.append(piece)
+            }
+        }
+        // A tap that begins a buffer after the recording, or ends one before it, was alive throughout: the tracks
+        // never begin and end on the same sample, and less than `tail` at an end is not worth a switch
+        if let first = merged.first, first.start <= 0, first.end < tail { merged.removeFirst() }
+        if let last = merged.last, last.end >= duration, duration - last.start < tail { merged.removeLast() }
+        // Onto the timeline of the mix: the tap's audio, and with it every edge, `offset` earlier. Moving the tap's
+        // track leaves up to `offset` at one end of the recording without it; the tap stays the source there, so a
+        // tap alive throughout has no stretch from the backup.
         var segments = [Segment]()
-        var previous: Source?
-        for index in 0..<(points.count - 1) {
-            let start = points[index], end = points[index + 1]
-            guard end > start else { continue }
-            // A sliver between an edge and a window's end or the end of the audio is no stretch of its own
-            if end - start < 0.001, !segments.isEmpty {
-                segments[segments.count - 1].end = end
-                continue
-            }
-            let alive = end - start >= shortest && (spans?.covers(start, end) ?? true)
-            // The backup is judged over the window the piece is in; the tap over the piece itself where its spans are
-            // known (the rest of the window may be silence written in its place), else over the window too
-            let windowStart = (start / window).rounded(.down) * window
-            let windowEnd = min(duration, windowStart + window)
-            let source: Source
-            if !alive {
-                source = .backup
-            } else if level(tap, from: spans == nil ? windowStart : start, to: spans == nil ? windowEnd : end) > signal {
-                source = .tap
-            } else if level(backup, from: windowStart, to: windowEnd) > signal {
-                source = .backup
-            } else {
-                source = previous ?? .tap
-            }
-            previous = source
-            if let last = segments.last, last.source == source, abs(last.end - start) < 1e-9 {
+        var position = 0.0
+        func add(_ end: Double, _ source: Source) {
+            let end = min(duration, max(position, end))
+            guard end > position else { return }
+            if let last = segments.last, last.source == source {
                 segments[segments.count - 1].end = end
             } else {
-                segments.append(Segment(start: start, end: end, source: source))
+                segments.append(Segment(start: position, end: end, source: source))
             }
+            position = end
         }
+        for piece in merged {
+            // A stretch that begins or ends with the recording does so in the mix too
+            let start = piece.start <= 0 ? 0 : piece.start - offset
+            let end = piece.end >= duration ? duration : piece.end - offset
+            add(start, .tap)
+            add(end, .backup)
+        }
+        add(duration, .tap)
         return segments
     }
 
+    /// Whether any block of `levels` between `start` and `end` seconds is above `signal`
+    private static func hasSignal(_ levels: [Float], from start: Double, to end: Double) -> Bool {
+        let first = max(0, Int((start / block).rounded(.up)))
+        let last = min(levels.count, Int((end / block).rounded(.down)))
+        guard first < last else { return false }
+        return levels[first..<last].contains { $0 > signal }
+    }
+
     /// The gain of the tap's track over time for `segments` (the backup's is one minus it): one in the tap's
-    /// stretches, zero in the backup's, a linear fade of `crossfade` at each switch, placed where both sources are
-    /// good (see the type)
-    static func tapGain(for segments: [Segment], spans: TapSpans?) -> GainCurve {
+    /// stretches, zero in the backup's, a linear fade of `crossfade` at each switch, inside the tap's stretch: the
+    /// backup's stretches are those in which the tap's track has nothing
+    static func tapGain(for segments: [Segment]) -> GainCurve {
         guard let first = segments.first else { return GainCurve(points: [(0, 1)]) }
         var points: [(time: Double, gain: Float)] = [(0, first.source == .tap ? 1 : 0)]
         for index in segments.indices.dropFirst() {
             let before = segments[index - 1], after = segments[index]
             let edge = after.start
-            var from = edge - crossfade / 2, to = edge + crossfade / 2
-            if before.source == .tap, let spans, !spans.isAlive(at: edge, after: true) {
-                (from, to) = (edge - crossfade, edge)
-            } else if after.source == .tap, let spans, !spans.isAlive(at: edge, after: false) {
-                (from, to) = (edge, edge + crossfade)
+            var from = edge, to = edge
+            if before.source == .tap {
+                // Never beyond the middle of the tap's stretch
+                from = max(edge - crossfade, (before.start + edge) / 2)
+            } else {
+                to = min(edge + crossfade, (edge + after.end) / 2)
             }
-            // Never beyond the middle of a neighbouring stretch
-            from = max(from, (before.start + edge) / 2)
-            to = min(to, (edge + after.end) / 2)
             points.append((from, before.source == .tap ? 1 : 0))
             points.append((to, after.source == .tap ? 1 : 0))
         }
@@ -633,6 +676,149 @@ enum SystemAudioChoice {
         let backup = segments.filter { $0.source == .backup }.reduce(0) { $0 + $1.end - $1.start }
         let stretches = segments.filter { $0.source == .backup }.count
         return String(format: "%.1f s from the process tap, %.1f s from the backup in %d %@", tap, backup, stretches, stretches == 1 ? "stretch" : "stretches")
+    }
+}
+
+/// How far apart the process tap's and the backup's tracks hold the same sound, measured from the sound itself
+/// before the mix, so the mix can put the tap's audio on the backup's timeline.
+///
+/// Measured on the owner's Mac on 2026-10-07 (AirPods in 24 kHz call mode, voice processing switched on mid-way):
+/// the tap's audio was 52.4 ms later in its track than the backup's, the same at five points of the recording.
+/// ScreenCaptureKit stamps its audio to go with its pictures, so the backup's timeline is the one in step with the
+/// video; a tap buffer is stamped as ending when its IOProc was called, which leaves out whatever the device held it
+/// for before that. With the two tracks apart, a switch between them doubles or cuts a sound.
+///
+/// `windows` stretches of `window` seconds spread over the recording, each where both tracks have sound, are compared:
+/// the backup's stretch against the tap's track `reach` either way, by normalised cross-correlation of the samples.
+/// A window counts when its best match is at least `likeness`, lies within `limit`, and has no rival (another peak
+/// nearly as good, as any steady tone has one every period). The windows must agree: at least `fewest` of them, and
+/// two in three of those that count, within `agreement` of their median. Anything else is "not known", and the tap
+/// is then used as it was stamped: a FaceTime call, which the backup does not hear, has no common sound at all.
+enum SystemAudioAlignment {
+    /// The most the tracks may be apart for a measurement to be believed
+    static let limit = 0.25
+    /// How far each way the tap's track is searched: past `limit`, so a match at the limit is a peak, not an edge
+    static let reach = 0.3
+    static let window = 1.0
+    static let windows = 16
+    /// Both tracks must be above this RMS in a window: -60 dBFS
+    static let level: Float = 0.001
+    static let likeness: Float = 0.5
+    /// Another peak at this share of the best one, or more, makes a window ambiguous
+    static let rival: Float = 0.9
+    /// Peaks nearer the best one than this are the same peak
+    static let peakWidth = 0.000_5
+    /// The tap's track follows its device's clock within `TapDrift.begins`, so windows may differ by a few
+    /// milliseconds and still measure the same thing
+    static let agreement = 0.005
+    static let fewest = 3
+
+    struct Measurement: Equatable {
+        /// Seconds the tap's audio is later in its track than the same audio in the backup's (negative: earlier),
+        /// a whole number of samples; nil when it could not be measured
+        var offset: Double?
+        /// Windows whose measurements agree, of those compared
+        var agreeing: Int
+        var windows: Int
+
+        static let none = Measurement(offset: nil, agreeing: 0, windows: 0)
+
+        /// For the log
+        var text: String {
+            guard let offset else {
+                let why = windows == 0 ? "no stretch with sound in both the tap's and the backup's audio"
+                    : "of \(windows) \(windows == 1 ? "window" : "windows") with sound in both, \(agreeing) \(agreeing == 1 ? "gives" : "agree on") an offset"
+                return "not measured (\(why)): the tap's audio is used as it was stamped"
+            }
+            let side = offset < 0 ? "earlier" : "later"
+            return String(format: "the tap's audio is %.1f ms %@ than the backup's (%d of %d windows agree) and is moved onto the backup's timeline", abs(offset) * 1000, side, agreeing, windows)
+        }
+    }
+
+    /// Where the windows to compare start, in seconds: in each of up to `windows` equal parts of the recording the
+    /// one in which the quieter of the two tracks is loudest, when both are above `level` there. `tap` and `backup`
+    /// are the tracks' levels per `SystemAudioChoice.block`.
+    static func starts(tap: [Float], backup: [Float], duration: Double) -> [Double] {
+        let first = reach, last = min(duration, Double(min(tap.count, backup.count)) * SystemAudioChoice.block) - window - reach
+        guard last > first else { return [] }
+        let parts = max(1, min(windows, Int((last - first) / window)))
+        let length = (last - first) / Double(parts)
+        var starts = [Double]()
+        for part in 0..<parts {
+            var best: (start: Double, level: Float)?
+            var start = first + Double(part) * length
+            let end = part == parts - 1 ? last : start + length
+            while start <= end {
+                let quieter = min(SystemAudioChoice.level(tap, from: start, to: start + window), SystemAudioChoice.level(backup, from: start, to: start + window))
+                if quieter > level, quieter > best?.level ?? 0 { best = (start, quieter) }
+                start += window / 4
+            }
+            if let best, best.start - (starts.last ?? -.infinity) >= window / 2 { starts.append(best.start) }
+        }
+        return starts
+    }
+
+    /// How many frames later `reference` is found in `searched` than at `margin` frames from its start, where it would
+    /// be with the two in step; nil when no place matches well enough or more than one does. `searched` is longer than
+    /// `reference` by twice `margin`; a match is accepted up to `most` frames either way, and peaks within `width`
+    /// frames of each other are one.
+    static func lag(of reference: [Float], in searched: [Float], margin: Int, most: Int, width: Int) -> Int? {
+        let count = reference.count, lags = searched.count - count + 1
+        guard count > 0, lags > 0 else { return nil }
+        var products = [Float](repeating: 0, count: lags)
+        vDSP_conv(searched, 1, reference, 1, &products, 1, vDSP_Length(lags), vDSP_Length(count))
+        var referenceEnergy: Float = 0
+        vDSP_svesq(reference, 1, &referenceEnergy, vDSP_Length(count))
+        guard referenceEnergy > 0 else { return nil }
+        // The energy of the part of `searched` under the reference, for each place
+        var sums = [Double](repeating: 0, count: searched.count + 1)
+        for index in searched.indices { sums[index + 1] = sums[index] + Double(searched[index]) * Double(searched[index]) }
+        let loudest = (0..<lags).reduce(0.0) { max($0, sums[$1 + count] - sums[$1]) }
+        guard loudest > 0 else { return nil }
+        var likeness = [Float](repeating: 0, count: lags)
+        for index in 0..<lags {
+            let energy = sums[index + count] - sums[index]
+            // A place with next to nothing in it matches nothing
+            guard energy > loudest / 100 else { continue }
+            likeness[index] = products[index] / Float((Double(referenceEnergy) * energy).squareRoot())
+        }
+        guard let best = likeness.indices.max(by: { likeness[$0] < likeness[$1] }), likeness[best] >= SystemAudioAlignment.likeness,
+              abs(best - margin) <= most else { return nil }
+        for index in likeness.indices where abs(index - best) > width && likeness[index] >= rival * likeness[best] {
+            let before = index > 0 ? likeness[index - 1] : -1, after = index + 1 < lags ? likeness[index + 1] : -1
+            if likeness[index] >= before && likeness[index] >= after { return nil }
+        }
+        return best - margin
+    }
+
+    /// What the windows' offsets, in frames at `rate`, say together; `windows` is how many were compared
+    static func agree(_ offsets: [Int], windows: Int, rate: Double) -> Measurement {
+        guard !offsets.isEmpty else { return Measurement(offset: nil, agreeing: 0, windows: windows) }
+        func median(_ values: [Int]) -> Int { values.sorted()[values.count / 2] }
+        let middle = median(offsets)
+        let near = offsets.filter { Double(abs($0 - middle)) <= agreement * rate }
+        guard near.count >= fewest, near.count * 3 >= offsets.count * 2 else { return Measurement(offset: nil, agreeing: near.count, windows: windows) }
+        return Measurement(offset: Double(median(near)) / rate, agreeing: near.count, windows: windows)
+    }
+
+    /// Measures the offset of a recording. `tap` and `backup` are the tracks' levels, `read` gives `count` frames of
+    /// one of the tracks from frame `first` on as one channel (silence where the track has none; `first` may be
+    /// negative), at `rate` frames a second.
+    static func measure(tap: [Float], backup: [Float], duration: Double, rate: Double,
+                        read: (SystemAudioChoice.Source, Int64, Int) throws -> [Float]) rethrows -> Measurement {
+        let starts = starts(tap: tap, backup: backup, duration: duration)
+        let count = Int((window * rate).rounded()), margin = Int((reach * rate).rounded())
+        var offsets = [Int]()
+        for start in starts {
+            let first = Int64((start * rate).rounded())
+            let reference = try read(.backup, first, count)
+            let searched = try read(.tap, first - Int64(margin), count + 2 * margin)
+            guard reference.count == count, searched.count == count + 2 * margin else { continue }
+            if let lag = lag(of: reference, in: searched, margin: margin, most: Int((limit * rate).rounded()), width: Int((peakWidth * rate).rounded())) {
+                offsets.append(lag)
+            }
+        }
+        return agree(offsets, windows: starts.count, rate: rate)
     }
 }
 

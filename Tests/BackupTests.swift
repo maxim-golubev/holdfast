@@ -131,7 +131,7 @@ func backupTests() async {
         expect(TapSpans.read(URL(fileURLWithPath: "/nonexistent/spans")) == nil, "no file: not known")
     }
 
-    await test("system audio choice: the tap where it delivered with signal, the backup where it was dead, never both") {
+    await test("system audio choice: the tap wherever it delivered, the backup where it was dead, never both") {
         let blocks = 3000 // 30 s
         let sound = [Float](repeating: 0.1, count: blocks)
         let quiet = [Float](repeating: 0, count: blocks)
@@ -140,7 +140,7 @@ func backupTests() async {
         let spans = TapSpans([.init(start: 0, end: 27), .init(start: 28, end: 30)])
         let plan = SystemAudioChoice.plan(tap: tapLevels { $0 >= 27 && $0 < 28 }, backup: sound, spans: spans, duration: 30)
         expectEqual(plan, [.init(start: 0, end: 27, source: .tap), .init(start: 27, end: 28, source: .backup), .init(start: 28, end: 30, source: .tap)], "switched where the spans say, to the sample")
-        let gain = SystemAudioChoice.tapGain(for: plan, spans: spans)
+        let gain = SystemAudioChoice.tapGain(for: plan)
         expectEqual(gain.value(at: 26.99), 1, "the tap up to just before it died")
         expectEqual(gain.value(at: 27), 0, "the backup from the moment it died: the fade lies before")
         expectClose(Double(gain.value(at: 26.9975)), 0.5, within: 0.001, "a 5 ms fade")
@@ -156,14 +156,14 @@ func backupTests() async {
         // Both alive and hearing the same: the tap alone
         expectEqual(SystemAudioChoice.plan(tap: sound, backup: sound, spans: TapSpans([.init(start: 0, end: 30)]), duration: 30), [.init(start: 0, end: 30, source: .tap)], "no doubling")
         // A tap that delivers only zeros (no permission) while the backup hears
-        expectEqual(SystemAudioChoice.plan(tap: quiet, backup: sound, spans: TapSpans([.init(start: 0, end: 30)]), duration: 30), [.init(start: 0, end: 30, source: .backup)], "content decides between two that are alive")
+        expectEqual(SystemAudioChoice.plan(tap: quiet, backup: sound, spans: TapSpans([.init(start: 0, end: 30)]), duration: 30), [.init(start: 0, end: 30, source: .backup)], "a tap that delivers nothing while the backup hears")
         // Silence does not switch: a pause in a call keeps the tap
         var pauses = sound
         for index in 1000..<1500 { pauses[index] = 0 }
         let both = SystemAudioChoice.plan(tap: pauses, backup: pauses, spans: TapSpans([.init(start: 0, end: 30)]), duration: 30)
         expectEqual(both, [.init(start: 0, end: 30, source: .tap)], "silence in both keeps the source")
         // Not known where the tap delivered: its sound alone
-        expectEqual(SystemAudioChoice.plan(tap: tapLevels { $0 >= 10 && $0 < 12 }, backup: sound, spans: nil, duration: 30).map(\.source), [.tap, .backup, .tap], "judged by the sound")
+        expectEqual(SystemAudioChoice.plan(tap: tapLevels { $0 >= 10 && $0 < 12 }, backup: sound, spans: nil, duration: 30).map(\.source), [.tap, .backup, .tap], "two seconds of nothing against the backup's sound")
         expect(SystemAudioChoice.summary(plan).contains("1.0 s from the backup in 1 stretch"), "for the log: \(SystemAudioChoice.summary(plan))")
         // The curve read sample by sample
         var cursor = 0

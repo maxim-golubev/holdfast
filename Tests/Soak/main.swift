@@ -266,6 +266,23 @@ case "record", "kill":
             for segment in plan.segments where segment.source == .backup {
                 say(String(format: "    the backup from %.3f s to %.3f s", segment.start, segment.end))
             }
+            say("  alignment: " + (plan.alignment?.text ?? "none"))
+            // The tap is the source wherever it was alive: the backup's stretches are the gaps between the tap's
+            // spans and nothing else, each moved by no more than the alignment allows
+            if let spans {
+                var gaps = [(start: Double, end: Double)]()
+                var cursor = 0.0
+                for span in spans.spans {
+                    if span.start > cursor { gaps.append((cursor, span.start)) }
+                    cursor = max(cursor, span.end)
+                }
+                let taken = plan.segments.filter { $0.source == .backup }
+                let reach = SystemAudioAlignment.limit + 0.002
+                let matched = taken.allSatisfy { segment in gaps.contains { abs($0.start - segment.start) <= reach && abs($0.end - segment.end) <= reach } }
+                if taken.count != gaps.count || !matched {
+                    Found.problems.append("the mix takes the backup in \(taken.count) stretches, the tap was dead in \(gaps.count): the backup must be used where the tap was dead and nowhere else")
+                }
+            }
             try await RecordingMixer.verify(source: recording.rawURL, output: mixURL, plan: plan)
             say(String(format: "  verified in %.1f s", Date().timeIntervalSince(mixed)))
             try FileManager.default.moveItem(at: mixURL, to: recording.finalURL)

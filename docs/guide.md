@@ -205,9 +205,11 @@ Recordings are named by the date and time they started, in the save folder:
 | `Recording at 2026-10-04 14.03.22.mixing.mp4` | A mix being written. It gets the final name only once it is complete and checked. |
 
 The system audio in the mix comes, stretch by stretch, from the process tap
-where it delivered and has sound, otherwise from its backup, never from both at
-once: a stretch in which the tap was dead has the backup's sound, a FaceTime
-call (which only the tap hears) the tap's. The mix is checked before anything is
+wherever it delivered, otherwise from its backup, never from both at once: a
+stretch in which the tap was dead has the backup's sound, a FaceTime call
+(which only the tap hears) the tap's. The tap's sound is put in step with the
+backup's first, which is the one in step with the picture, so a switch between
+them cannot be heard; the unmixed file keeps both tracks as they were recorded. The mix is checked before anything is
 renamed: one video and one audio track, the same length as the recording to
 within a second, the microphone audible in the mix wherever it was alone in the
 recording, and the system audio at its level wherever it was alone (not
@@ -343,8 +345,9 @@ recording, Holdfast records screen capture's system audio as a backup on a
 track of its own. The tap hears FaceTime and phone calls taken on the Mac,
 which screen capture leaves out; screen capture hears Zoom, Meet and calls in a
 browser like any other sound. After the recording, the system audio of the
-file you keep is the tap's wherever the tap delivered sound, and the backup's
-where it did not, never both at once.
+file you keep is the tap's wherever the tap delivered, and the backup's where
+it did not (or delivered only silence for two seconds or more while the backup
+had sound), never both at once.
 
 The tap does not depend on your output device: switching to AirPods or
 headphones, or AirPods going into their call mode, changes nothing for it. If

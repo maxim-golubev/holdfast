@@ -93,7 +93,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 186 tests in about a minute and a half (92 s measured), without the
+`Tools/test.sh` runs 192 tests in about two minutes (114 s measured), without the
 app, a screen or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
@@ -135,10 +135,38 @@ recording:
   throughout; the tap clocked by the built-in output in such a recording (the
   constructions were measured with `Tools/tapexp`, below, not yet in the app);
   a tap that dies being rebuilt within about a second, with the log's lines and
-  no warning; the backup's sound, from screen capture, in step with the tap's;
+  no warning; the mix measuring the offset between the tap's sound and the
+  backup's and moving the tap's by it (the offset itself was measured, see "The
+  tap against its backup"; the measurement inside the mix is covered by tests
+  with synthetic tracks 52.4 ms apart, not yet by a real recording), with "0.0 s
+  from the backup" in the log and the mixed sound in step with the picture;
   its permission prompt and what the permission reads as before and after; the
   sync of tap audio with the picture over a long recording; that with AirPods
   as the output the tap leaves their microphone closed.
+
+## The tap against its backup
+
+Measured on the owner's Mac on 2026-10-07 in a 45 s recording, with the AirPods
+in their 24 kHz call mode and voice processing switched on by another process
+mid-recording (the events that used to lose the tap's audio):
+
+- The tap's track and the backup's track both held every sound; no rebuild and
+  no timestamp warning in the log.
+- The two tracks are a constant 52.4 ms apart: by cross-correlation at five
+  points (music before the call; test sounds before, during and after call
+  mode and voice processing) the backup's audio is 52.4 ms earlier than the
+  tap's every time.
+- The mix of that build, which gave each half second to whichever source had
+  sound in it, logged "33.3 s from the process tap, 11.8 s from the backup in 4
+  stretches" although the tap was alive throughout; with the tracks 52 ms
+  apart every such switch doubles or cuts a sound. The mix now takes the tap
+  wherever it was alive and moves its audio by the offset it measures; that
+  version has not been run on the machine yet.
+- Read without a tap, the built-in output that clocks the tap's device reports
+  an output latency of 70, a safety offset of 74 and a stream latency of 690
+  frames at 48 kHz (17.4 ms); with the tap's IO buffer of 1024 frames that is
+  38.7 ms of the 52.4 ms. The aggregate device's own figures are logged when a
+  tap is built and have not been read yet.
 
 ## Process tap constructions (Tools/tapexp)
 
@@ -225,7 +253,12 @@ machine.
   showed "Call audio is not being recorded" from 15 s until the tap was back
   (this tap is not rebuilt during the outage), and raised no warning.
 - **Mix:** 5,249.9 s from the tap, 30.0 s from the backup in one stretch,
-  2,214.898 to 2,244.921 s. The check after the mix passed (29 of 30 windows had
+  2,214.898 to 2,244.921 s: the gap in the tap's spans and nothing else (the
+  run fails when the backup is taken anywhere the tap was alive). The offset
+  between the two tracks was not measured there, as intended: the simulation's
+  system audio is bursts of a steady tone, which match themselves a period
+  further on as well (16 windows compared, none counted), so the tap's audio
+  went in as stamped. The check after the mix passed (29 of 30 windows had
   the microphone alone, all audible in the mix; the one with system audio alone
   had it at its level); every marker of every source is in the mixed file
   within 0.1 ms of where it is in the recording, and the mixed track has no

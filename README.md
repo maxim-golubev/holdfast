@@ -97,7 +97,7 @@ One state machine owns each recording, with one way in and one way out, so a
 stop pressed three times saves one recording once, and quitting waits for the
 final file. A recording starts the moment it is asked for: one that was stopped
 goes on being closed and mixed by itself, under its own name, while the next
-one runs. 186 tests run in about a minute and a half without the app, a screen, or
+one runs. 192 tests run in about two minutes without the app, a screen, or
 a microphone: they drive the real writer, converter, monitor, mixer and
 recovery with synthetic buffers and check the files they write.
 
@@ -141,7 +141,7 @@ identifier in Xcode.
 
 ```sh
 Tools/build.sh      # Release build into build/, prints BUILD SUCCEEDED
-Tools/test.sh       # the tests, about a minute, no app, screen or microphone
+Tools/test.sh       # the tests, about two minutes, no app, screen or microphone
 Tools/release.sh    # build/release/Holdfast-<version>.zip, signed and verified
 ```
 
