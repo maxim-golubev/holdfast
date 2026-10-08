@@ -187,7 +187,7 @@ for t in 1...max(1, seconds) {
     sleep(1)
     meter.lock.lock()
     let rms = meter.count > 0 ? (meter.sumSq / Double(meter.count)).squareRoot() : 0
-    let line = String(format: "t=%2d callbacks=%3d rms=%6.1f dB peak=%6.1f dB", t, meter.callbacks, rms > 0 ? 20 * log10(rms) : -180, meter.peak > 0 ? 20 * log10(Double(meter.peak)) : -180)
+    let line = String(format: "t=%2d callbacks=%3d rms=%6.1f dB peak=%6.1f dB", t, meter.callbacks, rms > 0 ? 20 * log10(rms) : -180.0, meter.peak > 0 ? 20 * log10(Double(meter.peak)) : -180.0)
     let layout = printedLayout ? nil : meter.firstLayout
     meter.sumSq = 0; meter.count = 0; meter.peak = 0; meter.callbacks = 0
     meter.lock.unlock()

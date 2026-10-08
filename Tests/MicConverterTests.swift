@@ -526,6 +526,9 @@ func micConverterTests() async {
         for part in ["122 buffers in", "110 written", "10 dropped", "2 failed", "all-zero", "s of silence filled", "0 format changes", "24000 Hz x1"] {
             expect(summary.contains(part), "summary contains \"\(part)\": \(summary)")
         }
+        expect(!summary.contains("nan"), "no figure of the summary is nan: \(summary)")
+        let unused = MicConverter()?.summary ?? ""
+        expect(unused.contains("loudest peak -180.0 dBFS"), "a microphone that delivered only zeros has a peak of -180 dBFS: \(unused)")
     }
 
     await test("MicConverter: the track is as long as the recording, whatever the microphone did") {

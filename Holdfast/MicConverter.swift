@@ -123,9 +123,12 @@ final class MicConverter {
     var summary: String {
         let rate = Double(MicConverter.sampleRate)
         let format = inputFormat.map { "\(Int($0.sampleRate)) Hz x\($0.channelCount)" } ?? "none"
+        // A Double of its own: inside the argument list the two branches of a conditional may differ in type, and
+        // an integer handed to %f prints as nan
+        let peak: Double = loudestPeak > 0 ? 20 * log10(Double(loudestPeak)) : -180
         return String(format: "microphone: %d buffers in, %d written (%.1f s of audio), %d dropped, %d failed, %d all-zero, %.1f s of silence filled, %d format changes, loudest peak %.1f dBFS, last device format %@",
                       buffersIn, buffersWritten, Double(framesWritten) / rate, buffersDropped, buffersFailed, buffersAllZero,
-                      Double(silenceFrames) / rate, formatChanges, loudestPeak > 0 ? 20 * log10(Double(loudestPeak)) : -180, format)
+                      Double(silenceFrames) / rate, formatChanges, peak, format)
     }
 
     init?() {
