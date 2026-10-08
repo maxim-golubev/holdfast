@@ -206,7 +206,8 @@ extension RecorderController {
         // comes from avconferenced, not from the call's app.
         var systemAudio: SystemAudioSource?
         let route = SystemAudioSelection.choose(wanted: recording.systemAudio, permission: permission) {
-            let source = SystemAudioSource(factory: .coreAudio, sampleQueue: session.queue, onSample: deliver)
+            // The injection is nil unless the app was launched with a device test's environment variables
+            let source = SystemAudioSource(factory: .coreAudio, sampleQueue: session.queue, injection: TapFailureInjection.launch.whenActive, onSample: deliver)
             try source.start()
             systemAudio = source
         }

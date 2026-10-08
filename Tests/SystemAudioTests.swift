@@ -198,6 +198,25 @@ final class FakeTapFactory {
     }
 }
 
+/// Calls the IOProc of every tap `fakes` has made, the rebuilt ones' too, every 10 ms until `stop`
+final class EveryTap {
+    private let stopped = NSLock()
+    private var running = true
+    init(_ fakes: FakeTapFactory, interleaved: Bool = true) {
+        DispatchQueue.global().async { [self] in
+            // A buffer of its own each time, as the IOProc copies one: the source may change what it is handed
+            while isRunning {
+                for tap in fakes.taps {
+                    if let buffer = try? tapBuffer(tapFormat(interleaved: interleaved), frames: 480, at: time(1)) { tap.deliver(buffer) }
+                }
+                usleep(10_000)
+            }
+        }
+    }
+    private var isRunning: Bool { stopped.lock(); defer { stopped.unlock() }; return running }
+    func stop() { stopped.lock(); running = false; stopped.unlock() }
+}
+
 /// Keeps `tap` delivering a buffer every 10 ms on a queue of its own, as a live IOProc does, until `stop`
 final class LiveTap {
     private let stopped = NSLock()
@@ -724,6 +743,86 @@ func systemAudioTests() async {
         live.stop()
         alive.stop()
         expect(RecLog.lines.last?.contains("process tap stopped") == true, "the stop is logged with the count: \(RecLog.lines.suffix(2))")
+    }
+
+    await test("system audio source: a device test's dead span holds back every tap, which is rebuilt as a dead one is, until the span ends") {
+        let fakes = FakeTapFactory()
+        let queue = DispatchQueue(label: "HoldfastTests.tap")
+        let received = Journal()
+        let injection = try require(TapFailureInjection(environment: [TapFailureInjection.deadKey: "0.3-1"]).whenActive, "an injection")
+        let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, stallSeconds: 0.1, checkInterval: 0.02, waitScale: 0.02, injection: injection) { _ in
+            received.note("sample")
+        }
+        let started = Date()
+        try source.start()
+        expect(RecLog.lines.first?.hasPrefix("Test hook: HOLDFAST_TEST_TAP_DEAD is set: from 0.3 to 1 s") == true, "the recording's log begins with the hook: \(RecLog.lines)")
+        // Every tap's IOProc is called every 10 ms for the whole test, the rebuilt ones' too
+        let feeding = EveryTap(fakes)
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        expectEqual(fakes.taps.count, 1, "before the span the tap is left alone")
+        let before = received.count("sample")
+        expect(before >= 10, "and its buffers are handed on: \(before)")
+        expect(await waitUntil { fakes.taps.count >= 4 }, "inside the span it counts as dead and is rebuilt, again and again")
+        expect(Date().timeIntervalSince(started) < 1, "while the span lasts")
+        let inside = received.count("sample")
+        expect(inside - before <= 6, "nothing is handed on inside the span (but what arrived as it began): \(inside - before)")
+        expectEqual(fakes.taps.prefix(4).map(\.clock), [.builtInOutput, .builtInOutput, .none, .none], "the same construction once more, then the next, as for a real failure")
+        expect(RecLog.lines.contains { $0.contains("failed (its IOProc handed on nothing for") }, "found by the stall check: \(RecLog.lines)")
+        expect(RecLog.lines.contains("Test hook: from here the process tap's buffers are not handed on (HOLDFAST_TEST_TAP_DEAD, until 1 s)"), "the log says where the span began: \(RecLog.lines)")
+        expect(await waitUntil { RecLog.lines.contains("Test hook: from here the process tap's buffers are handed on unchanged again") }, "and where it ended")
+        expect(Date().timeIntervalSince(started) >= 1, "not before its end")
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        let kept = fakes.taps.count
+        let after = received.count("sample")
+        expect(after > inside, "after the span the newest tap's buffers are handed on: \(after - inside)")
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        expectEqual(fakes.taps.count, kept, "and it is not rebuilt any more")
+        expect(received.count("sample") > after + 10, "it goes on delivering")
+        source.stopNow()
+        feeding.stop()
+    }
+
+    await test("system audio source: a device test's zeros span hands the tap's buffers on with every sample zero, and only inside the span") {
+        for interleaved in [true, false] {
+            let fakes = FakeTapFactory()
+            let queue = DispatchQueue(label: "HoldfastTests.tap")
+            var peaks = [Float]()
+            let injection = try require(TapFailureInjection(environment: [TapFailureInjection.zerosKey: "0.2-0.5"]).whenActive, "an injection")
+            let source = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, stallSeconds: 0.1, checkInterval: 0.02, waitScale: 0.02, injection: injection) { sample in
+                peaks.append(MovieWriter.peak(of: sample.buffer))
+            }
+            try source.start()
+            let feeding = EveryTap(fakes, interleaved: interleaved)
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            source.stopNow()
+            feeding.stop()
+            let heard = queue.sync { peaks }
+            let firstZero = try require(heard.firstIndex(of: 0), "buffers of zeros")
+            let lastZero = try require(heard.lastIndex(of: 0), "buffers of zeros")
+            expect(firstZero >= 5, "the tap's own audio before the span: \(firstZero) buffers")
+            expect(heard.count - 1 - lastZero >= 5, "and after it: \(heard.count - 1 - lastZero) buffers")
+            expect(heard[firstZero...lastZero].allSatisfy { $0 == 0 }, "every sample zero from the span's start to its end")
+            expect(lastZero - firstZero >= 10 && lastZero - firstZero <= 40, "for about 0.3 s of buffers: \(lastZero - firstZero + 1)")
+            expect(heard[..<firstZero].allSatisfy { $0 > 0 } && heard[(lastZero + 1)...].allSatisfy { $0 > 0 }, "and nowhere else")
+            expectEqual(fakes.taps.count, 1, "the source itself leaves a tap of zeros alone: the writer's rule finds it")
+            expect(RecLog.lines.contains("Test hook: from here the process tap's buffers are handed on as zeros (HOLDFAST_TEST_TAP_ZEROS, until 0.5 s)"), "the log says where the span began: \(RecLog.lines)")
+            expect(RecLog.lines.contains("Test hook: from here the process tap's buffers are handed on unchanged again"), "and where it ended")
+        }
+        // The call tap's source, and every source made without an injection, has none
+        let fakes = FakeTapFactory()
+        let queue = DispatchQueue(label: "HoldfastTests.tap")
+        var peaks = [Float]()
+        RecLog.lines = []
+        let plain = SystemAudioSource(factory: fakes.factory, sampleQueue: queue, stallSeconds: 0.1, checkInterval: 0.02, waitScale: 0.02) { peaks.append(MovieWriter.peak(of: $0.buffer)) }
+        try plain.start()
+        let feeding = EveryTap(fakes)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        plain.stopNow()
+        feeding.stop()
+        let heard = queue.sync { peaks }
+        expect(heard.count >= 10 && heard.allSatisfy { $0 > 0 }, "without an injection every buffer is handed on as it is: \(heard.count)")
+        expectEqual(fakes.taps.count, 1, "and the tap is left alone")
+        expect(!RecLog.lines.contains { $0.contains("Test hook") }, "nothing about a hook in the log: \(RecLog.lines)")
     }
 
     await test("system audio source: a construction that cannot be built is passed over, and the failures wait longer and longer") {

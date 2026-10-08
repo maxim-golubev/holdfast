@@ -253,6 +253,11 @@ final class SystemAudioSource {
     private let delivering = Atomic<Int>(0)
     /// When the current tap last handed a buffer on, in uptime nanoseconds; 0 before its first
     private let lastDelivery = Atomic<UInt64>(0)
+    /// Failure injection for device tests (`TapFailureInjection`): nil, and nothing here differs, unless the app
+    /// was launched with its environment variables and this is a recording's process tap
+    private let injection: TapFailureInjection?
+    /// When `start` began, in uptime nanoseconds, from which the injection's spans count; stored only with one
+    private let injectionStart = Atomic<UInt64>(0)
 
     // On `control`
     private var tap: SystemAudioTapping?
@@ -269,16 +274,20 @@ final class SystemAudioSource {
     /// How often a tap was built again, and attempts that failed, for the log
     private(set) var rebuilds = 0
     private(set) var failedAttempts = 0
+    /// What the injection last did to the buffers, as logged
+    private var injected = TapFailureInjection.Action.pass
 
     // On the sample queue
     private var latestGeneration = 0
     private let converter: SystemAudioConverter?
     private(set) var buffersHandedOn = 0
     private(set) var buffersDropped = 0
+    private var zeroingFailed = false
 
     init(factory: Factory, role: Role = .systemAudio, sampleQueue: DispatchQueue, stallSeconds: Double = SystemAudioSource.stallSeconds,
          checkInterval: Double = SystemAudioSource.checkInterval, waitScale: Double = 1,
-         clock: (() -> CMTime)? = nil, onSample: @escaping (CaptureSample) -> Void) {
+         clock: (() -> CMTime)? = nil, injection: TapFailureInjection? = nil, onSample: @escaping (CaptureSample) -> Void) {
+        self.injection = injection
         self.factory = factory
         self.role = role
         self.sampleQueue = sampleQueue
@@ -302,6 +311,10 @@ final class SystemAudioSource {
         guard converter != nil else { throw SystemAudioTapError("The system audio format is not available") }
         try control.sync {
             guard !stopped else { throw SystemAudioTapError("The system audio tap was stopped before it started") }
+            if let injection {
+                injectionStart.store(SystemAudioSource.uptime(), ordering: .releasing)
+                injection.activeLines.forEach { RecLog.write($0) }
+            }
             attempt(reason: nil)
             let timer = DispatchSource.makeTimerSource(queue: control)
             timer.schedule(deadline: .now() + checkInterval, repeating: checkInterval, leeway: .milliseconds(20))
@@ -442,7 +455,9 @@ final class SystemAudioSource {
     /// Every `checkInterval`: a tap that has handed nothing on for `stallSeconds` is dead; one that has delivered
     /// for `TapRepair.healthySeconds` is healthy
     private func check() {
-        guard !stopped, tap != nil else { return }
+        guard !stopped else { return }
+        if let injection { noteInjection(injection) }
+        guard tap != nil else { return }
         let now = SystemAudioSource.uptime()
         let last = lastDelivery.load(ordering: .acquiring)
         let since = max(builtAt, last)
@@ -456,6 +471,22 @@ final class SystemAudioSource {
         }
     }
 
+    /// Seconds since `start`, for the injection's spans. Any thread.
+    private func injectionSeconds() -> Double {
+        let began = injectionStart.load(ordering: .acquiring)
+        let now = SystemAudioSource.uptime()
+        return now > began ? Double(now - began) / 1_000_000_000 : 0
+    }
+
+    /// Device tests only: logs when the injection begins or ends holding back or zeroing the buffers, so the log of
+    /// a test recording shows where (to the quarter second the check runs at)
+    private func noteInjection(_ injection: TapFailureInjection) {
+        let action = injection.action(at: injectionSeconds())
+        guard action != injected else { return }
+        injected = action
+        RecLog.write(injection.changeLine(to: action))
+    }
+
     // MARK: - IO thread
 
     /// From the IOProc of the tap of `generation`: queues the buffer, with the time it arrived, unless that tap has
@@ -463,14 +494,25 @@ final class SystemAudioSource {
     /// the sample queue, it is recorded where it arrived.
     private func deliver(_ buffer: CMSampleBuffer, generation: Int) {
         guard delivering.load(ordering: .acquiring) == generation else { return }
+        // Failure injection for device tests; nil, so only this check, without its environment variables. A buffer
+        // it holds back is not noted as delivered either: to everything after this line the IOProc was not called.
+        var zeroed = false
+        if let injection {
+            switch injection.action(at: injectionSeconds()) {
+            case .drop: return
+            case .zeros: zeroed = true
+            case .pass: break
+            }
+        }
         lastDelivery.store(DispatchTime.now().uptimeNanoseconds, ordering: .releasing)
         let arrival = clock.map { $0() } ?? CMTimeAdd(buffer.presentationTimeStamp, buffer.duration)
-        sampleQueue.async { [weak self] in self?.handOn(buffer, generation: generation, arrival: arrival) }
+        sampleQueue.async { [weak self] in self?.handOn(buffer, generation: generation, arrival: arrival, zeroed: zeroed) }
     }
 
     // MARK: - Sample queue
 
-    private func handOn(_ buffer: CMSampleBuffer, generation: Int, arrival: CMTime) {
+    /// `zeroed` is true only for a buffer the failure injection of a device test wants handed on as zeros
+    private func handOn(_ buffer: CMSampleBuffer, generation: Int, arrival: CMTime, zeroed: Bool) {
         guard generation >= latestGeneration, let converter = converter else {
             buffersDropped += 1
             return
@@ -488,8 +530,23 @@ final class SystemAudioSource {
             stamped = moved
         }
         guard let converted = converter.convert(stamped) else { return }
+        if zeroed, !SystemAudioSource.zero(converted) {
+            // Never the real audio inside the span of a test
+            if !zeroingFailed { RecLog.write("Test hook: a buffer of the \(role.tap) could not be set to zeros and is left out") }
+            zeroingFailed = true
+            return
+        }
         buffersHandedOn += 1
         onSample(CaptureSample(kind: role.kind, buffer: converted, pts: converted.presentationTimeStamp, arrival: arrival))
+    }
+}
+
+extension SystemAudioSource {
+    /// Sets every sample of `buffer` to zero, in place: for the failure injection of device tests only. The buffer
+    /// is the source's own (the IOProc's copy, or the converter's output).
+    static func zero(_ buffer: CMSampleBuffer) -> Bool {
+        guard let data = CMSampleBufferGetDataBuffer(buffer) else { return false }
+        return CMBlockBufferFillDataBytes(with: 0, blockBuffer: data, offsetIntoDestination: 0, dataLength: 0) == kCMBlockBufferNoErr
     }
 }
 

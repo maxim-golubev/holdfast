@@ -405,4 +405,57 @@ func logicTests() async {
         expectEqual(kept, 50, "and what does not lie before the end of the track is written")
         expectEqual(backlog.total, 0, "none by its arrival")
     }
+
+    await test("failure injection: nothing is set, nothing happens") {
+        let none = TapFailureInjection(environment: ["PATH": "/usr/bin", "HOME": "/Users/someone"])
+        expect(!none.isActive && none.whenActive == nil, "inactive without its variables")
+        expect(none.dead == nil && none.zeros == nil, "no spans")
+        expect(none.launchLines.isEmpty && none.activeLines.isEmpty, "nothing to log")
+        for seconds in [0, 0.5, 10, 15, 22, 5400] { expectEqual(none.action(at: seconds), .pass, "every buffer is handed on at \(seconds) s") }
+        expect(!TapFailureInjection(environment: [:]).isActive, "nor with no environment at all")
+    }
+
+    await test("failure injection: a span is two numbers of seconds, and anything else is ignored with a log line") {
+        typealias Span = TapFailureInjection.Span
+        expectEqual(Span("10-22"), Span(from: 10, to: 22), "whole seconds")
+        expectEqual(Span("0-5"), Span(from: 0, to: 5), "from the start")
+        expectEqual(Span("0.5-3.25"), Span(from: 0.5, to: 3.25), "fractions")
+        expectEqual(Span(" 10 - 22 "), Span(from: 10, to: 22), "spaces around the numbers")
+        for text in ["", "10", "10-", "-22", "22-10", "10-10", "-5-10", "10--22", "10-22-30", "ten-22", "10-22s", "1e1-22", "10,5-22", "inf-nan", "0x1-0x9", "1.2.3-9", ".-5", "10 22", "10–22"] {
+            expect(Span(text) == nil, "\"\(text)\" is not a span")
+        }
+        expect(Span(from: -1, to: 5) == nil && Span(from: 5, to: 5) == nil && Span(from: 0, to: .infinity) == nil, "nor are such numbers")
+        let wrong = TapFailureInjection(environment: [TapFailureInjection.deadKey: "soon", TapFailureInjection.zerosKey: ""])
+        expect(!wrong.isActive && wrong.whenActive == nil, "malformed values do nothing")
+        expectEqual(wrong.action(at: 15), .pass, "every buffer is handed on")
+        expectEqual(wrong.ignored, ["Test hook: HOLDFAST_TEST_TAP_DEAD=\"soon\" is not a span of seconds like 10-22 and is ignored",
+                                    "Test hook: HOLDFAST_TEST_TAP_ZEROS=\"\" is not a span of seconds like 10-22 and is ignored"], "each is logged")
+        expectEqual(wrong.launchLines, wrong.ignored, "at launch")
+        expect(wrong.activeLines.isEmpty, "and a recording logs nothing")
+        let half = TapFailureInjection(environment: [TapFailureInjection.deadKey: "22-10", TapFailureInjection.zerosKey: "30-40"])
+        expect(half.isActive && half.dead == nil && half.zeros == Span(from: 30, to: 40), "one malformed leaves the other in force")
+        expectEqual(half.launchLines.count, 2, "one line for the span, one for what was ignored: \(half.launchLines)")
+    }
+
+    await test("failure injection: inside the span the tap is dead, or delivers zeros, and outside it is left alone") {
+        let dead = TapFailureInjection(environment: [TapFailureInjection.deadKey: "10-22"])
+        expect(dead.isActive && dead.whenActive == dead, "active")
+        expectEqual([0, 9.999, 10, 15, 21.999, 22, 23, 3600].map { dead.action(at: $0) }, [.pass, .pass, .drop, .drop, .drop, .pass, .pass, .pass], "from 10 s up to 22 s")
+        expectEqual(dead.activeLines, ["Test hook: HOLDFAST_TEST_TAP_DEAD is set: from 10 to 22 s of the recording the process tap's buffers are not handed on, as if its IOProc had stopped"], "logged")
+        expectEqual(dead.changeLine(to: .drop), "Test hook: from here the process tap's buffers are not handed on (HOLDFAST_TEST_TAP_DEAD, until 22 s)", "where it begins")
+        expectEqual(dead.changeLine(to: .pass), "Test hook: from here the process tap's buffers are handed on unchanged again", "and ends")
+        let zeros = TapFailureInjection(environment: [TapFailureInjection.zerosKey: "2.5-8"])
+        expectEqual([0, 2.4, 2.5, 7.9, 8, 100].map { zeros.action(at: $0) }, [.pass, .pass, .zeros, .zeros, .pass, .pass], "from 2.5 s up to 8 s")
+        expectEqual(zeros.activeLines, ["Test hook: HOLDFAST_TEST_TAP_ZEROS is set: from 2.5 to 8 s of the recording the process tap's buffers are handed on as zeros"], "logged")
+        expectEqual(zeros.changeLine(to: .zeros), "Test hook: from here the process tap's buffers are handed on as zeros (HOLDFAST_TEST_TAP_ZEROS, until 8 s)", "where it begins")
+    }
+
+    await test("failure injection: both spans together, each in its own time, and dead where they overlap") {
+        let both = TapFailureInjection(environment: [TapFailureInjection.deadKey: "10-22", TapFailureInjection.zerosKey: "40-55"])
+        expectEqual([5, 10, 21, 22, 39, 40, 54, 55, 60].map { both.action(at: $0) }, [.pass, .drop, .drop, .pass, .pass, .zeros, .zeros, .pass, .pass], "one after the other")
+        expectEqual(both.activeLines.count, 2, "both logged: \(both.activeLines)")
+        expect(both.ignored.isEmpty, "nothing ignored")
+        let over = TapFailureInjection(environment: [TapFailureInjection.deadKey: "10-20", TapFailureInjection.zerosKey: "5-30"])
+        expectEqual([4, 5, 9, 10, 19, 20, 29, 30].map { over.action(at: $0) }, [.pass, .zeros, .zeros, .drop, .drop, .zeros, .zeros, .pass], "nothing is handed on where both hold")
+    }
 }

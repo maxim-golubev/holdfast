@@ -540,6 +540,121 @@ struct SilentTap: Equatable {
     }
 }
 
+/// Failure injection for tests on the device. A real process tap cannot be made to fail on demand, so the repair
+/// of one that stops delivering, and of one that delivers only zeros, could otherwise never be watched in a real
+/// recording. It exists for those tests alone and is inert without its environment variables: they are read once
+/// when the app launches, are no setting, are stored nowhere and appear nowhere in the app.
+///
+/// `HOLDFAST_TEST_TAP_DEAD` and `HOLDFAST_TEST_TAP_ZEROS` each hold a span "from-to" in seconds (for example
+/// "10-22", fractions allowed) counted from the moment a recording's process tap is started, in every recording of
+/// that launch. In the first the tap's buffers are not handed on at all, as if its IOProc had stopped being called;
+/// in the second they are handed on with every sample zero. Taps built meanwhile are treated the same until the span
+/// ends. Where the two overlap nothing is handed on. A value that is not such a span is ignored and logged.
+struct TapFailureInjection: Equatable {
+    static let deadKey = "HOLDFAST_TEST_TAP_DEAD"
+    static let zerosKey = "HOLDFAST_TEST_TAP_ZEROS"
+
+    /// What the app was launched with
+    static let launch = TapFailureInjection(environment: ProcessInfo.processInfo.environment)
+
+    /// Seconds of a recording, `from` included and `to` not
+    struct Span: Equatable {
+        let from: Double
+        let to: Double
+
+        init?(from: Double, to: Double) {
+            guard from.isFinite, to.isFinite, from >= 0, to > from else { return nil }
+            self.from = from
+            self.to = to
+        }
+
+        /// "10-22", "0.5-3": two numbers of seconds, the second the greater
+        init?(_ text: String) {
+            let parts = text.trimmingCharacters(in: .whitespaces).split(separator: "-", omittingEmptySubsequences: false)
+            guard parts.count == 2, let from = Span.seconds(parts[0]), let to = Span.seconds(parts[1]) else { return nil }
+            self.init(from: from, to: to)
+        }
+
+        /// Digits with at most one decimal point, nothing else
+        private static func seconds(_ text: Substring) -> Double? {
+            let digits = text.trimmingCharacters(in: .whitespaces)
+            guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }), digits.contains(where: \.isNumber) else { return nil }
+            return Double(digits)
+        }
+
+        func contains(_ seconds: Double) -> Bool {
+            return seconds >= from && seconds < to
+        }
+
+        var text: String { String(format: "%g to %g s", from, to) }
+    }
+
+    /// What happens to a buffer of the process tap
+    enum Action: Equatable {
+        /// Handed on as it is
+        case pass
+        /// Not handed on, and not counted as delivered
+        case drop
+        /// Handed on with every sample zero
+        case zeros
+    }
+
+    let dead: Span?
+    let zeros: Span?
+    /// One line for each variable that was set to something that is not a span
+    let ignored: [String]
+
+    init(environment: [String: String]) {
+        var ignored = [String]()
+        func span(_ key: String) -> Span? {
+            guard let value = environment[key] else { return nil }
+            if let span = Span(value) { return span }
+            ignored.append("Test hook: \(key)=\"\(value)\" is not a span of seconds like 10-22 and is ignored")
+            return nil
+        }
+        dead = span(TapFailureInjection.deadKey)
+        zeros = span(TapFailureInjection.zerosKey)
+        self.ignored = ignored
+    }
+
+    /// Whether any buffer of a recording is treated differently
+    var isActive: Bool { dead != nil || zeros != nil }
+
+    /// Itself when it does anything, for the recording's process tap; nil otherwise
+    var whenActive: TapFailureInjection? { isActive ? self : nil }
+
+    /// What happens to a buffer that arrives `seconds` after the recording's tap was started
+    func action(at seconds: Double) -> Action {
+        if let dead, dead.contains(seconds) { return .drop }
+        if let zeros, zeros.contains(seconds) { return .zeros }
+        return .pass
+    }
+
+    /// What is set, for the log of a recording: one line for each span
+    var activeLines: [String] {
+        var lines = [String]()
+        if let dead {
+            lines.append("Test hook: \(TapFailureInjection.deadKey) is set: from \(dead.text) of the recording the process tap's buffers are not handed on, as if its IOProc had stopped")
+        }
+        if let zeros {
+            lines.append("Test hook: \(TapFailureInjection.zerosKey) is set: from \(zeros.text) of the recording the process tap's buffers are handed on as zeros")
+        }
+        return lines
+    }
+
+    /// For the log at launch: what is set and what was ignored; empty without the variables
+    var launchLines: [String] { activeLines + ignored }
+
+    /// For the log when what happens to the buffers changes during a recording
+    func changeLine(to action: Action) -> String {
+        switch action {
+        case .drop: return "Test hook: from here the process tap's buffers are not handed on (\(TapFailureInjection.deadKey), until \(dead.map { String(format: "%g s", $0.to) } ?? "?"))"
+        case .zeros: return "Test hook: from here the process tap's buffers are handed on as zeros (\(TapFailureInjection.zerosKey), until \(zeros.map { String(format: "%g s", $0.to) } ?? "?"))"
+        case .pass: return "Test hook: from here the process tap's buffers are handed on unchanged again"
+        }
+    }
+}
+
 /// What a recording knows about the call tap, the second tap that records only what `avconferenced` plays
 enum CallAudioState: Equatable {
     /// Nothing looks for a call (no call tap source runs): the recording cannot tell whether one is on

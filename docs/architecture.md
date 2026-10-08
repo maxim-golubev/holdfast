@@ -379,6 +379,26 @@ do nothing about. Holdfast must capture the system audio by itself, every time.
   sample that is not zero ends it (`hears`). Silence written in the tap's
   place, and a pause, break the run of zeros: a tap that delivers nothing at
   all is the stall check's. Nothing of this runs on the IO thread.
+- **Failure injection for device tests.** A real tap cannot be made to fail
+  on demand, so the two repairs above could not otherwise be watched in a real
+  recording. `TapFailureInjection` (pure, in `RecordingLogic.swift`) reads two
+  environment variables of the app's process, once, at launch:
+  `HOLDFAST_TEST_TAP_DEAD` and `HOLDFAST_TEST_TAP_ZEROS`, each a span
+  "from-to" in seconds counted from the moment a recording's process tap is
+  started (fractions allowed; where the two overlap the tap is dead). A
+  recording's process tap source is given it only when a span is set; the call
+  tap's source never is. Inside the dead span `SystemAudioSource.deliver`
+  returns before it notes the delivery, so to the stall check, the repair and
+  the monitor the IOProc has stopped being called, and every tap built
+  meanwhile is held back the same way; inside the zeros span the buffer is
+  handed on and set to zero on the sample queue after conversion, so the
+  writer's rule for a tap of zeros sees it. Without the variables the source
+  holds nil and its deliver path does one check for nil more than before. A
+  value that is not a span is ignored with a line in the log; the spans are
+  logged at launch and at each recording's start, and the log says where a
+  span began and ended (to the quarter second of the stall check). It is not
+  a setting, is stored nowhere and appears nowhere in the app. How to use it
+  is in [validation.md](validation.md).
 - **The backup, the call tap's track and the spans.** The writer gives the
   backup and the call tap's audio each a track (or file) of its own, placed
   and filled exactly like the system audio, so the three share one timeline.

@@ -223,6 +223,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         terminate.setEventHandler { UserNotice.onMainRunLoop { NSApp.terminate(nil) } }
         terminate.resume()
         terminateSignal = terminate
+        // Failure injection for device tests: its environment variables are read here, once, and logged when set
+        TapFailureInjection.launch.launchLines.forEach { RecLog.write($0) }
         // Before anything reads the Dock and menu bar settings
         AppSettings.migrate()
         ScreenContent.updateAvailableContentSync()

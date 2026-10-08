@@ -93,7 +93,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 232 tests in about four minutes (250 s measured), without the
+`Tools/test.sh` runs 238 tests in about four minutes (250 s measured), without the
 app, a screen or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
@@ -114,7 +114,8 @@ synthetic buffers and read them back.
 | Status item | 7 | Every state's symbol, title and sentence, the timer text, the item's width, the call-audio warning |
 | Package | 1 | `.qma` info files of earlier versions |
 | Timestamps and length | 13 | The timeline never past the present: a buffer of the stream's audio stamped 1100 s in the future near the end of a call recorded at its arrival time, a tap buffer its device stamped 1100 s ahead recorded like the others (its source hands it on ending when it arrived), a frame and an audio buffer stamped 12 s ahead as a call connects (no video hole, no fill past the present, the microphone not shifted), a microphone stamped 400 s before its arrival, a microphone backlog 40 s old left to the converter, audio of unknown arrival in the future left out and such a frame written at the present, fills and repeats cut off a second after the present, the stop's padding up to the video's end (sound only: the present), a mix whose audio is over 2 s longer or shorter than its video rejected and the recording kept unmixed |
-| System audio tap | 20 | Build and teardown order against fake Core Audio calls with each clock (built-in output, no sub-device, default output) and the order of constructions, cleanup after each failed step, the IOProc's stream usage (only the tap's stream), the IOProc's copy (interleaved, non-interleaved, behind other input streams, turned-off streams, malformed lists), nothing handed on once the rate changes or the clock device goes away, the IOProc called with the device's time stamp 12 s and 5 s ahead, 10 s and 1100 s behind and invalid (the buffer ends at the host time of the call each time), conversion and resampling to 48 kHz stereo, the choice between the tap with its backup and screen capture alone, with its notice and warning; the repair: a tap that hands on nothing rebuilt at once and the next construction after two failures, around and around, the waits (at once, then 0.5 s doubling to 2 s), the source as the app builds it (its stall limit of 1 s and check every 0.25 s: the second tap between 1 and 1.6 s), every listener removed as the one installed, a tap that cannot be built at the start built in the background, a rate change, nothing of an old tap after the new one, the real tap on fake hardware falling back from the built-in output to no sub-device to the default output, and a tap whose IOProc is never called; a sound-only file written from the tap's buffers |
+| System audio tap | 22 | Build and teardown order against fake Core Audio calls with each clock (built-in output, no sub-device, default output) and the order of constructions, cleanup after each failed step, the IOProc's stream usage (only the tap's stream), the IOProc's copy (interleaved, non-interleaved, behind other input streams, turned-off streams, malformed lists), nothing handed on once the rate changes or the clock device goes away, the IOProc called with the device's time stamp 12 s and 5 s ahead, 10 s and 1100 s behind and invalid (the buffer ends at the host time of the call each time), conversion and resampling to 48 kHz stereo, the choice between the tap with its backup and screen capture alone, with its notice and warning; the repair: a tap that hands on nothing rebuilt at once and the next construction after two failures, around and around, the waits (at once, then 0.5 s doubling to 2 s), the source as the app builds it (its stall limit of 1 s and check every 0.25 s: the second tap between 1 and 1.6 s), every listener removed as the one installed, a tap that cannot be built at the start built in the background, a rate change, nothing of an old tap after the new one, the real tap on fake hardware falling back from the built-in output to no sub-device to the default output, and a tap whose IOProc is never called; a sound-only file written from the tap's buffers; the failure injection of a device test in the source: a dead span in which every tap is held back and rebuilt as a dead one is (the same construction once more, then the next) until the span ends and the newest tap stays, a zeros span in which every buffer handed on is zeros, in the tap's own format and a converted one, and nowhere else, and a source without an injection untouched |
+| Failure injection for device tests | 4 | The two environment variables: unset, nothing happens to any buffer and nothing is logged; a span is two numbers of seconds, the second the greater, and nineteen other values are ignored with a log line each, one malformed leaving the other in force; a buffer is held back or zeroed from the span's first second up to its last; both spans together, and dead where they overlap |
 | Backup of the system audio | 12 | The tap's spans and the choice of source stretch by stretch; four titled tracks (the call tap's with its tone where it delivered and silence elsewhere) and both taps' spans through the real writer; today's meeting (the tap dead from 27 s to 28 s): the mix holds the backup exactly there and the tap elsewhere, the switches within 0.02 s; a tap dead from the start; FaceTime (backup silent) the tap's, both alive the tap's alone at its level, both dead silence; the check rejecting a mix without the system audio or with it twice; the microphone kept apart; a sound-only recording started by the backup and merged; a killed recording recovered with its spans; the report about a kept three-track recording (tap, backup, call tap) naming those tracks and no microphone |
 | Alignment | 8 | The place of one piece of sound in another to the sample, none for a steady tone or past 250 ms; what the windows say together; the tap moved onto the backup's timeline in the mix, with tracks that begin as in a real recording; a call of three minutes in an hour's recording measured from 16 windows spread over the call (over the hour: two at most, not measured), one of five seconds from three |
 | Call audio and the silent tap | 16 | The rule for a tap that hears nothing, fed a tenth of a second at a time: zeros against sound elsewhere rebuilt after 3 s; nothing for zeros with silence or with sound below -60 dBFS elsewhere, for a quiet tap, for a sound that begins a quarter of a second earlier in the backup or ends there first, or for zeros broken off by silence written in the tap's place; a tap deaf from the middle of a sound found 3 s later, one deaf through minutes of silence 0.6 s into the first sound; without the permission two rebuilds 3 s apart, the notice, then one rebuild a minute, and after the first sound nothing more and no second notice. Through the real writer: a tap that goes to zeros while the backup, or the call tap, has sound asks for one rebuild after 3 s with its log line, and for nothing while nothing plays. Its source rebuilding it (the same construction once more, then the next), and the session passing that on to its capture and posting one notification with where to allow system audio recording. The call tap's source with the real tap on fake Core Audio calls: nothing built while the call process has no audio object, a tap of that process's objects alone, without a sub-device, when they appear mid-recording, its buffer handed on as call audio ending at the host time of its IOProc, not rebuilt for other changes of the list, taken down when the objects go, a new one for the next call, every listener removed; the built-in output as its clock after no sub-device failed twice; a tap that cannot be built stopping nothing; the list read every 5 s when it cannot be listened to. The monitor: a dead process tap shown as missing call audio only while a call may be playing and the call tap has delivered nothing for 15 s, gone when the call tap delivers or the call ends; the system audio warning when the process tap and the backup are both silent for 5 s, whatever the call tap delivers. The mix, through the real writer and mixer with AAC tracks: a FaceTime call (backup silent) with the process tap dead for 3 s has the voice there from the call tap, each of four clicks once and within 1 ms of its time, one of them on each switch, the offset between the two taps measured as 14.6 ms; a browser call with the same outage is mixed as without a call tap, whether its track is empty or zeros; music and a call with the process tap dead: the backup plus the call tap is the two sounds together (likeness over 0.9 with what the tap would have held, level within 10%). In lossless files: a recording whose process tap was alive throughout, with a call in the call tap's track, mixed bit for bit like the same recording without that track (1,152,000 samples, 0 different, also with Level Voices) and every one of 573,485 frames the tap's audio plus the microphone. The choice of stretches; a sound-only recording with its call tap's file merged in; a killed recording recovered with the call tap's audio |
@@ -161,6 +162,9 @@ recording:
   gets the recording's own Level Voices choice. The build fails when the
   capture is made without a call tap argument or lacks the rebuild; the rest
   is first shown by a recording on the device.
+- The failure tests of "Failure tests on the device", below: the process tap
+  made dead, or made to deliver zeros, for a span of a real recording, and
+  what its repair, the backup and the call tap then do.
 - The watch for a process tap that delivers only zeros, on the device: that a
   healthy tap is never taken for one (with the output muted or at volume zero,
   with AirPods in call mode, at the start and end of sounds), and what a real
@@ -235,6 +239,108 @@ recording with quiet speech played three times, the unmixed file kept.
   stream latency of 0 and an IO buffer of 512 frames: 1536 frames, 32.0 ms,
   against 22.4 ms measured. They do not account for the offset either, and
   nothing is subtracted where the buffers are stamped.
+
+## Failure tests on the device
+
+Not yet run: this section says how, and what the log must show. Nothing in it
+is a measurement.
+
+A real process tap cannot be made to fail on demand, so the app can be
+launched with a failure built in. Two environment variables of the app's
+process, read once at launch, each hold a span "from-to" in seconds, counted
+from the moment a recording's process tap is started (a moment before the
+first frame), in every recording of that launch:
+
+- `HOLDFAST_TEST_TAP_DEAD=10-22`: from 10 s to 22 s the process tap's buffers
+  are not handed on at all, as if its IOProc had stopped being called. The
+  stall check (1 s), the rebuild and its growing wait run for real; a rebuilt
+  tap is held back too until the span ends.
+- `HOLDFAST_TEST_TAP_ZEROS=10-22`: in that span the process tap's buffers are
+  handed on with every sample zero. The rule for a tap that delivers only
+  zeros and its rebuild run for real; rebuilt taps go on delivering zeros
+  until the span ends. That rule acts only while the Mac plays sound, so
+  something must be playing throughout the span.
+
+Both may be set, with different spans (where they overlap the tap is dead).
+Fractions of a second are allowed. A value that is not such a span is ignored
+and the log says so. Without the variables nothing differs: they are no
+setting, are stored nowhere and do not show in the app. The call tap and the
+backup are never touched.
+
+To run one, quit Holdfast first (a second copy quits by itself), then:
+
+```
+open -n /Applications/Holdfast.app --env HOLDFAST_TEST_TAP_DEAD=10-22
+open -n /Applications/Holdfast.app --env HOLDFAST_TEST_TAP_ZEROS=10-18
+open -n /Applications/Holdfast.app --env HOLDFAST_TEST_TAP_DEAD=10-22 --env HOLDFAST_TEST_TAP_ZEROS=40-48
+```
+
+Play sound for the whole recording (music or a video; a FaceTime call to see
+the call tap fill in), record for at least 15 s past the end of the last span,
+stop, and read `~/Library/Logs/Holdfast/recordings.log`. Quit that copy
+afterwards and open Holdfast as usual: the hook lasts as long as the process.
+
+What the log shows, in order, for `HOLDFAST_TEST_TAP_DEAD=10-22`:
+
+- at launch and again at the recording's start: `Test hook:
+  HOLDFAST_TEST_TAP_DEAD is set: from 10 to 22 s of the recording the process
+  tap's buffers are not handed on, as if its IOProc had stopped`
+- at 10 s: `Test hook: from here the process tap's buffers are not handed on
+  (HOLDFAST_TEST_TAP_DEAD, until 22 s)`
+- about a second later: `System audio: the process tap with … failed (its
+  IOProc handed on nothing for 1.x s); rebuilding at once, the backup records
+  meanwhile` and `System audio: process tap rebuilt with …`; then the same
+  pair about every 1 to 3 s with `rebuilding in 0.5 s`, `in 1.0 s`, `in
+  2.0 s`, the construction changing after every second failure (built-in
+  output, no sub-device, default output): five or six failures in 12 s
+- about 5 s into the span: `System audio: the process tap has delivered nothing for 5 s;
+  the backup (screen capture) records the system audio meanwhile`
+- at 22 s: `Test hook: from here the process tap's buffers are handed on
+  unchanged again` and `System audio: the process tap delivers again`
+- 10 s after the last rebuild: `System audio: the process tap with … has
+  delivered for 10 s`
+- at the stop: `System audio: process tap stopped (N rebuilds, N failed
+  attempts)` with N the number of failures above
+- after the mix: `System audio in the mix: … s from the process tap, 12.x s
+  from the backup in 1 stretch`
+
+No warning and no notification may appear, and the final file must have the
+sound throughout: from the backup in the span (from the call tap as well
+during a FaceTime call, with a `Call audio in the mix: …` line).
+
+For `HOLDFAST_TEST_TAP_ZEROS=10-18`, with sound playing:
+
+- at launch and at the recording's start: `Test hook: HOLDFAST_TEST_TAP_ZEROS
+  is set: from 10 to 18 s of the recording the process tap's buffers are
+  handed on as zeros`
+- at 10 s: `Test hook: from here the process tap's buffers are handed on as
+  zeros (HOLDFAST_TEST_TAP_ZEROS, until 18 s)`
+- 3 to 4 s later: `System audio: the process tap has delivered only zeros for
+  3 s while the backup or the call tap has sound: it does not hear the Mac and
+  is rebuilt (rebuild 1 since it last heard anything)`, `System audio: the
+  process tap with … failed (it delivers only zeros while the Mac plays
+  sound); rebuilding at once, the backup records meanwhile`, `System audio:
+  process tap rebuilt with …`
+- 3 to 4 s after that the same three with `rebuild 2` and `rebuilding in
+  0.5 s`
+- at 18 s: `Test hook: from here the process tap's buffers are handed on
+  unchanged again` and `System audio: the process tap hears the Mac again`
+- 10 s after the second rebuild: `System audio: the process tap with … has
+  delivered for 10 s`
+- at the stop: `System audio: process tap stopped (2 rebuilds, 2 failed
+  attempts)`
+- after the mix: `System audio in the mix: … s from the process tap, about
+  8 s from the backup in …` (one stretch, or one on each side of a rebuild)
+
+A span of zeros longer than about 10 s goes on to the third step of that rule:
+`System audio: the process tap still delivers only zeros after 2 rebuilds;
+from here on it is rebuilt once every 60 s, and the backup and the call tap
+record meanwhile`, with the notification "Call Audio Not Included" (once
+while the app runs).
+
+A value that is not a span logs, at launch only, `Test hook:
+HOLDFAST_TEST_TAP_DEAD="…" is not a span of seconds like 10-22 and is
+ignored`.
 
 ## Process tap constructions (Tools/tapexp)
 
