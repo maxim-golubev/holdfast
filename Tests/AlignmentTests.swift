@@ -59,9 +59,11 @@ let tapDelay = 2515
 
 /// A recording made with the process tap through the real writer, without a microphone: `sound` in the backup's
 /// track and, `tapDelay` samples later, in the tap's. The tap delivers nothing where `tapDead` says, zeros where
-/// `tapZeros` says; the backup is silent throughout with `backupSilent`.
+/// `tapZeros` says; the backup is silent throughout with `backupSilent`. With `starts` the two tracks begin that many
+/// samples after the picture, as they do in a real recording (each with the first buffer of its source), the sound
+/// in each that much later still.
 func recordApart(_ folder: String, seconds: Double, sound: TestSound, tapDead: (Double) -> Bool = { _ in false }, tapZeros: (Double) -> Bool = { _ in false },
-                 backupSilent: Bool = false) async throws -> TestRecording {
+                 backupSilent: Bool = false, tapDelay: Int = tapDelay, starts: (tap: Int, backup: Int) = (0, 0)) async throws -> TestRecording {
     let run = try TestRecording(folder: folder, microphone: false, settings: ["remuxAudio": true, "recordWinSound": true], tap: true)
     let writer = run.writer
     try writer.prepareVideo(width: 320, height: 240)
@@ -71,9 +73,11 @@ func recordApart(_ folder: String, seconds: Double, sound: TestSound, tapDead: (
         let t = Double(step) / 10
         try run.frame(t)
         if !tapDead(t) {
-            writer.write(CaptureSample(kind: .audio, buffer: try sound.buffer(from: step * 4800 - tapDelay, pts: run.at(t), silent: tapZeros(t)), pts: run.at(t)))
+            let pts = run.at(t + Double(starts.tap) / 48000)
+            writer.write(CaptureSample(kind: .audio, buffer: try sound.buffer(from: step * 4800 - tapDelay, pts: pts, silent: tapZeros(t)), pts: pts))
         }
-        writer.write(CaptureSample(kind: .backupAudio, buffer: try sound.buffer(from: step * 4800, pts: run.at(t), silent: backupSilent), pts: run.at(t)))
+        let pts = run.at(t + Double(starts.backup) / 48000)
+        writer.write(CaptureSample(kind: .backupAudio, buffer: try sound.buffer(from: step * 4800, pts: pts, silent: backupSilent), pts: pts))
         let target = run.at(t + 0.1 - 1)
         if CMTimeGetSeconds(CMTimeSubtract(target, writer.audioEndPTS ?? run.at(0))) >= 0.5 { writer.fillSystemAudio(upTo: target) }
         if CMTimeGetSeconds(CMTimeSubtract(target, writer.backupEndPTS ?? run.at(0))) >= 0.5 { writer.fillBackupAudio(upTo: target) }
@@ -269,6 +273,49 @@ func alignmentTests() async {
         let searched = Array(mix[(96000 - 14400)..<(144000 + 14400)])
         let lag = SystemAudioAlignment.lag(of: Array(backup[96000..<144000]), in: searched, margin: 14400, most: 12000, width: 24)
         expect(abs(lag ?? 1000) <= 48, "measured the same way, the mix is within 1 ms of the backup: \(String(describing: lag))")
+    }
+
+    await test("alignment: tracks that begin 18.0 and 12.1 ms after the picture, as in a real recording: the mix as a player plays it is within 1 ms of the backup") {
+        // The recording of 2026-10-07 18:26: the tap's track begins 864 samples after the picture and the backup's 583,
+        // and on the file's timeline the tap's sound is 1075 samples (22.4 ms) later than the backup's. A tool that
+        // decodes each track from its first sample, leaving those beginnings out, sees 16.5 ms.
+        let starts = (tap: 864, backup: 583)
+        let apart = 1075
+        let click = 6 * 48000
+        let sound = TestSound(seconds: 12, clicks: [click])
+        let run = try await recordApart("apart-starts", seconds: 12, sound: sound, tapDelay: apart - (starts.tap - starts.backup), starts: starts)
+        // The file is laid out like the real one: each track begins with nothing, for as long as its source began late
+        let asset = AVURLAsset(url: run.recording.rawURL)
+        let tracks = try await asset.loadTracks(withMediaType: .audio).sorted { $0.trackID < $1.trackID }
+        var began = [Double]()
+        for track in tracks.prefix(2) {
+            let first = try await track.load(.segments).first
+            began.append(first.map { $0.isEmpty ? CMTimeGetSeconds($0.timeMapping.target.duration) : 0 } ?? -1)
+        }
+        expectClose(began.first ?? -1, 864.0 / 48000, within: 0.000_1, "the tap's track begins 18.0 ms after the picture: \(began)")
+        expectClose(began.last ?? -1, 583.0 / 48000, within: 0.000_1, "the backup's 12.1 ms after it: \(began)")
+        let (mixURL, plan, _) = try await mixed(run)
+        expectClose(plan.alignment?.offset ?? 0, Double(apart) / 48000, within: 0.000_5, "22.4 ms on the file's timeline, the beginnings counted")
+        expectEqual(plan.segments.map(\.source), [.tap], "the tap throughout")
+        let mixTrack = try await AVURLAsset(url: mixURL).loadTracks(withMediaType: .audio)
+        let mixFirst = try await mixTrack.first?.load(.segments).first
+        expect(mixFirst?.isEmpty == false, "the mix's audio begins with the picture")
+        // Read as a player plays them: every track on the file's timeline
+        let tap = try monoTrack(run.recording.rawURL, track: 0), backup = try monoTrack(run.recording.rawURL, track: 1), mix = try monoTrack(mixURL, track: 0)
+        func found(_ reference: [Float], in other: [Float]) -> Int? {
+            let searched = Array(other[(192_000 - 14400)..<(240_000 + 14400)])
+            return SystemAudioAlignment.lag(of: Array(reference[192_000..<240_000]), in: searched, margin: 14400, most: 12000, width: 24)
+        }
+        expect(abs((found(backup, in: tap) ?? 0) - apart) <= 2, "the tracks as recorded are 22.4 ms apart: \(String(describing: found(backup, in: tap)))")
+        expect(abs(found(backup, in: mix) ?? 1000) <= 48, "the mix within 1 ms of the backup, by correlation: \(String(describing: found(backup, in: mix)))")
+        expect(abs((found(tap, in: mix) ?? 0) + apart) <= 48, "which is 22.4 ms before the tap's track: \(String(describing: found(tap, in: mix)))")
+        let inBackup = clicks(in: backup, from: 5.5, to: 6.5), inMix = clicks(in: mix, from: 5.5, to: 6.5)
+        expectEqual([inBackup.count, inMix.count], [1, 1], "the click once in each")
+        if let backupClick = inBackup.first, let mixClick = inMix.first {
+            expectClose(backupClick.time, 6 + 583.0 / 48000, within: 0.000_5, "the backup's track has the click 12.1 ms after its place in the sound")
+            expectClose(mixClick.time, backupClick.time, within: 0.001, "and the mix has it there, within 1 ms")
+        }
+        expect(likeness(mix, backup, from: 1, to: 11) > 0.8, "the mix against the backup's track: \(likeness(mix, backup, from: 1, to: 11))")
     }
 
     await test("alignment: a tap dead for a stretch: the backup fills exactly that stretch, and a click at each switch is in the mix once") {

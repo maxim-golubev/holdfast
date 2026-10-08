@@ -93,7 +93,7 @@ sat half a pixel below the digits.
 
 ## Tests
 
-`Tools/test.sh` runs 192 tests in about two minutes (114 s measured), without the
+`Tools/test.sh` runs 193 tests in about two minutes (119 to 142 s measured), without the
 app, a screen or a microphone. They compile the pipeline's own sources; the writer,
 converter, mixer and recovery tests write real files with AVFoundation from
 synthetic buffers and read them back.
@@ -135,11 +135,9 @@ recording:
   throughout; the tap clocked by the built-in output in such a recording (the
   constructions were measured with `Tools/tapexp`, below, not yet in the app);
   a tap that dies being rebuilt within about a second, with the log's lines and
-  no warning; the mix measuring the offset between the tap's sound and the
-  backup's and moving the tap's by it (the offset itself was measured, see "The
-  tap against its backup"; the measurement inside the mix is covered by tests
-  with synthetic tracks 52.4 ms apart, not yet by a real recording), with "0.0 s
-  from the backup" in the log and the mixed sound in step with the picture;
+  no warning; the mixed sound in step with the picture (against the backup's
+  track it is, see "The tap against its backup"; the backup's own step with
+  the picture is ScreenCaptureKit's and was not measured);
   its permission prompt and what the permission reads as before and after; the
   sync of tap audio with the picture over a long recording; that with AirPods
   as the output the tap leaves their microphone closed.
@@ -160,13 +158,45 @@ mid-recording (the events that used to lose the tap's audio):
   sound in it, logged "33.3 s from the process tap, 11.8 s from the backup in 4
   stretches" although the tap was alive throughout; with the tracks 52 ms
   apart every such switch doubles or cuts a sound. The mix now takes the tap
-  wherever it was alive and moves its audio by the offset it measures; that
-  version has not been run on the machine yet.
+  wherever it was alive and moves its audio by the offset it measures (next
+  list).
 - Read without a tap, the built-in output that clocks the tap's device reports
   an output latency of 70, a safety offset of 74 and a stream latency of 690
   frames at 48 kHz (17.4 ms); with the tap's IO buffer of 1024 frames that is
-  38.7 ms of the 52.4 ms. The aggregate device's own figures are logged when a
-  tap is built and have not been read yet.
+  38.7 ms of the 52.4 ms.
+
+The mix that measures and moves, on the owner's Mac the same day: a 50 s
+recording with quiet speech played three times, the unmixed file kept.
+
+- The log: "the tap's audio is 22.4 ms later than the backup's (12 of 13
+  windows agree) and is moved onto the backup's timeline". So the offset is
+  not the same from one recording to the next (52.4 ms in the one above).
+- From the two files, each track decoded on the file's timeline and compared
+  by normalised cross-correlation of one-second windows where the microphone
+  is quiet (22.5, 30.5 and 40.5 s): the unmixed file's tap track is 22.35 ms
+  later than its backup track (likeness 0.99); the mixed file's audio is
+  0.00 ms from the backup track and 22.35 ms before the tap track (likeness
+  0.99 and 1.00 at 22.5 s). Between 8 and 14 s the tap's track has sounds at
+  -16 to -22 dBFS that the backup's does not, and the mix has them.
+- The tracks of a recording do not begin together: in this file the tap's
+  begins 18.0 ms (864 samples) after the picture and the backup's 12.1 ms
+  (583), each with the first buffer of its source; the mix's audio begins with
+  the picture. A player keeps to that. `ffmpeg -map 0:a:N` to a raw file does
+  not: it writes each track from its first sample, and the same files then
+  read tap against backup +16.50 ms, mix against backup +12.15 ms and mix
+  against tap -4.35 ms, all three wrong by the beginnings left out. With
+  `-af aresample=async=1:first_pts=0` ffmpeg keeps them and gives the figures
+  above.
+- "0.5 s from the backup in 2 stretches" in that log: the tap's track is
+  digital silence from 17.29 to 17.57 s and from 31.74 to 31.97 s (0.51 s
+  together), which is silence the writer put there for a tap that handed on
+  nothing for more than 0.1 s; nothing was rebuilt (that takes 1 s). Those two
+  holes are the backup's in the mix. The spans file of that recording was
+  removed with the save, so this is read from the track, not from the spans.
+- The tap's device reported an input latency of 33, a safety offset of 991, a
+  stream latency of 0 and an IO buffer of 512 frames: 1536 frames, 32.0 ms,
+  against 22.4 ms measured. They do not account for the offset either, and
+  nothing is subtracted where the buffers are stamped.
 
 ## Process tap constructions (Tools/tapexp)
 
